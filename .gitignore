@@ -1,0 +1,11 @@
+# 阅读进度（运行时生成）
+image_viewer.json
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 编辑器 / 系统杂物
+.vscode/
+.DS_Store
+Thumbs.db

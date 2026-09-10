@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>图片 / 漫画浏览器</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: rgba(22, 24, 30, 0.86);
+    --border: rgba(255, 255, 255, 0.10);
+    --text: #e7e9ee;
+    --muted: #9aa2b1;
+    --accent: #4c8dff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  button {
+    font: inherit; color: inherit; background: transparent; border: none; cursor: pointer;
+  }
+
+  /* ---------- 图片层 ---------- */
+  #viewport {
+    position: fixed; inset: 0;
+    transform-origin: center center;
+    touch-action: none;
+    cursor: grab;
+    will-change: transform;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #viewport.dragging { cursor: grabbing; }
+  #stage {
+    position: absolute; inset: 0;
+    transform-origin: center center;
+    display: flex; align-items: center; justify-content: center;
+    will-change: transform;
+    pointer-events: none;
+  }
+  #img {
+    display: block;
+    max-width: none;
+    pointer-events: none;
+    box-shadow: 0 8px 40px rgba(0,0,0,.55);
+    -webkit-user-drag: none;
+  }
+
+  /* ---------- 顶部工具栏 ---------- */
+  #toolbar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 40;
+    display: flex; align-items: center; gap: 4px; flex-wrap: nowrap;
+    overflow-x: auto; overflow-y: hidden;
+    padding: 8px 10px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    transition: transform .25s ease, opacity .25s ease;
+  }
+  body.ui-hidden #toolbar { transform: translateY(-105%); opacity: 0; }
+  .toolbar-group { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .sep { width: 1px; height: 22px; background: var(--border); margin: 0 6px; flex: 0 0 auto; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 6px 10px; border-radius: 8px;
+    color: var(--text); font-size: 13px;
+    white-space: nowrap;
+    transition: background .15s;
+  }
+  .btn:hover { background: rgba(255,255,255,.10); }
+  .btn:active { background: rgba(255,255,255,.16); }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #5b9aff; }
+  .icon-btn { padding: 6px 9px; font-size: 16px; line-height: 1; }
+  #pageInfo { min-width: 72px; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #zoomInfo { min-width: 52px; text-align: center; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #fileInfo {
+    font-size: 12px; color: var(--muted);
+    max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    margin-left: 4px;
+  }
+
+  /* ---------- 左右翻页箭头 ---------- */
+  .nav {
+    position: fixed; top: 50%; transform: translateY(-50%); z-index: 30;
+    width: 46px; height: 76px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 34px; line-height: 1;
+    color: rgba(255,255,255,.75);
+    background: rgba(0,0,0,.22);
+    border-radius: 10px;
+    opacity: .35;
+    transition: opacity .15s, background .15s, transform .25s ease;
+  }
+  .nav:hover { opacity: 1; background: rgba(0,0,0,.45); }
+  .nav:active { transform: translateY(-50%) scale(.92); }
+  #navPrev { left: 10px; }
+  #navNext { right: 10px; }
+  body.ui-hidden .nav { opacity: 0; pointer-events: none; }
+
+  /* ---------- 底部缩略图 ---------- */
+  #thumbs {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 35;
+    display: flex; gap: 6px;
+    overflow-x: auto; overflow-y: hidden;
+    padding: 8px 12px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    height: 92px;
+    transform: translateY(0);
+    transition: transform .25s ease, opacity .25s ease;
+  }
+  #thumbs.hidden { transform: translateY(105%); opacity: 0; }
+  .thumb {
+    flex: 0 0 auto; height: 74px;
+    border-radius: 6px; overflow: hidden;
+    border: 2px solid transparent;
+    background: #000;
+    cursor: pointer;
+    transition: border-color .15s, transform .15s;
+  }
+  .thumb img { height: 100%; width: auto; display: block; pointer-events: none; }
+  .thumb:hover { transform: translateY(-2px); }
+  .thumb.active { border-color: var(--accent); }
+
+  /* ---------- 开始页 ---------- */
+  #start {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at center, #1a1e27 0%, #0b0d11 70%);
+    transition: opacity .3s;
+  }
+  #start.hidden { opacity: 0; pointer-events: none; }
+  .start-card {
+    text-align: center; max-width: 460px; padding: 24px;
+  }
+  .start-card h1 { font-size: 26px; margin-bottom: 10px; font-weight: 600; }
+  .start-card p { color: var(--muted); margin-bottom: 20px; line-height: 1.7; font-size: 14px; }
+  .start-actions { display: flex; gap: 12px; justify-content: center; margin-bottom: 22px; }
+  .start-actions .btn { padding: 12px 20px; font-size: 15px; border-radius: 10px; }
+  .start-hint {
+    font-size: 12px !important; color: var(--muted); line-height: 2 !important;
+    border-top: 1px solid var(--border); padding-top: 16px; margin-bottom: 0 !important;
+  }
+  kbd {
+    background: rgba(255,255,255,.08); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 6px; font-size: 11px; font-family: inherit;
+  }
+
+  /* ---------- 拖放遮罩 ---------- */
+  #dropOverlay {
+    position: fixed; inset: 12px; z-index: 60;
+    display: none; align-items: center; justify-content: center;
+    border: 3px dashed var(--accent); border-radius: 16px;
+    background: rgba(76,141,255,.12);
+    font-size: 22px; color: #fff; pointer-events: none;
+  }
+  #dropOverlay.show { display: flex; }
+  #dropOverlay > div {
+    background: rgba(0,0,0,.55); padding: 16px 28px; border-radius: 12px;
+  }
+
+  /* ---------- 帮助弹窗 ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 70;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.6);
+    backdrop-filter: blur(4px);
+  }
+  .modal.hidden { display: none; }
+  .modal-card {
+    background: #1a1d24; border: 1px solid var(--border); border-radius: 14px;
+    max-width: 560px; width: calc(100% - 40px); max-height: 80vh; overflow: auto;
+    padding: 22px 26px;
+  }
+  .modal-card h2 { margin-bottom: 14px; font-size: 18px; }
+  .modal-card table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .modal-card td { padding: 6px 4px; border-bottom: 1px solid rgba(255,255,255,.05); vertical-align: top; }
+  .modal-card td:first-child { color: var(--muted); width: 46%; }
+  .modal-close {
+    float: right; font-size: 18px; color: var(--muted);
+  }
+  .modal-close:hover { color: #fff; }
+
+  /* ---------- 提示 ---------- */
+  #toast {
+    position: fixed; left: 50%; bottom: 110px; transform: translateX(-50%);
+    z-index: 80; background: rgba(0,0,0,.8); color: #fff;
+    padding: 9px 16px; border-radius: 8px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #toast.show { opacity: 1; }
+
+  @media (max-width: 720px) {
+    #fileInfo { display: none; }
+    .btn { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="viewport">
+  <div id="stage">
+    <img id="img" draggable="false" alt="">
+  </div>
+</div>
+
+<div id="toolbar">
+  <div class="toolbar-group">
+    <button class="btn primary" id="btnFolder" title="打开文件夹">📂 打开文件夹</button>
+    <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 打开图片</button>
+  </div>
+  <div class="sep"></div>
+  <div class="toolbar-group">
+    <button class="btn icon-btn" id="btnPrev" title="上一页 (←)">⏮</button>
+    <span id="pageInfo">0 / 0</span>
+    <button class="btn icon-btn" id="btnNext" title="下一页 (→)">⏭</button>
+  </div>
+  <div class="sep"></div>
+  <div class="toolbar-group">
+    <button class="btn icon-btn" id="btnRotL" title="逆时针旋转 90° (Shift+R)">↺</button>
+    <button class="btn icon-btn" id="btnRotR" title="顺时针旋转 90° (R)">↻</button>
+  </div>
+  <div class="sep"></div>
+  <div class="toolbar-group">
+    <button class="btn icon-btn" id="btnZoomOut" title="缩小 (-)">➖</button>
+    <span id="zoomInfo">100%</span>
+    <button class="btn icon-btn" id="btnZoomIn" title="放大 (+)">➕</button>
+  </div>
+  <div class="sep"></div>
+  <div class="toolbar-group">
+    <button class="btn" id="btnFitWindow" title="适应窗口 (0)">适应窗口</button>
+    <button class="btn" id="btnFitWidth" title="适应宽度 (2)">适应宽度</button>
+    <button class="btn" id="btnFitHeight" title="适应高度 (3)">适应高度</button>
+    <button class="btn" id="btnActual" title="实际大小 (1)">100%</button>
+  </div>
+  <div class="sep"></div>
+  <div class="toolbar-group">
+    <button class="btn icon-btn" id="btnThumbs" title="缩略图 (T)">▤</button>
+    <button class="btn icon-btn" id="btnFull" title="全屏 (F)">⛶</button>
+    <button class="btn icon-btn" id="btnHelp" title="帮助 (?)">?</button>
+  </div>
+  <span id="fileInfo"></span>
+</div>
+
+<button class="nav" id="navPrev" title="上一页">‹</button>
+<button class="nav" id="navNext" title="下一页">›</button>
+
+<div id="thumbs"></div>
+
+<div id="start">
+  <div class="start-card">
+    <h1>🖼 图片 / 漫画浏览器</h1>
+    <p>支持缩放、旋转、翻页。把文件夹或图片拖进窗口，<br>或点击下方按钮选择图片 / 文件夹开始阅读。</p>
+    <div class="start-actions">
+      <button class="btn primary" id="startFolder">📂 打开文件夹</button>
+      <button class="btn" id="startFiles">🖼 打开图片</button>
+    </div>
+    <p class="start-hint">
+      <kbd>←</kbd> <kbd>→</kbd> 翻页 &nbsp;·&nbsp; 滚轮 缩放 &nbsp;·&nbsp; 拖拽 平移<br>
+      <kbd>R</kbd> 旋转 &nbsp;·&nbsp; <kbd>F</kbd> 全屏 &nbsp;·&nbsp; <kbd>0</kbd> 适应窗口 &nbsp;·&nbsp; <kbd>T</kbd> 缩略图 &nbsp;·&nbsp; <kbd>?</kbd> 帮助
+    </p>
+  </div>
+</div>
+
+<div id="dropOverlay"><div>松开以打开图片</div></div>
+
+<div id="help" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" id="btnHelpClose">✕</button>
+    <h2>键盘与操作说明</h2>
+    <table>
+      <tr><td><kbd>←</kbd> / <kbd>→</kbd> / <kbd>PageUp</kbd> / <kbd>PageDown</kbd></td><td>上一页 / 下一页</td></tr>
+      <tr><td><kbd>空格</kbd> / <kbd>Home</kbd> / <kbd>End</kbd></td><td>下一页 / 第一页 / 最后一页</td></tr>
+      <tr><td>滚轮 / 触控板上下滑</td><td>缩放（以鼠标位置为中心）</td></tr>
+      <tr><td>触控板捏合（<kbd>Ctrl</kbd> + 滚轮）</td><td>缩放</td></tr>
+      <tr><td>触控板左右滑</td><td>翻页</td></tr>
+      <tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>放大 / 缩小</td></tr>
+      <tr><td>拖拽</td><td>平移图片</td></tr>
+      <tr><td>点击画面左 / 右边缘</td><td>上一页 / 下一页</td></tr>
+      <tr><td>点击画面中间 / 双击</td><td>显示/隐藏工具栏 / 切换缩放</td></tr>
+      <tr><td><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></td><td>顺时针 / 逆时针旋转 90°</td></tr>
+      <tr><td><kbd>0</kbd> / <kbd>1</kbd> / <kbd>2</kbd> / <kbd>3</kbd></td><td>适应窗口 / 实际大小 / 适应宽度 / 适应高度</td></tr>
+      <tr><td><kbd>F</kbd> / <kbd>T</kbd> / <kbd>?</kbd> / <kbd>Esc</kbd></td><td>全屏 / 缩略图 / 帮助 / 关闭弹窗</td></tr>
+      <tr><td>触屏</td><td>左右滑动翻页，双指缩放，单指拖动平移</td></tr>
+    </table>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<input type="file" id="folderInput" webkitdirectory multiple hidden>
+<input type="file" id="fileInput" multiple accept="image/*" hidden>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (s) => document.querySelector(s);
+  const viewport = $('#viewport');
+  const stage = $('#stage');
+  const img = $('#img');
+
+  const MIN_ZOOM = 0.02, MAX_ZOOM = 40;
+  const MIN_VISIBLE = 60; // 平移时至少保留可见的像素
+  const IMG_RE = /\.(png|jpe?g|gif|webp|bmp|avif|svg|jfif)$/i;
+
+  let files = [];      // File[]
+  let urls = [];       // objectURL（惰性创建）
+  let index = -1;
+  let zoom = 1;
+  let panX = 0, panY = 0;
+  let rotation = 0;    // 90 的倍数
+  let fitMode = 'window'; // window | width | height | actual | custom
+  let loadToken = 0;
+
+  const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+  /* ---------- 工具 ---------- */
+  function getURL(i) {
+    if (!urls[i]) urls[i] = URL.createObjectURL(files[i]);
+    return urls[i];
+  }
+  function revokeURLs() {
+    urls.forEach(u => u && URL.revokeObjectURL(u));
+    urls = [];
+  }
+  function naturalW() { return img.naturalWidth || 800; }
+  function naturalH() { return img.naturalHeight || 800; }
+  function rotatedW() { return (rotation % 180 === 0) ? naturalW() : naturalH(); }
+  function rotatedH() { return (rotation % 180 === 0) ? naturalH() : naturalW(); }
+
+  function toast(msg) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  /* ---------- 加载文件 ---------- */
+  function loadFiles(list) {
+    const imgs = list.filter(f => IMG_RE.test(f.name));
+    if (!imgs.length) { toast('未找到图片文件'); return; }
+    revokeURLs();
+    files = imgs.sort((a, b) => collator.compare(a.name, b.name));
+    urls = new Array(files.length).fill(null);
+    $('#start').classList.add('hidden');
+    $('#thumbs').classList.remove('hidden');
+    renderThumbs();
+    showFile(0);
+    toast('已加载 ' + files.length + ' 张图片');
+  }
+
+  /* ---------- 显示图片 ---------- */
+  function showFile(i) {
+    if (!files.length) return;
+    i = (i + files.length) % files.length;
+    index = i;
+    rotation = 0;
+    const token = ++loadToken;
+    img.onload = () => {
+      if (token !== loadToken) return;
+      applyFit(fitMode === 'custom' ? 'window' : fitMode);
+      updateInfo();
+    };
+    img.onerror = () => { if (token === loadToken) toast('图片加载失败：' + files[index].name); };
+    img.src = getURL(i);
+    updateInfo();
+    updateThumbActive();
+    preloadNeighbors();
+  }
+
+  function preloadNeighbors() {
+    [index - 1, index + 1].forEach(i => {
+      if (i >= 0 && i < files.length) {
+        const im = new Image();
+        im.src = getURL(i);
+      }
+    });
+  }
+
+  /* ---------- 变换 ---------- */
+  function applyTransform() {
+    viewport.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ')';
+    stage.style.transform = 'rotate(' + rotation + 'deg)';
+    updateInfo();
+  }
+
+  function applyFit(mode) {
+    if (!img.naturalWidth) { fitMode = mode; return; }
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    const rw = rotatedW(), rh = rotatedH();
+    let z;
+    if (mode === 'width') z = vw / rw;
+    else if (mode === 'height') z = vh / rh;
+    else if (mode === 'window') z = Math.min(vw / rw, vh / rh);
+    else if (mode === 'actual') z = 1;
+    else return;
+    zoom = clamp(z, MIN_ZOOM, MAX_ZOOM);
+    panX = 0; panY = 0;
+    fitMode = mode;
+    applyTransform();
+  }
+
+  function clampPan() {
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    const rw = rotatedW() * zoom, rh = rotatedH() * zoom;
+    const maxX = rw <= vw ? 0 : (rw - vw) / 2 + MIN_VISIBLE;
+    const maxY = rh <= vh ? 0 : (rh - vh) / 2 + MIN_VISIBLE;
+    panX = clamp(panX, -maxX, maxX);
+    panY = clamp(panY, -maxY, maxY);
+  }
+
+  function zoomAt(cx, cy, factor) {
+    if (!files.length) return;
+    const vw = viewport.clientWidth, vh = viewport.clientHeight;
+    const dx = cx - vw / 2, dy = cy - vh / 2;
+    const newZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
+    const ratio = newZoom / zoom;
+    panX = dx - (dx - panX) * ratio;
+    panY = dy - (dy - panY) * ratio;
+    zoom = newZoom;
+    fitMode = 'custom';
+    clampPan();
+    applyTransform();
+  }
+
+  function zoomBy(f) { zoomAt(viewport.clientWidth / 2, viewport.clientHeight / 2, f); }
+
+  function rotateBy(d) {
+    if (!files.length) return;
+    rotation = (rotation + d + 360) % 360;
+    fitMode = 'custom';
+    clampPan();
+    applyTransform();
+  }
+
+  /* ---------- 翻页 ---------- */
+  function next() { if (files.length) showFile(index + 1); }
+  function prev() { if (files.length) showFile(index - 1); }
+
+  /* ---------- 信息显示 ---------- */
+  function updateInfo() {
+    const total = files.length;
+    $('#pageInfo').textContent = total ? (index + 1) + ' / ' + total : '0 / 0';
+    $('#zoomInfo').textContent = Math.round(zoom * 100) + '%';
+    const name = files[index] ? files[index].name : '';
+    const dims = img.naturalWidth ? naturalW() + '×' + naturalH() : '';
+    $('#fileInfo').textContent =
+      (name ? name + '  ' : '') + (dims ? '· ' + dims + '  ' : '') +
+      (rotation ? '· 旋转 ' + rotation + '°' : '');
+  }
+
+  /* ---------- 缩略图 ---------- */
+  function renderThumbs() {
+    const strip = $('#thumbs');
+    strip.innerHTML = '';
+    files.forEach((f, i) => {
+      const t = document.createElement('div');
+      t.className = 'thumb';
+      t.title = f.name;
+      const im = document.createElement('img');
+      im.loading = 'lazy';
+      im.decoding = 'async';
+      im.src = getURL(i);
+      im.draggable = false;
+      t.appendChild(im);
+      t.addEventListener('click', () => showFile(i));
+      strip.appendChild(t);
+    });
+    updateThumbActive();
+  }
+
+  function updateThumbActive() {
+    document.querySelectorAll('#thumbs .thumb').forEach((el, i) =>
+      el.classList.toggle('active', i === index));
+    const active = document.querySelector('#thumbs .thumb.active');
+    if (active) active.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+  }
+
+  /* ---------- 指针事件：拖拽 / 滑动 / 捏合 ---------- */
+  const pointers = new Map();
+  let gesture = null;   // { mode: 'pan' | 'pinch', ... }
+  let lastTap = 0;
+
+  function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+
+  viewport.addEventListener('pointerdown', (e) => {
+    if (!files.length) return;
+    viewport.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    viewport.classList.add('dragging');
+
+    if (pointers.size === 1) {
+      // 单指：拖拽平移（松手时再判定是点击还是滑动翻页）
+      gesture = {
+        mode: 'pan',
+        startX: e.clientX, startY: e.clientY,
+        startTime: Date.now(),
+        panX0: panX, panY0: panY,
+        moved: false
+      };
+    } else if (pointers.size === 2) {
+      // 双指：捏合缩放 + 双指平移
+      const [p1, p2] = [...pointers.values()];
+      gesture = {
+        mode: 'pinch',
+        startDist: dist(p1, p2),
+        startZoom: zoom,
+        startPanX: panX, startPanY: panY,
+        startMidX: (p1.x + p2.x) / 2, startMidY: (p1.y + p2.y) / 2
+      };
+    }
+  });
+
+  viewport.addEventListener('pointermove', (e) => {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!gesture) return;
+
+    if (pointers.size === 1 && gesture.mode === 'pan') {
+      // 单指平移
+      const dx = e.clientX - gesture.startX, dy = e.clientY - gesture.startY;
+      if (Math.abs(dx) + Math.abs(dy) > 5) gesture.moved = true;
+      panX = gesture.panX0 + dx;
+      panY = gesture.panY0 + dy;
+      applyTransform();
+    } else if (pointers.size === 2) {
+      const [p1, p2] = [...pointers.values()];
+      const d = dist(p1, p2);
+      const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+
+      // 第二根手指刚落下：从单指切换到捏合
+      if (gesture.mode === 'pan') {
+        gesture = {
+          mode: 'pinch',
+          startDist: d,
+          startZoom: zoom,
+          startPanX: panX, startPanY: panY,
+          startMidX: midX, startMidY: midY
+        };
+      }
+
+      if (gesture.startDist > 0) {
+        // 缩放：以捏合中点为中心，同时跟随双指平移
+        const newZoom = clamp(gesture.startZoom * (d / gesture.startDist), MIN_ZOOM, MAX_ZOOM);
+        const ratio = newZoom / gesture.startZoom;
+        const cx = viewport.clientWidth / 2, cy = viewport.clientHeight / 2;
+        const ux = gesture.startMidX - cx, uy = gesture.startMidY - cy;
+        panX = gesture.startPanX * ratio + ux * (1 - ratio) + (midX - gesture.startMidX);
+        panY = gesture.startPanY * ratio + uy * (1 - ratio) + (midY - gesture.startMidY);
+        zoom = newZoom;
+        fitMode = 'custom';
+        clampPan();
+        applyTransform();
+      }
+    }
+  });
+
+  function endPointer(e) {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.delete(e.pointerId);
+
+    if (pointers.size === 0) {
+      viewport.classList.remove('dragging');
+      const g = gesture;
+      gesture = null;
+
+      if (g && g.mode === 'pan') {
+        if (!g.moved) {
+          handleClick(e.clientX, e.clientY);
+        } else {
+          // 左右滑动 => 翻页
+          const dt = Date.now() - g.startTime;
+          const dx = e.clientX - g.startX, dy = e.clientY - g.startY;
+          if (dt < 320 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+            dx < 0 ? next() : prev();
+          }
+        }
+      }
+      // 捏合结束：不触发点击/翻页
+      clampPan();
+      applyTransform();
+    } else if (pointers.size === 1 && gesture && gesture.mode === 'pinch') {
+      // 捏合结束、还剩一根手指：以它为基准继续平移，避免跳动
+      const [p] = [...pointers.values()];
+      gesture = {
+        mode: 'pan',
+        startX: p.x, startY: p.y,
+        startTime: Date.now(),
+        panX0: panX, panY0: panY,
+        moved: true
+      };
+    }
+  }
+  viewport.addEventListener('pointerup', endPointer);
+  viewport.addEventListener('pointercancel', endPointer);
+
+  function handleClick(x, y) {
+    const vw = viewport.clientWidth;
+    const edge = x < vw * 0.2 || x > vw * 0.8;
+    if (!edge) {
+      const now = Date.now();
+      if (now - lastTap < 300) {
+        lastTap = 0;
+        // 双击：在「适应窗口」与「放大」间切换
+        if (fitMode === 'custom') applyFit('window');
+        else zoomAt(x, y, 2);
+        return;
+      }
+      lastTap = now;
+      document.body.classList.toggle('ui-hidden');
+      return;
+    }
+    if (x < vw * 0.2) prev(); else next();
+  }
+
+  /* ---------- 滚轮 / 触控板 ---------- */
+  let wheelAccumX = 0, wheelAccumTimer = null;
+
+  function wheelPixels(e) {
+    const m = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 120 : 1);
+    return { x: e.deltaX * m, y: e.deltaY * m };
+  }
+
+  viewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const { x: dx, y: dy } = wheelPixels(e);
+
+    // 1) 触控板捏合 = Ctrl + 滚轮 => 缩放
+    if (e.ctrlKey) {
+      const factor = Math.exp(-dy * 0.0015);
+      zoomAt(e.clientX, e.clientY, factor);
+      return;
+    }
+
+    // 2) 触控板左右滑动（水平滚动为主）=> 翻页（去抖，避免一次滑动翻多页）
+    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 3) {
+      wheelAccumX += dx;
+      clearTimeout(wheelAccumTimer);
+      wheelAccumTimer = setTimeout(() => { wheelAccumX = 0; }, 160);
+      if (Math.abs(wheelAccumX) >= 60) {
+        wheelAccumX > 0 ? next() : prev();
+        wheelAccumX = 0;
+        clearTimeout(wheelAccumTimer);
+      }
+      return;
+    }
+
+    // 3) 垂直滚动 => 缩放
+    const factor = Math.exp(-dy * 0.0015);
+    zoomAt(e.clientX, e.clientY, factor);
+  }, { passive: false });
+
+  /* ---------- 键盘 ---------- */
+  document.addEventListener('keydown', (e) => {
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+    switch (e.key) {
+      case 'ArrowRight': case 'PageDown': case ' ': next(); break;
+      case 'ArrowLeft': case 'PageUp': prev(); break;
+      case '+': case '=': zoomBy(1.25); break;
+      case '-': case '_': zoomBy(0.8); break;
+      case '0': applyFit('window'); break;
+      case '1': applyFit('actual'); break;
+      case '2': applyFit('width'); break;
+      case '3': applyFit('height'); break;
+      case 'r': case 'R': rotateBy(e.shiftKey ? -90 : 90); break;
+      case 'f': case 'F': toggleFullscreen(); break;
+      case 't': case 'T': toggleThumbs(); break;
+      case 'Home': if (files.length) showFile(0); break;
+      case 'End': if (files.length) showFile(files.length - 1); break;
+      case '?': toggleHelp(true); break;
+      case 'Escape': toggleHelp(false); break;
+    }
+    if ([' ', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown'].includes(e.key)) e.preventDefault();
+  });
+
+  /* ---------- 全屏 / 缩略图 / 帮助 ---------- */
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.();
+    else document.exitFullscreen?.();
+  }
+  function toggleThumbs() {
+    $('#thumbs').classList.toggle('hidden');
+  }
+  function toggleHelp(force) {
+    const h = $('#help');
+    const show = force === undefined ? h.classList.contains('hidden') : force;
+    h.classList.toggle('hidden', !show);
+  }
+
+  /* ---------- 打开文件 / 文件夹 ---------- */
+  function openFolder() {
+    if (window.showDirectoryPicker) {
+      window.showDirectoryPicker().then(async (dir) => {
+        const list = [];
+        for await (const entry of dir.values()) {
+          if (entry.kind === 'file') {
+            try { list.push(await entry.getFile()); } catch (e) {}
+          }
+        }
+        loadFiles(list);
+      }).catch(() => {});
+    } else {
+      $('#folderInput').click();
+    }
+  }
+  function openFiles() { $('#fileInput').click(); }
+
+  /* ---------- 拖放 ---------- */
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('#dropOverlay').classList.add('show'); });
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) $('#dropOverlay').classList.remove('show');
+  });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    $('#dropOverlay').classList.remove('show');
+    handleDrop(e.dataTransfer);
+  });
+
+  async function handleDrop(dt) {
+    const list = [];
+    const pending = [];
+    const items = dt.items ? [...dt.items] : null;
+    if (items) {
+      for (const item of items) {
+        const entry = item.webkitGetAsEntry ? item.webkitGetAsEntry() : null;
+        if (entry) pending.push(walkEntry(entry, list));
+        else if (item.kind === 'file') { const f = item.getAsFile(); if (f) list.push(f); }
+      }
+    } else if (dt.files) {
+      list.push(...dt.files);
+    }
+    await Promise.all(pending);
+    loadFiles(list);
+  }
+
+  function walkEntry(entry, list) {
+    return new Promise((resolve) => {
+      if (entry.isFile) {
+        entry.file(f => { list.push(f); resolve(); }, () => resolve());
+      } else if (entry.isDirectory) {
+        const reader = entry.createReader();
+        const readBatch = () => reader.readEntries(async (entries) => {
+          if (!entries.length) { resolve(); return; }
+          await Promise.all(entries.map(en => walkEntry(en, list)));
+          readBatch();
+        }, () => resolve());
+        readBatch();
+      } else resolve();
+    });
+  }
+
+  /* ---------- 事件绑定 ---------- */
+  $('#btnFolder').addEventListener('click', openFolder);
+  $('#btnFiles').addEventListener('click', openFiles);
+  $('#startFolder').addEventListener('click', openFolder);
+  $('#startFiles').addEventListener('click', openFiles);
+
+  $('#btnPrev').addEventListener('click', prev);
+  $('#btnNext').addEventListener('click', next);
+  $('#navPrev').addEventListener('click', prev);
+  $('#navNext').addEventListener('click', next);
+
+  $('#btnRotL').addEventListener('click', () => rotateBy(-90));
+  $('#btnRotR').addEventListener('click', () => rotateBy(90));
+  $('#btnZoomIn').addEventListener('click', () => zoomBy(1.25));
+  $('#btnZoomOut').addEventListener('click', () => zoomBy(0.8));
+  $('#btnFitWindow').addEventListener('click', () => applyFit('window'));
+  $('#btnFitWidth').addEventListener('click', () => applyFit('width'));
+  $('#btnFitHeight').addEventListener('click', () => applyFit('height'));
+  $('#btnActual').addEventListener('click', () => applyFit('actual'));
+  $('#btnThumbs').addEventListener('click', toggleThumbs);
+  $('#btnFull').addEventListener('click', toggleFullscreen);
+  $('#btnHelp').addEventListener('click', () => toggleHelp());
+  $('#btnHelpClose').addEventListener('click', () => toggleHelp(false));
+  $('#help').addEventListener('click', (e) => { if (e.target === $('#help')) toggleHelp(false); });
+
+  $('#folderInput').addEventListener('change', (e) => loadFiles([...e.target.files]));
+  $('#fileInput').addEventListener('change', (e) => loadFiles([...e.target.files]));
+
+  window.addEventListener('resize', () => {
+    if (fitMode !== 'custom') applyFit(fitMode);
+    else { clampPan(); applyTransform(); }
+  });
+
+  // 阻止图片原生拖拽
+  document.addEventListener('dragstart', (e) => e.preventDefault());
+})();
+</script>
+</body>
+</html>
