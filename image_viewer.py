@@ -111,9 +111,16 @@ class ComicViewer(tk.Tk):
 
         self._drag = None
         self._click_after = None
+        self._click_tick = 0         # 单次点击的毫秒时间戳，用于单击/双击判定
         self._resize_after = None
         self._haccum = 0
         self._haccum_timer = None
+        self._ui_hidden = False      # 是否进入沉浸式（全部 UI：工具栏/状态栏/缩略图/视频条都隐藏）
+        self._dbl_click = False      # 本次点击是否为双击
+        self._dbl_tick = 0           # 双击判定时间戳（毫秒）
+        self._dbl_pos = None         # (x, y) 点击位置
+        self._thumbs_visible = None   # 缩略图是否可见（None=尚未载入过）
+        self._video_bar_visible = None
         self._thumb_photos = []
         self._thumb_rects = []
 
@@ -892,10 +899,55 @@ class ComicViewer(tk.Tk):
                 pass
 
     def toggle_thumbs(self):
-        if self.thumbs_frame.winfo_manager():
-            self.thumbs_frame.pack_forget()
+        if self._thumbs_visible:
+            # 关闭缩略图：隐藏条，清空图形
+            self._thumbs_visible = False
+            self.thumbs.delete("all")
+            self._thumb_photos = []
+            self._thumb_rects = []
         else:
-            self.thumbs_frame.pack(side="bottom", fill="x", before=self.status)
+            # 打开缩略图：重建
+            self._thumbs_visible = True
+            self._build_thumbnails()
+
+    def _hide_ui(self):
+        """隐藏全部 UI（工具栏 / 状态栏 / 缩略图 / 视频条），仅保留画面内容。"""
+        self._click_tick = 0
+        if self.toolbar_outer.winfo_manager():
+            self.toolbar_outer.pack_forget()
+        self.status.pack_forget()
+        self.thumbs.pack_forget()
+        self.video_bar.pack_forget()
+        # 切换内容区：视频面/画布互斥显示
+        if self.is_video and self.video_panel.winfo_manager():
+            self.video_panel.pack(side="top", fill="both", expand=True)
+        else:
+            self.video_panel.pack_forget()
+            self.canvas.pack(side="top", fill="both", expand=True)
+        self._ui_hidden = True
+
+    def _show_ui(self):
+        """恢复全部 UI：工具栏 + 状态栏 + 缩略图 + 视频条，并按需要重绘画面。"""
+        if self._ui_hidden:
+            self._ui_hidden = False
+            if self.toolbar_outer.winfo_manager():
+                self.toolbar_outer.pack(side="top", fill="x", before=self.canvas)
+            self.status.pack(side="bottom", fill="x")
+            if self._thumbs_visible:
+                self.thumbs.pack(side="bottom", fill="x", before=self.status)
+            if self.is_video:
+                self.video_bar.pack(side="bottom", fill="x", before=self.status)
+                if self.video_panel.winfo_manager():
+                    self.after(160, self._after_ui_ready)
+                return
+            if self.canvas.winfo_manager():
+                self.after(160, self._after_ui_ready)
+
+    def _after_ui_ready(self):
+        """UI 恢复、布局稳定后，按进入隐藏前的状态重做适配。"""
+        self.after_cancel(self._after_ui_ready)
+        self._ui_after_ready = False
+        self._do_ui_after_ready()
 
     # ---------------- 事件 ----------------
     def _is_rtl(self):
