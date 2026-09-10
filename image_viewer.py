@@ -397,10 +397,11 @@ class ComicViewer(tk.Tk):
             except Exception:
                 start = 0
         self._sync_toggle_buttons()
-        self._build_thumbnails()
-        self.show_file(start)
+        self._thumbs_visible = True
         if not self.thumbs_frame.winfo_manager():
             self.thumbs_frame.pack(side="bottom", fill="x", before=self.status)
+        self.show_file(start)
+        self._build_thumbnails()
 
     # ---------------- 图片读取 ----------------
     def _display_name(self, src):
@@ -886,7 +887,12 @@ class ComicViewer(tk.Tk):
         self.zoom_at(self.canvas.winfo_width() / 2, self.canvas.winfo_height() / 2, f)
 
     def toggle_fullscreen(self):
-        self.attributes("-fullscreen", not self.attributes("-fullscreen"))
+        entering_fullscreen = not self.attributes("-fullscreen")
+        self.attributes("-fullscreen", entering_fullscreen)
+        if entering_fullscreen:
+            self._hide_ui()
+        else:
+            self._show_ui()
         if self.is_video and self.player:
             # 全屏切换后，视频可能不自动适应新尺寸，稍后重设一次 hwnd 让 VLC 重新适配
             self.after(250, self._refresh_video_hwnd)
@@ -902,12 +908,14 @@ class ComicViewer(tk.Tk):
         if self._thumbs_visible:
             # 关闭缩略图：隐藏条，清空图形
             self._thumbs_visible = False
-            self.thumbs.delete("all")
+            self.thumbs_frame.pack_forget()
+            self._cancel_thumbnail_build()
             self._thumb_photos = []
             self._thumb_rects = []
         else:
             # 打开缩略图：重建
             self._thumbs_visible = True
+            self.thumbs_frame.pack(side="bottom", fill="x", before=self.status)
             self._build_thumbnails()
 
     def _hide_ui(self):
@@ -916,7 +924,7 @@ class ComicViewer(tk.Tk):
         if self.toolbar_outer.winfo_manager():
             self.toolbar_outer.pack_forget()
         self.status.pack_forget()
-        self.thumbs.pack_forget()
+        self.thumbs_frame.pack_forget()
         self.video_bar.pack_forget()
         # 切换内容区：视频面/画布互斥显示
         if self.is_video and self.video_panel.winfo_manager():
@@ -930,11 +938,11 @@ class ComicViewer(tk.Tk):
         """恢复全部 UI：工具栏 + 状态栏 + 缩略图 + 视频条，并按需要重绘画面。"""
         if self._ui_hidden:
             self._ui_hidden = False
-            if self.toolbar_outer.winfo_manager():
-                self.toolbar_outer.pack(side="top", fill="x", before=self.canvas)
+            if not self.toolbar_outer.winfo_manager():
+                self.toolbar_outer.pack(side="top", fill="x", before=self.content)
             self.status.pack(side="bottom", fill="x")
             if self._thumbs_visible:
-                self.thumbs.pack(side="bottom", fill="x", before=self.status)
+                self.thumbs_frame.pack(side="bottom", fill="x", before=self.status)
             if self.is_video:
                 self.video_bar.pack(side="bottom", fill="x", before=self.status)
                 if self.video_panel.winfo_manager():
@@ -945,9 +953,10 @@ class ComicViewer(tk.Tk):
 
     def _after_ui_ready(self):
         """UI 恢复、布局稳定后，按进入隐藏前的状态重做适配。"""
-        self.after_cancel(self._after_ui_ready)
-        self._ui_after_ready = False
-        self._do_ui_after_ready()
+        if self.is_video:
+            self._refresh_video_hwnd()
+        else:
+            self._do_resize()
 
     # ---------------- 事件 ----------------
     def _is_rtl(self):
@@ -1097,6 +1106,7 @@ class ComicViewer(tk.Tk):
         elif k == "Escape":
             if self.attributes("-fullscreen"):
                 self.attributes("-fullscreen", False)
+                self._show_ui()
 
     def _on_resize(self, e):
         if self._resize_after:
@@ -1117,12 +1127,31 @@ class ComicViewer(tk.Tk):
 
     # ---------------- 缩略图 ----------------
     def _build_thumbnails(self):
+        self._cancel_thumbnail_build()
         self.thumbs.delete("all")
         self._thumb_photos = []
         self._thumb_rects = []
+        self._thumb_build_sources = list(self.sources)
+        self._thumb_build_index = 0
+        self._thumb_build_x = 6
+        self._thumb_build_after = self.after_idle(self._build_thumbnail_batch)
+
+    def _cancel_thumbnail_build(self):
+        after_id = getattr(self, "_thumb_build_after", None)
+        if after_id:
+            self.after_cancel(after_id)
+            self._thumb_build_after = None
+
+    def _build_thumbnail_batch(self):
+        if not self._thumbs_visible or self._thumb_build_sources != self.sources:
+            self._thumb_build_after = None
+            return
+
         H, Y = 70, 48
-        x = 6
-        for i, src in enumerate(self.sources):
+        batch_end = min(self._thumb_build_index + 8, len(self._thumb_build_sources))
+        for i in range(self._thumb_build_index, batch_end):
+            src = self._thumb_build_sources[i]
+            x = self._thumb_build_x
             if self._is_video(src):
                 self._thumb_photos.append(None)
                 self.thumbs.create_rectangle(x, Y - H / 2, x + 80, Y + H / 2,
@@ -1130,7 +1159,7 @@ class ComicViewer(tk.Tk):
                 self.thumbs.create_text(x + 40, Y, text="▶", fill=ACCENT,
                                         font=("Segoe UI", 18), tags=("thumb", "t%d" % i))
                 self._thumb_rects.append((x, x + 80))
-                x += 80 + 8
+                self._thumb_build_x += 80 + 8
                 continue
             ph = None
             try:
@@ -1151,8 +1180,14 @@ class ComicViewer(tk.Tk):
                                              fill="#333", tags=("thumb", "t%d" % i))
                 w = 48
             self._thumb_rects.append((x, x + w))
-            x += w + 8
-        self.thumbs.configure(scrollregion=(0, 0, x + 6, 96))
+            self._thumb_build_x += w + 8
+
+        self._thumb_build_index = batch_end
+        self.thumbs.configure(scrollregion=(0, 0, self._thumb_build_x + 6, 96))
+        if batch_end < len(self._thumb_build_sources):
+            self._thumb_build_after = self.after_idle(self._build_thumbnail_batch)
+        else:
+            self._thumb_build_after = None
 
     def _on_thumb_click(self, e):
         cx = self.thumbs.canvasx(e.x)
