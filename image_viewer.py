@@ -38,6 +38,7 @@ import re
 import math
 import time
 import json
+import queue
 import hashlib
 import zipfile
 import tempfile
@@ -135,6 +136,11 @@ class ComicViewer(tk.Tk):
         self._video_cache = {}
         self._tmp_dir = tempfile.mkdtemp(prefix="image_viewer_")
 
+        self.caption_enabled = False
+        self._captioner = None
+        self._caption_poll_after = None
+        self._caption_await_after = None
+
         self._build_ui()
         self._bind_events()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -230,6 +236,11 @@ class ComicViewer(tk.Tk):
         self.vol = ttk.Scale(self.video_bar, from_=0, to=100, orient="horizontal", command=self._on_volume)
         self.vol.set(100)
         self.vol.pack(side="left", fill="x", padx=6, ipadx=40)
+        self.caption_btn = self._state_btn(self.video_bar, "CC 字幕", self.toggle_captions)
+
+        self.caption_label = tk.Label(self.video_panel, text="", bg="#000000", fg="#ffffff",
+                                      font=("Microsoft YaHei", 14), wraplength=900, justify="center",
+                                      padx=10, pady=4)
 
         self._sync_toggle_buttons()
 
@@ -536,6 +547,10 @@ class ComicViewer(tk.Tk):
             media = self.vlc_instance.media_new(path)
             self.player.set_media(media)
             self.player.set_hwnd(self.video_panel.winfo_id())
+            # 字幕的 audio_set_format/audio_set_callbacks 必须在 play() 之前设置，
+            # 否则原生音频输出已经起来了，回调不一定能接管。
+            if self.caption_enabled:
+                self._start_captions()
             self.player.play()
             self.player.audio_set_volume(int(self.vol.get()))
             self.is_video = True
@@ -552,6 +567,7 @@ class ComicViewer(tk.Tk):
         if self._video_timer:
             self.after_cancel(self._video_timer)
             self._video_timer = None
+        self._stop_captions()
         if self.player:
             try:
                 self.player.stop()
@@ -638,6 +654,70 @@ class ComicViewer(tk.Tk):
         except Exception:
             pass
         self._video_timer = self.after(500, self._update_video_time_loop)
+
+    def toggle_captions(self):
+        self.caption_enabled = not self.caption_enabled
+        self._sync_toggle_buttons()
+        if self.is_video:
+            if self.caption_enabled:
+                self._start_captions()
+            else:
+                self._stop_captions()
+
+    def _start_captions(self):
+        if self._captioner is None:
+            from caption_engine import LiveCaptioner
+            self._captioner = LiveCaptioner()
+        self.caption_label.place(in_=self.video_panel, relx=0.5, rely=0.94, anchor="s")
+        self.caption_label.configure(text="字幕模型加载中…")
+        self._captioner.start_async(self.player)
+        if self._caption_await_after:
+            self.after_cancel(self._caption_await_after)
+        self._caption_await_after = self.after(150, self._await_caption_start)
+
+    def _await_caption_start(self):
+        self._caption_await_after = None
+        if self._captioner is None:
+            return
+        result = self._captioner.poll()
+        if result is None:
+            self._caption_await_after = self.after(150, self._await_caption_start)
+            return
+        ok, error = result
+        if not ok:
+            self.status.configure(text=error or "字幕启动失败")
+            self.caption_enabled = False
+            self._sync_toggle_buttons()
+            self.caption_label.place_forget()
+            return
+        self.caption_label.configure(text="")
+        self._poll_captions()
+
+    def _stop_captions(self):
+        if self._caption_await_after:
+            self.after_cancel(self._caption_await_after)
+            self._caption_await_after = None
+        if self._caption_poll_after:
+            self.after_cancel(self._caption_poll_after)
+            self._caption_poll_after = None
+        if self._captioner is not None:
+            self._captioner.stop()
+        self.caption_label.place_forget()
+
+    def _poll_captions(self):
+        self._caption_poll_after = None
+        if self._captioner is None or not self.is_video:
+            return
+        latest = None
+        try:
+            while True:
+                _kind, text = self._captioner.queue.get_nowait()
+                latest = text
+        except queue.Empty:
+            pass
+        if latest is not None:
+            self.caption_label.configure(text=latest)
+        self._caption_poll_after = self.after(150, self._poll_captions)
 
     @staticmethod
     def _fmt_time(ms):
@@ -868,6 +948,8 @@ class ComicViewer(tk.Tk):
                                 fg="#fff" if self.trim_mode else FG)
         self.auto_btn.configure(bg=ACCENT if self.auto_flip else BTN_BG,
                                 fg="#fff" if self.auto_flip else FG)
+        self.caption_btn.configure(bg=ACCENT if self.caption_enabled else BTN_BG,
+                                   fg="#fff" if self.caption_enabled else FG)
 
     def zoom_at(self, x, y, factor):
         if not self.orig:

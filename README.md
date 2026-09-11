@@ -18,8 +18,15 @@
 ```bash
 pip install Pillow        # 必需
 pip install python-vlc    # 可选：播放视频需要（另需安装 VLC）
+pip install vosk sounddevice   # 可选：视频实时字幕需要
 python image_viewer.py
 ```
+
+视频页可点击 **CC 字幕** 开启本地实时字幕（基于 vosk，离线识别，无需联网）。默认从
+`C:\models\vosk-model-small-en-us-0.15` 加载模型，可用环境变量 `VOSK_MODEL_PATH`
+指定其他模型路径。开启字幕后播放音质会降到 16kHz 单声道（vosk 识别要求的格式）。
+关闭字幕后音量滑块可能需要重新调整才能生效（VLC 的原生音量控制在字幕开启期间不
+生效，因为音频输出被接管了）。
 
 ### 网页版
 
