@@ -57,6 +57,11 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 ZIP_EXTS = {".zip", ".cbz"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
 
+CAPTION_LANGS = ["中文", "英文", "日语"]
+CAPTION_LANG_CODES = {"中文": "zh", "英文": "en", "日语": "ja"}
+CAPTION_MODES = ["原声", "中文翻译"]
+CAPTION_MODE_CODES = {"原声": "original", "中文翻译": "translate"}
+
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image_viewer.json")
 
 BG = "#14161a"
@@ -237,6 +242,16 @@ class ComicViewer(tk.Tk):
         self.vol.set(100)
         self.vol.pack(side="left", fill="x", padx=6, ipadx=40)
         self.caption_btn = self._state_btn(self.video_bar, "CC 字幕", self.toggle_captions)
+        self.caption_lang_var = tk.StringVar(value="英文")
+        self.caption_lang_combo = ttk.Combobox(self.video_bar, textvariable=self.caption_lang_var,
+                                               values=CAPTION_LANGS, state="readonly", width=5)
+        self.caption_lang_combo.pack(side="left", padx=(8, 2))
+        self.caption_lang_combo.bind("<<ComboboxSelected>>", self._on_caption_lang_change)
+        self.caption_mode_var = tk.StringVar(value="原声")
+        self.caption_mode_combo = ttk.Combobox(self.video_bar, textvariable=self.caption_mode_var,
+                                               values=CAPTION_MODES, state="readonly", width=7)
+        self.caption_mode_combo.pack(side="left", padx=2)
+        self.caption_mode_combo.bind("<<ComboboxSelected>>", self._on_caption_mode_change)
 
         self.caption_label = tk.Label(self.video_panel, text="", bg="#000000", fg="#ffffff",
                                       font=("Microsoft YaHei", 14), wraplength=900, justify="center",
@@ -666,10 +681,30 @@ class ComicViewer(tk.Tk):
             else:
                 self._stop_captions()
 
+    def _on_caption_lang_change(self, event=None):
+        if self.caption_lang_var.get() == "中文":
+            self.caption_mode_var.set("原声")
+            self.caption_mode_combo.configure(state="disabled")
+        else:
+            self.caption_mode_combo.configure(state="readonly")
+        self._restart_captions_if_active()
+
+    def _on_caption_mode_change(self, event=None):
+        self._restart_captions_if_active()
+
+    def _restart_captions_if_active(self):
+        if self.caption_enabled and self.is_video:
+            self._stop_captions()
+            self._start_captions()
+
     def _start_captions(self):
-        if self._captioner is None:
+        lang = CAPTION_LANG_CODES.get(self.caption_lang_var.get(), "en")
+        mode = CAPTION_MODE_CODES.get(self.caption_mode_var.get(), "original")
+        if (self._captioner is None
+                or self._captioner.source_lang != lang
+                or self._captioner.caption_mode != mode):
             from caption_engine import LiveCaptioner
-            self._captioner = LiveCaptioner()
+            self._captioner = LiveCaptioner(source_lang=lang, caption_mode=mode)
         self.caption_label.place(in_=self.video_panel, relx=0.5, rely=0.94, anchor="s")
         self.caption_label.configure(text="字幕模型加载中…")
         self._captioner.start_async(self.player)

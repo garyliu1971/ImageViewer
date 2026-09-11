@@ -18,15 +18,30 @@
 ```bash
 pip install Pillow        # 必需
 pip install python-vlc    # 可选：播放视频需要（另需安装 VLC）
-pip install vosk sounddevice   # 可选：视频实时字幕需要
+pip install vosk sounddevice          # 可选：视频实时字幕需要
+pip install ctranslate2 sentencepiece # 可选：字幕翻译成中文需要
 python image_viewer.py
 ```
 
-视频页可点击 **CC 字幕** 开启本地实时字幕（基于 vosk，离线识别，无需联网）。默认从
-`C:\models\vosk-model-small-en-us-0.15` 加载模型，可用环境变量 `VOSK_MODEL_PATH`
-指定其他模型路径。开启字幕后播放音质会降到 16kHz 单声道（vosk 识别要求的格式）。
-关闭字幕后音量滑块可能需要重新调整才能生效（VLC 的原生音量控制在字幕开启期间不
-生效，因为音频输出被接管了）。
+视频页可点击 **CC 字幕** 开启本地实时字幕（基于 vosk，离线识别，无需联网），旁边
+两个下拉框选**音频语言**（中文 / 英文 / 日语）和**字幕**（原声 / 中文翻译，选中文
+音频时这个选项不可用）。默认模型路径：
+
+| 语言 | 默认路径 | 环境变量覆盖 |
+|------|----------|--------------|
+| 中文 | `C:\models\vosk-model-small-cn-0.22` | `VOSK_MODEL_PATH_ZH` |
+| 英文 | `C:\models\vosk-model-small-en-us-0.15` | `VOSK_MODEL_PATH_EN` |
+| 日语 | `C:\models\vosk-model-small-ja-0.22` | `VOSK_MODEL_PATH_JA` |
+
+翻译成中文用的是 [Argos Open Tech](https://www.argosopentech.com/) 发布的离线翻译
+模型（ctranslate2 格式），默认放在 `C:\models\argos\en_zh` 和 `C:\models\argos\ja_en`
+（日语没有直接的日译中模型，走 日→英→中 两跳），可用环境变量 `ARGOS_MODELS_DIR`
+指定其他目录。翻译只在识别出一整句（不是逐字）时才做一次，所以翻译字幕会比原声
+字幕多一点延迟，这跟 YouTube 自动翻译字幕的实际体验一致。
+
+开启字幕后播放音质会降到 16kHz 单声道（vosk 识别要求的格式）。关闭字幕后音量滑块
+可能需要重新调整才能生效（VLC 的原生音量控制在字幕开启期间不生效，因为音频输出
+被接管了）。
 
 ### 网页版
 

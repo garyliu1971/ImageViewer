@@ -15,6 +15,12 @@ caption_engine.py -- 本地实时字幕引擎（桌面版视频播放用）
 避免卡住 Tk 主线程。VLC 的 audio_set_format / audio_set_callbacks / ctypes
 回调创建则必须留在调用方自己的线程上执行 -- 从别的线程调用会段错误 -- 所以
 由 poll() 在模型加载完成后同步做这最后一步（这部分很快，不会卡 UI）。
+
+支持三种音频语言（中文 / 英文 / 日语），以及"原声"或"翻译成中文"两种字幕
+模式。中文音频没有翻译选项（本身就是中文）。翻译只在识别出一整句（final）
+时才做一次 -- 逐字翻译每个 partial 既没必要也太慢；这意味着翻译模式下字幕
+会比原声模式多一点延迟（等一句话说完才出译文），这跟 YouTube 自动翻译字幕
+的实际体验是一致的。
 """
 from __future__ import annotations
 
@@ -25,15 +31,27 @@ import queue
 import threading
 
 SAMPLE_RATE = 16000
-DEFAULT_MODEL_PATH = r"C:\models\vosk-model-small-en-us-0.15"
+
+DEFAULT_MODEL_PATHS = {
+    "zh": r"C:\models\vosk-model-small-cn-0.22",
+    "en": r"C:\models\vosk-model-small-en-us-0.15",
+    "ja": r"C:\models\vosk-model-small-ja-0.22",
+}
+
+
+def _default_model_path(lang):
+    return os.environ.get("VOSK_MODEL_PATH_%s" % lang.upper()) or DEFAULT_MODEL_PATHS.get(lang)
 
 
 class LiveCaptioner:
-    def __init__(self, model_path=None):
-        self.model_path = model_path or os.environ.get("VOSK_MODEL_PATH", DEFAULT_MODEL_PATH)
+    def __init__(self, source_lang="en", caption_mode="original", model_path=None):
+        self.source_lang = source_lang
+        self.caption_mode = caption_mode  # "original" | "translate"
+        self.model_path = model_path or _default_model_path(source_lang)
         self.queue = queue.Queue()
         self.error = None
         self._model = None
+        self._translator = None
         self._recognizer = None
         self._out_stream = None
         self._play_cb = None
@@ -44,13 +62,16 @@ class LiveCaptioner:
         self._start_result = None
 
     def available(self):
-        return os.path.isdir(self.model_path)
+        return bool(self.model_path) and os.path.isdir(self.model_path)
 
     def _load_model(self):
         if self._model is None:
             import vosk
             vosk.SetLogLevel(-1)
             self._model = vosk.Model(model_path=self.model_path)
+        if self.caption_mode == "translate" and self._translator is None and self.source_lang != "zh":
+            import translation_engine
+            self._translator = translation_engine.build_translator(self.source_lang, "zh")
         return self._model
 
     def start_async(self, player):
@@ -64,7 +85,8 @@ class LiveCaptioner:
         self.error = None
         if not self.available():
             self.error = (
-                "未找到字幕模型：%s（可设置环境变量 VOSK_MODEL_PATH 指定路径）" % self.model_path
+                "未找到 %s 字幕模型：%s（可设置环境变量 VOSK_MODEL_PATH_%s 指定路径）"
+                % (self.source_lang, self.model_path, self.source_lang.upper())
             )
             self._start_result = (False, self.error)
             return
@@ -189,10 +211,30 @@ class LiveCaptioner:
             if recognizer.AcceptWaveform(buf):
                 text = json.loads(recognizer.Result()).get("text", "")
                 if text:
-                    self.queue.put(("final", text))
-            else:
+                    self._emit_final(text)
+            elif self.caption_mode == "original":
+                # 翻译模式下不展示原文 partial，等一句说完直接出译文，
+                # 避免字幕框里外语原文和中文译文来回跳。
                 text = json.loads(recognizer.PartialResult()).get("partial", "")
                 if text:
-                    self.queue.put(("partial", text))
+                    self.queue.put(("partial", self._display_text(text, self.source_lang == "zh")))
         except Exception:
             pass
+
+    def _emit_final(self, text):
+        is_chinese = self.source_lang == "zh"
+        if self.caption_mode == "translate" and self._translator is not None:
+            try:
+                translated = self._translator.translate(text)
+            except Exception:
+                translated = None
+            if translated:
+                text = translated
+                is_chinese = True  # 目标语言固定是中文
+        self.queue.put(("final", self._display_text(text, is_chinese)))
+
+    @staticmethod
+    def _display_text(text, is_chinese):
+        # vosk 中文模型输出的是空格分词（"火箭 正在 飞向"），中文书面习惯不加
+        # 空格，显示前去掉；英文/日文模型输出的词间空格要保留。
+        return text.replace(" ", "") if is_chinese else text
