@@ -59,8 +59,8 @@ VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", "
 
 CAPTION_LANGS = ["中文", "英文", "日语"]
 CAPTION_LANG_CODES = {"中文": "zh", "英文": "en", "日语": "ja"}
-CAPTION_MODES = ["原声", "中文翻译"]
-CAPTION_MODE_CODES = {"原声": "original", "中文翻译": "translate"}
+CAPTION_MODES = ["原声", "中文翻译", "AI 翻译"]
+CAPTION_MODE_CODES = {"原声": "original", "中文翻译": "translate", "AI 翻译": "ai_translate"}
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image_viewer.json")
 
@@ -201,6 +201,7 @@ class ComicViewer(tk.Tk):
         self._sep(self.toolbar)
         self._btn(self.toolbar, "▤", self.toggle_thumbs, tip="缩略图 (T)")
         self._btn(self.toolbar, "⛶", self.toggle_fullscreen, tip="全屏 (F)")
+        self._btn(self.toolbar, "⚙ AI翻译", self._open_ai_settings, tip="配置 AI 字幕翻译（DeepSeek / OpenAI / Qwen / Ollama）")
         self._btn(self.toolbar, "?", self.show_help, tip="帮助")
 
         # 状态栏
@@ -249,7 +250,7 @@ class ComicViewer(tk.Tk):
         self.caption_lang_combo.bind("<<ComboboxSelected>>", self._on_caption_lang_change)
         self.caption_mode_var = tk.StringVar(value="原声")
         self.caption_mode_combo = ttk.Combobox(self.video_bar, textvariable=self.caption_mode_var,
-                                               values=CAPTION_MODES, state="readonly", width=7)
+                                               values=CAPTION_MODES, state="readonly", width=9)
         self.caption_mode_combo.pack(side="left", padx=2)
         self.caption_mode_combo.bind("<<ComboboxSelected>>", self._on_caption_mode_change)
 
@@ -736,7 +737,10 @@ class ComicViewer(tk.Tk):
                 or self._captioner.source_lang != lang
                 or self._captioner.caption_mode != mode):
             from caption_engine import LiveCaptioner
-            self._captioner = LiveCaptioner(source_lang=lang, caption_mode=mode)
+            self._captioner = LiveCaptioner(
+                source_lang=lang, caption_mode=mode,
+                ai_cfg=self._config.get("_ai_", {}),
+            )
         self.caption_label.configure(text="字幕模型加载中…")
         self.caption_window.deiconify()
         self._reposition_caption_window()
@@ -774,6 +778,79 @@ class ComicViewer(tk.Tk):
         if self._captioner is not None:
             self._captioner.stop()
         self.caption_window.withdraw()
+
+    def _open_ai_settings(self):
+        from caption_engine import AI_PRESETS
+        ai = self._config.get("_ai_", {})
+        dlg = tk.Toplevel(self)
+        dlg.title("AI 翻译设置")
+        dlg.configure(bg=PANEL)
+        dlg.transient(self)
+        dlg.resizable(False, False)
+
+        frm = tk.Frame(dlg, bg=PANEL, padx=14, pady=12)
+        frm.pack(fill="both", expand=True)
+
+        def row(i, text):
+            tk.Label(frm, text=text, bg=PANEL, fg=FG,
+                     font=("Microsoft YaHei", 9)).grid(row=i, column=0, sticky="w", pady=4)
+
+        row(0, "服务商预设")
+        preset_var = tk.StringVar(value="自定义")
+        preset_combo = ttk.Combobox(frm, textvariable=preset_var,
+                                    values=list(AI_PRESETS.keys()), state="readonly", width=16)
+        preset_combo.grid(row=0, column=1, sticky="ew", pady=4, padx=(10, 0))
+
+        row(1, "API Key")
+        key_var = tk.StringVar(value=ai.get("api_key", ""))
+        tk.Entry(frm, textvariable=key_var, show="*", width=42).grid(
+            row=1, column=1, sticky="ew", pady=4, padx=(10, 0))
+
+        row(2, "API Base")
+        base_var = tk.StringVar(value=ai.get("api_base", "https://api.deepseek.com"))
+        tk.Entry(frm, textvariable=base_var, width=42).grid(
+            row=2, column=1, sticky="ew", pady=4, padx=(10, 0))
+
+        row(3, "模型")
+        model_var = tk.StringVar(value=ai.get("model", "deepseek-chat"))
+        tk.Entry(frm, textvariable=model_var, width=42).grid(
+            row=3, column=1, sticky="ew", pady=4, padx=(10, 0))
+
+        def apply_preset(_e=None):
+            b, m = AI_PRESETS.get(preset_var.get(), ("", ""))
+            if b:
+                base_var.set(b)
+            if m:
+                model_var.set(m)
+
+        preset_combo.bind("<<ComboboxSelected>>", apply_preset)
+        cur_base = ai.get("api_base", "").rstrip("/")
+        for name, (b, _m) in AI_PRESETS.items():
+            if b and b.rstrip("/") == cur_base:
+                preset_var.set(name)
+                break
+
+        def save():
+            self._config["_ai_"] = {
+                "api_key": key_var.get().strip(),
+                "api_base": base_var.get().strip().rstrip("/"),
+                "model": model_var.get().strip(),
+            }
+            self._save_config()
+            dlg.destroy()
+
+        btns = tk.Frame(frm, bg=PANEL)
+        btns.grid(row=4, column=0, columnspan=2, pady=(12, 0))
+        tk.Button(btns, text="保存", command=save, bg=ACCENT, fg="#fff",
+                  relief="flat", padx=16, cursor="hand2").pack(side="left", padx=4)
+        tk.Button(btns, text="取消", command=dlg.destroy, bg=BTN_BG, fg=FG,
+                  relief="flat", padx=16, cursor="hand2").pack(side="left", padx=4)
+
+        dlg.grab_set()
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry("+%d+%d" % (max(0, x), max(0, y)))
 
     def _poll_captions(self):
         self._caption_poll_after = None

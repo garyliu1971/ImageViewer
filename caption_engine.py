@@ -29,6 +29,7 @@ import json
 import os
 import queue
 import threading
+import urllib.request
 
 SAMPLE_RATE = 16000
 
@@ -38,16 +39,48 @@ DEFAULT_MODEL_PATHS = {
     "ja": r"C:\models\vosk-model-small-ja-0.22",
 }
 
+AI_PRESETS = {
+    "DeepSeek": ("https://api.deepseek.com", "deepseek-chat"),
+    "OpenAI": ("https://api.openai.com/v1", "gpt-4o-mini"),
+    "通义千问": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
+    "本地 Ollama": ("http://localhost:11434/v1", "qwen2.5:7b"),
+    "自定义": ("", ""),
+}
+
+
+def _llm_translate(text, cfg):
+    """OpenAI 兼容接口翻译成简体中文（阻塞调用，须在后台线程跑）。"""
+    if not cfg or not cfg.get("api_key"):
+        raise RuntimeError("未配置 AI 翻译 API Key")
+    payload = {
+        "model": cfg.get("model", "deepseek-chat"),
+        "messages": [
+            {"role": "system",
+             "content": "你是字幕翻译，把输入内容翻译成简体中文，只输出译文，不要解释。"},
+            {"role": "user", "content": text},
+        ],
+        "temperature": 0.2,
+    }
+    req = urllib.request.Request(
+        cfg["api_base"].rstrip("/") + "/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": "Bearer " + cfg["api_key"]},
+    )
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())["choices"][0]["message"]["content"].strip()
+
 
 def _default_model_path(lang):
     return os.environ.get("VOSK_MODEL_PATH_%s" % lang.upper()) or DEFAULT_MODEL_PATHS.get(lang)
 
 
 class LiveCaptioner:
-    def __init__(self, source_lang="en", caption_mode="original", model_path=None):
+    def __init__(self, source_lang="en", caption_mode="original", model_path=None, ai_cfg=None):
         self.source_lang = source_lang
-        self.caption_mode = caption_mode  # "original" | "translate"
+        self.caption_mode = caption_mode  # "original" | "translate" | "ai_translate"
         self.model_path = model_path or _default_model_path(source_lang)
+        self.ai_cfg = ai_cfg or {}
         self.queue = queue.Queue()
         self.error = None
         self._model = None
@@ -60,6 +93,8 @@ class LiveCaptioner:
         self._pending_player = None
         self._loading = False
         self._start_result = None
+        self._ai_queue = None
+        self._ai_thread = None
         # VLC 的音频回调在它自己的线程上跑；stop() 在 UI 线程上跑。不加锁的话
         # stop() 可能在回调线程还在用 _out_stream/_recognizer 的时候把它们关掉/
         # 清空，PortAudio 流被并发 close()+write() 会卡死，进而把 player.stop()
@@ -76,9 +111,18 @@ class LiveCaptioner:
             import vosk
             vosk.SetLogLevel(-1)
             self._model = vosk.Model(model_path=self.model_path)
-        if self.caption_mode == "translate" and self._translator is None and self.source_lang != "zh":
-            import translation_engine
-            self._translator = translation_engine.build_translator(self.source_lang, "zh")
+        if self.caption_mode in ("translate", "ai_translate") and self._translator is None and self.source_lang != "zh":
+            try:
+                import translation_engine
+                self._translator = translation_engine.build_translator(self.source_lang, "zh")
+            except Exception:
+                if self.caption_mode == "translate":
+                    raise
+                self._translator = None  # ai_translate 模式下 Argos 只作兜底，缺失可继续
+        if self.caption_mode == "ai_translate" and self._ai_queue is None:
+            self._ai_queue = queue.Queue()
+            self._ai_thread = threading.Thread(target=self._ai_worker, daemon=True)
+            self._ai_thread.start()
         return self._model
 
     def start_async(self, player):
@@ -179,6 +223,12 @@ class LiveCaptioner:
                     pass
 
     def stop(self):
+        # 通知 AI 翻译线程退出（daemon 线程，不阻塞退出）
+        if self._ai_queue is not None:
+            try:
+                self._ai_queue.put(None)
+            except Exception:
+                pass
         # 不主动调 audio_set_callbacks(None, ...) 去解绑 -- 实测这样做之后紧
         # 跟着的 player.stop() 会在 libvlc 内部崩掉（access violation），大概
         # 是把 libvlc 的音频输出内部状态搞乱了。改成什么都不做，让调用方随后
@@ -247,7 +297,20 @@ class LiveCaptioner:
 
     def _emit_final(self, text):
         is_chinese = self.source_lang == "zh"
-        if self.caption_mode == "translate" and self._translator is not None:
+        if self.caption_mode == "ai_translate" and not is_chinese:
+            # 异步 AI 翻译：不阻塞音频线程
+            if self._ai_queue is not None and self.ai_cfg.get("api_key"):
+                self._ai_queue.put((text, is_chinese))
+                return
+            # 无 API Key → 回退 Argos
+            if self._translator is not None:
+                try:
+                    translated = self._translator.translate(text)
+                except Exception:
+                    translated = None
+                if translated:
+                    text, is_chinese = translated, True
+        elif self.caption_mode == "translate" and self._translator is not None:
             try:
                 translated = self._translator.translate(text)
             except Exception:
@@ -256,6 +319,27 @@ class LiveCaptioner:
                 text = translated
                 is_chinese = True  # 目标语言固定是中文
         self.queue.put(("final", self._display_text(text, is_chinese)))
+
+    def _ai_worker(self):
+        """后台线程：消费待翻译句子，调 LLM，结果写回字幕队列。"""
+        while True:
+            item = self._ai_queue.get()
+            if item is None:
+                break
+            text, is_chinese = item
+            try:
+                translated = _llm_translate(text, self.ai_cfg)
+            except Exception:
+                translated = None
+            if not translated and self._translator is not None:
+                try:
+                    translated = self._translator.translate(text)
+                except Exception:
+                    translated = None
+            if translated:
+                self.queue.put(("final", self._display_text(translated, True)))
+            else:
+                self.queue.put(("final", self._display_text(text, is_chinese)))
 
     @staticmethod
     def _display_text(text, is_chinese):
