@@ -544,7 +544,12 @@ class ComicViewer(tk.Tk):
         try:
             import vlc
             self.vlc = vlc
-            self.vlc_instance = vlc.Instance()
+            # 关掉硬件加速解码（D3D11）：这台机器上开字幕时 stop() 会在 libvlc
+            # 内部卡死不返回，日志里能看到 D3D11 vout 本身也报过错
+            # ("SetThumbNailClip failed")，怀疑是这张 GPU/驱动跟 VLC 的硬件
+            # 加速视频输出路径收尾时的同步有问题，跟音频回调无关。软解可以
+            # 绕开。
+            self.vlc_instance = vlc.Instance(["--avcodec-hw=none"])
             self.player = self.vlc_instance.media_player_new()
             return True
         except Exception:

@@ -60,6 +60,13 @@ class LiveCaptioner:
         self._pending_player = None
         self._loading = False
         self._start_result = None
+        # VLC 的音频回调在它自己的线程上跑；stop() 在 UI 线程上跑。不加锁的话
+        # stop() 可能在回调线程还在用 _out_stream/_recognizer 的时候把它们关掉/
+        # 清空，PortAudio 流被并发 close()+write() 会卡死，进而把 player.stop()
+        # 也一起拖死（复现过：open_folder 切文件时主线程卡在
+        # libvlc_media_player_stop 里不返回）。这个锁保证 stop() 会等当前正在
+        # 跑的回调跑完再拆资源。
+        self._callback_lock = threading.Lock()
 
     def available(self):
         return bool(self.model_path) and os.path.isdir(self.model_path)
@@ -157,31 +164,45 @@ class LiveCaptioner:
         """Clears the recognizer's rolling context. Call this whenever the
         player seeks -- otherwise the recognizer keeps decoding new audio
         against a hypothesis built from audio right before the jump, and
-        captions come out garbled for a while after every seek."""
-        recognizer = self._recognizer
-        if recognizer is not None:
-            try:
-                recognizer.Reset()
-            except Exception:
-                pass
+        captions come out garbled for a while after every seek.
+
+        VLC can also invoke this (via the flush callback) from a different
+        thread than the play callback, concurrently with it -- vosk's
+        KaldiRecognizer isn't safe to call from two threads at once, so this
+        must take the same lock _on_audio_play holds while using it."""
+        with self._callback_lock:
+            recognizer = self._recognizer
+            if recognizer is not None:
+                try:
+                    recognizer.Reset()
+                except Exception:
+                    pass
 
     def stop(self):
-        if self._player is not None:
-            try:
-                self._player.audio_set_callbacks(None, None, None, None, None, None)
-            except Exception:
-                pass
+        # 不主动调 audio_set_callbacks(None, ...) 去解绑 -- 实测这样做之后紧
+        # 跟着的 player.stop() 会在 libvlc 内部崩掉（access violation），大概
+        # 是把 libvlc 的音频输出内部状态搞乱了。改成什么都不做，让调用方随后
+        # 自己的 player.stop() 去处理 -- 那之后 VLC 不会再调用这个回调，我们
+        # 也不清空 _play_cb/_flush_cb（万一 libvlc 内部还留着指向它们的指针，
+        # 提前被 Python 回收就是野指针）。
         self._player = None
-        self._play_cb = None
-        self._flush_cb = None
-        if self._out_stream is not None:
-            try:
-                self._out_stream.stop()
-                self._out_stream.close()
-            except Exception:
-                pass
-            self._out_stream = None
-        self._recognizer = None
+        # 等任何正在执行的回调跑完，再拆 _out_stream/_recognizer -- 见 __init__
+        # 里 _callback_lock 的注释。
+        with self._callback_lock:
+            if self._out_stream is not None:
+                try:
+                    # .stop() waits for buffered audio to drain before
+                    # returning; on this sounddevice/PortAudio build that
+                    # wait reliably hung for 10s+ and then crashed the
+                    # process with an access violation. .abort() discards
+                    # the buffer and returns immediately instead -- fine
+                    # here since we're tearing the stream down anyway.
+                    self._out_stream.abort()
+                    self._out_stream.close()
+                except Exception:
+                    pass
+                self._out_stream = None
+            self._recognizer = None
         while True:
             try:
                 self.queue.get_nowait()
@@ -197,29 +218,32 @@ class LiveCaptioner:
         except Exception:
             return
 
-        out_stream = self._out_stream
-        if out_stream is not None:
+        # 拿锁再碰 _out_stream/_recognizer -- 见 __init__ 里的注释。锁住的这段
+        # 只做音频写入 + vosk 识别（+ 偶尔一次翻译），不会长到卡住 stop()。
+        with self._callback_lock:
+            out_stream = self._out_stream
+            if out_stream is not None:
+                try:
+                    out_stream.write(buf)
+                except Exception:
+                    pass
+
+            recognizer = self._recognizer
+            if recognizer is None:
+                return
             try:
-                out_stream.write(buf)
+                if recognizer.AcceptWaveform(buf):
+                    text = json.loads(recognizer.Result()).get("text", "")
+                    if text:
+                        self._emit_final(text)
+                elif self.caption_mode == "original":
+                    # 翻译模式下不展示原文 partial，等一句说完直接出译文，
+                    # 避免字幕框里外语原文和中文译文来回跳。
+                    text = json.loads(recognizer.PartialResult()).get("partial", "")
+                    if text:
+                        self.queue.put(("partial", self._display_text(text, self.source_lang == "zh")))
             except Exception:
                 pass
-
-        recognizer = self._recognizer
-        if recognizer is None:
-            return
-        try:
-            if recognizer.AcceptWaveform(buf):
-                text = json.loads(recognizer.Result()).get("text", "")
-                if text:
-                    self._emit_final(text)
-            elif self.caption_mode == "original":
-                # 翻译模式下不展示原文 partial，等一句说完直接出译文，
-                # 避免字幕框里外语原文和中文译文来回跳。
-                text = json.loads(recognizer.PartialResult()).get("partial", "")
-                if text:
-                    self.queue.put(("partial", self._display_text(text, self.source_lang == "zh")))
-        except Exception:
-            pass
 
     def _emit_final(self, text):
         is_chinese = self.source_lang == "zh"
