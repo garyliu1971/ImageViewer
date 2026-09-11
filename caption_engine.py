@@ -33,6 +33,21 @@ import urllib.request
 
 SAMPLE_RATE = 16000
 
+# 输出流每次写入帧数（16kHz 下约 32ms）。显式给出低延迟 + 小 blocksize，
+# 避免 sounddevice 默认 latency='high' 开超大缓冲，导致出声明显滞后。
+OUT_BLOCKSIZE = 512
+
+# 识别队列上限（按音频帧计）。识别线程若偶尔跟不上实时，只会丢帧降级字幕，
+# 绝不阻塞音频回调、拖累出声；有上限也保证字幕延迟不会无限累积。
+PCM_QUEUE_MAX = 64
+
+# 识别队列里的 reset 标记：seek/flush 时清空 vosk 的识别上下文。
+_RESET = object()
+
+# 防止 ctypes 回调对象被垃圾回收后 libvlc 仍持有其函数指针、导致野指针崩溃。
+# 回调创建后 append 到这里，进程存活期间一直持有引用。
+_CALLBACK_KEEPALIVE = []
+
 DEFAULT_MODEL_PATHS = {
     "zh": r"C:\models\vosk-model-small-cn-0.22",
     "en": r"C:\models\vosk-model-small-en-us-0.15",
@@ -94,14 +109,18 @@ class LiveCaptioner:
         self._pending_player = None
         self._loading = False
         self._start_result = None
-        self._ai_queue = None
-        self._ai_thread = None
+        self._trans_queue = None
+        self._trans_thread = None
+        self._pcm_queue = None
+        self._rec_thread = None
         # VLC 的音频回调在它自己的线程上跑；stop() 在 UI 线程上跑。不加锁的话
-        # stop() 可能在回调线程还在用 _out_stream/_recognizer 的时候把它们关掉/
-        # 清空，PortAudio 流被并发 close()+write() 会卡死，进而把 player.stop()
-        # 也一起拖死（复现过：open_folder 切文件时主线程卡在
-        # libvlc_media_player_stop 里不返回）。这个锁保证 stop() 会等当前正在
-        # 跑的回调跑完再拆资源。
+        # stop() 可能在回调线程还在写 _out_stream 的时候把它关掉，PortAudio 流
+        # 被并发 close()+write() 会卡死，进而把 player.stop() 也一起拖死（复现
+        # 过：open_folder 切文件时主线程卡在 libvlc_media_player_stop 里不返回）。
+        # 这个锁保证 stop() 会等当前正在跑的回调写完再拆流。
+        #
+        # vosk 识别（_recognizer）只由 _rec_worker 这一个线程碰，不跟回调线程
+        # 抢锁；stop() 先投递退出标记并 join _rec_thread，之后再安全置空。
         self._callback_lock = threading.Lock()
 
     def available(self):
@@ -120,10 +139,6 @@ class LiveCaptioner:
                 if self.caption_mode == "translate":
                     raise
                 self._translator = None  # ai_translate 模式下 Argos 只作兜底，缺失可继续
-        if self.caption_mode == "ai_translate" and self._ai_queue is None:
-            self._ai_queue = queue.Queue()
-            self._ai_thread = threading.Thread(target=self._ai_worker, daemon=True)
-            self._ai_thread.start()
         return self._model
 
     def start_async(self, player):
@@ -182,16 +197,33 @@ class LiveCaptioner:
             recognizer = vosk.KaldiRecognizer(self._model, SAMPLE_RATE)
             recognizer.SetWords(False)
 
-            out_stream = sd.RawOutputStream(samplerate=SAMPLE_RATE, channels=1, dtype="int16")
+            out_stream = sd.RawOutputStream(
+                samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                blocksize=OUT_BLOCKSIZE, latency="low")
             out_stream.start()
 
             play_cb = vlc.CallbackDecorators.AudioPlayCb(self._on_audio_play)
             flush_cb = vlc.CallbackDecorators.AudioFlushCb(self._on_audio_flush)
+            _CALLBACK_KEEPALIVE.append(play_cb)
+            _CALLBACK_KEEPALIVE.append(flush_cb)
 
             self._recognizer = recognizer
             self._out_stream = out_stream
             self._play_cb = play_cb
             self._flush_cb = flush_cb
+
+            # 识别线程：vosk 只在它自己的线程里跑，音频回调线程只负责把 PCM 丢进来。
+            self._pcm_queue = queue.Queue(maxsize=PCM_QUEUE_MAX)
+            self._rec_thread = threading.Thread(target=self._rec_worker, daemon=True)
+            self._rec_thread.start()
+
+            # 翻译线程：每次启动都确保在跑。stop() 会停掉它并置空 _trans_queue，
+            # 所以这里在重启（切视频/开关字幕）时必须重建，否则翻译结果没人消费。
+            if self.caption_mode in ("translate", "ai_translate") and self._trans_queue is None:
+                self._trans_queue = queue.Queue()
+                self._trans_thread = threading.Thread(target=self._trans_worker, daemon=True)
+                self._trans_thread.start()
+
             player.audio_set_format(b"S16N", SAMPLE_RATE, 1)
             # flush 是 VLC 自己在 seek/stop 时丢弃缓冲区的信号 -- 用它来清空识别器
             # 上下文，比在 UI 线程的 seek 事件里手动调 reset() 更准，能避免 UI 侧
@@ -211,25 +243,47 @@ class LiveCaptioner:
         against a hypothesis built from audio right before the jump, and
         captions come out garbled for a while after every seek.
 
-        VLC can also invoke this (via the flush callback) from a different
-        thread than the play callback, concurrently with it -- vosk's
-        KaldiRecognizer isn't safe to call from two threads at once, so this
-        must take the same lock _on_audio_play holds while using it."""
-        with self._callback_lock:
-            recognizer = self._recognizer
-            if recognizer is not None:
-                try:
-                    recognizer.Reset()
-                except Exception:
-                    pass
+        recognizer 现在只由 _rec_worker 拥有，所以这里不直接碰它，而是丢一个
+        _RESET 标记进队列、并顺手清掉 seek 前已排队但还没识别的旧音频帧。"""
+        pcm_queue = self._pcm_queue
+        if pcm_queue is None:
+            return
+        # 丢弃 seek 前积压的旧音频帧
+        while True:
+            try:
+                pcm_queue.get_nowait()
+            except queue.Empty:
+                break
+        try:
+            pcm_queue.put_nowait(_RESET)
+        except queue.Full:
+            pass
 
     def stop(self):
-        # 通知 AI 翻译线程退出（daemon 线程，不阻塞退出）
-        if self._ai_queue is not None:
+        # 通知翻译线程退出并清空引用（_finish_start 会在下次启动时重建它）。
+        trans_queue = self._trans_queue
+        trans_thread = self._trans_thread
+        if trans_queue is not None:
             try:
-                self._ai_queue.put(None)
+                trans_queue.put(None)
             except Exception:
                 pass
+        self._trans_queue = None
+        self._trans_thread = None
+        if trans_thread is not None and trans_thread is not threading.current_thread():
+            trans_thread.join(timeout=2.0)
+        # 通知识别线程退出并等它处理完当前这一帧 -- 之后才能安全置空 _recognizer。
+        pcm_queue = self._pcm_queue
+        rec_thread = self._rec_thread
+        if pcm_queue is not None:
+            try:
+                pcm_queue.put(None)
+            except Exception:
+                pass
+        self._rec_thread = None
+        self._pcm_queue = None
+        if rec_thread is not None and rec_thread is not threading.current_thread():
+            rec_thread.join(timeout=2.0)
         # 不主动调 audio_set_callbacks(None, ...) 去解绑 -- 实测这样做之后紧
         # 跟着的 player.stop() 会在 libvlc 内部崩掉（access violation），大概
         # 是把 libvlc 的音频输出内部状态搞乱了。改成什么都不做，让调用方随后
@@ -237,8 +291,8 @@ class LiveCaptioner:
         # 也不清空 _play_cb/_flush_cb（万一 libvlc 内部还留着指向它们的指针，
         # 提前被 Python 回收就是野指针）。
         self._player = None
-        # 等任何正在执行的回调跑完，再拆 _out_stream/_recognizer -- 见 __init__
-        # 里 _callback_lock 的注释。
+        # 等任何正在执行的回调写完，再拆 _out_stream -- 见 __init__ 里
+        # _callback_lock 的注释。
         with self._callback_lock:
             if self._out_stream is not None:
                 try:
@@ -269,8 +323,8 @@ class LiveCaptioner:
         except Exception:
             return
 
-        # 拿锁再碰 _out_stream/_recognizer -- 见 __init__ 里的注释。锁住的这段
-        # 只做音频写入 + vosk 识别（+ 偶尔一次翻译），不会长到卡住 stop()。
+        # 回调里只做「出声」这一件事，保持实时。vosk 识别不在这里做，而是把
+        # PCM 丢给 _rec_worker，避免识别耗时让音频回调跟不上实时节奏 → 滞后/卡顿。
         with self._callback_lock:
             out_stream = self._out_stream
             if out_stream is not None:
@@ -279,9 +333,46 @@ class LiveCaptioner:
                 except Exception:
                     pass
 
+        # 非阻塞投递；队列满说明识别暂时跟不上，丢这一帧降级字幕，绝不阻塞出声。
+        pcm_queue = self._pcm_queue
+        if pcm_queue is not None:
+            try:
+                pcm_queue.put_nowait(buf)
+            except queue.Full:
+                pass
+
+    def _rec_worker(self):
+        """识别线程：独占 vosk recognizer，逐帧解码音频，结果写回字幕队列。
+
+        音频回调线程和这个线程通过 _pcm_queue 解耦 -- 回调不碰 recognizer，
+        识别再慢也只会积压/丢帧，不会反过来拖慢音频回调导致出声滞后。
+
+        VLC 的音频回调一帧只有 ~26ms（约 42 次/秒），若每帧都调一次
+        AcceptWaveform，调用开销累积很高，视频软解 + 翻译 + UI 一起跑时识别
+        线程容易落后 → 丢帧 → 音频断档 → vosk 提前收句成「一两个字」。这里先
+        攒到约 100ms 再一次性喂给 vosk，把调用频率降到 ~10 次/秒，稳定跑赢实时。"""
+        pcm_queue = self._pcm_queue
+        acc = bytearray()
+        target = SAMPLE_RATE * 2 * 100 // 1000  # 16000Hz*2字节*0.1s = 3200 字节
+        while True:
+            item = pcm_queue.get()
+            if item is None:
+                break
             recognizer = self._recognizer
             if recognizer is None:
-                return
+                continue
+            if item is _RESET:
+                try:
+                    recognizer.Reset()
+                except Exception:
+                    pass
+                acc = bytearray()
+                continue
+            acc += item
+            if len(acc) < target:
+                continue
+            buf = bytes(acc)
+            acc = bytearray()
             try:
                 if recognizer.AcceptWaveform(buf):
                     text = json.loads(recognizer.Result()).get("text", "")
@@ -298,40 +389,30 @@ class LiveCaptioner:
 
     def _emit_final(self, text):
         is_chinese = self.source_lang == "zh"
-        if self.caption_mode == "ai_translate" and not is_chinese:
-            # 异步 AI 翻译：不阻塞音频线程
-            if self._ai_queue is not None and self.ai_cfg.get("api_key"):
-                self._ai_queue.put((text, is_chinese))
-                return
-            # 无 API Key → 回退 Argos
-            if self._translator is not None:
-                try:
-                    translated = self._translator.translate(text)
-                except Exception:
-                    translated = None
-                if translated:
-                    text, is_chinese = translated, True
-        elif self.caption_mode == "translate" and self._translator is not None:
-            try:
-                translated = self._translator.translate(text)
-            except Exception:
-                translated = None
-            if translated:
-                text = translated
-                is_chinese = True  # 目标语言固定是中文
+        need_translate = (self.caption_mode in ("translate", "ai_translate")) and not is_chinese
+        if need_translate and self._trans_queue is not None:
+            # 翻译（ctranslate2 / LLM）一律放到专用 Python 线程里做，绝不阻塞、
+            # 也绝不在 VLC 的音频回调线程里调用原生库 -- 否则可能野指针/非法指令崩溃。
+            self._trans_queue.put((text, is_chinese))
+            return
         self.queue.put(("final", self._display_text(text, is_chinese)))
 
-    def _ai_worker(self):
-        """后台线程：消费待翻译句子，调 LLM，结果写回字幕队列。"""
+    def _trans_worker(self):
+        """后台线程：消费待翻译句子，调 LLM / Argos，结果写回字幕队列。
+        所有 ctranslate2 与 LLM 调用都集中在这里（Python 线程），保证不在
+        VLC 音频回调线程里碰这些原生库。"""
+        trans_queue = self._trans_queue
         while True:
-            item = self._ai_queue.get()
+            item = trans_queue.get()
             if item is None:
                 break
             text, is_chinese = item
-            try:
-                translated = _llm_translate(text, self.ai_cfg)
-            except Exception:
-                translated = None
+            translated = None
+            if self.caption_mode == "ai_translate" and self.ai_cfg.get("api_key"):
+                try:
+                    translated = _llm_translate(text, self.ai_cfg)
+                except Exception:
+                    translated = None
             if not translated and self._translator is not None:
                 try:
                     translated = self._translator.translate(text)

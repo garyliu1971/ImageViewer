@@ -60,7 +60,15 @@ class ArgosHop:
         tokens = self._sp.encode(text, out_type=str)
         result = self._translator.translate_batch([tokens])
         out_text = self._sp.decode(result[0].hypotheses[0])
-        return out_text.replace("\u2581", "").strip()
+        # 去掉 sentencepiece 的空间标记 \u2581、Argos 的未知标记 ⁇ (\u2047)，以及
+        # 泄漏出来的 PUA 控制字符（U+E000–U+F8FF，例如 <unk> 对应的 \ue4c7/\ue6d4）。
+        # 这些字符在字体里没有字形或本身是“未知”标记，字幕里会渲染成 * 或 ?，
+        # 出现一串 ***？***。
+        out_text = "".join(
+            c for c in out_text
+            if c != "\u2581" and c != "\u2047" and not (0xE000 <= ord(c) <= 0xF8FF)
+        )
+        return out_text.strip()
 
 
 class ChainedTranslator:

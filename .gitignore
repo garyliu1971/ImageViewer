@@ -1,6 +1,9 @@
 # 阅读进度（运行时生成）
 image_viewer.json
 
+# 原生崩溃日志（faulthandler 运行时生成）
+crash.log
+
 # Python 缓存
 __pycache__/
 *.pyc

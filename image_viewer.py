@@ -1542,6 +1542,13 @@ class ComicViewer(tk.Tk):
 
 
 def main():
+    # 原生崩溃（非法指令/访问越界等）时把各线程 Python 栈写入 crash.log，便于定位。
+    try:
+        import faulthandler
+        crash_log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log")
+        faulthandler.enable(file=open(crash_log, "a", encoding="utf-8"))
+    except Exception:
+        pass
     app = ComicViewer()
     app.mainloop()
 
