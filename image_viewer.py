@@ -619,6 +619,8 @@ class ComicViewer(tk.Tk):
             length = self.player.get_length()
             if length > 0:
                 self.player.set_time(int(float(val) / 1000.0 * length))
+                if self._captioner is not None:
+                    self._captioner.reset()
         except Exception:
             pass
 

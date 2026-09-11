@@ -37,6 +37,7 @@ class LiveCaptioner:
         self._recognizer = None
         self._out_stream = None
         self._play_cb = None
+        self._flush_cb = None
         self._player = None
         self._pending_player = None
         self._loading = False
@@ -111,12 +112,17 @@ class LiveCaptioner:
             out_stream.start()
 
             play_cb = vlc.CallbackDecorators.AudioPlayCb(self._on_audio_play)
+            flush_cb = vlc.CallbackDecorators.AudioFlushCb(self._on_audio_flush)
 
             self._recognizer = recognizer
             self._out_stream = out_stream
             self._play_cb = play_cb
+            self._flush_cb = flush_cb
             player.audio_set_format(b"S16N", SAMPLE_RATE, 1)
-            player.audio_set_callbacks(play_cb, None, None, None, None, None)
+            # flush 是 VLC 自己在 seek/stop 时丢弃缓冲区的信号 -- 用它来清空识别器
+            # 上下文，比在 UI 线程的 seek 事件里手动调 reset() 更准，能避免 UI 侧
+            # 时机跟 VLC 内部丢弃缓冲区的时机没对齐、导致跳转后残留一两个旧词的问题。
+            player.audio_set_callbacks(play_cb, None, None, flush_cb, None, None)
             self._player = player
             self.error = None
             self._start_result = (True, None)
@@ -124,6 +130,18 @@ class LiveCaptioner:
             self.error = "字幕启动失败：%s" % exc
             self.stop()
             self._start_result = (False, self.error)
+
+    def reset(self):
+        """Clears the recognizer's rolling context. Call this whenever the
+        player seeks -- otherwise the recognizer keeps decoding new audio
+        against a hypothesis built from audio right before the jump, and
+        captions come out garbled for a while after every seek."""
+        recognizer = self._recognizer
+        if recognizer is not None:
+            try:
+                recognizer.Reset()
+            except Exception:
+                pass
 
     def stop(self):
         if self._player is not None:
@@ -133,6 +151,7 @@ class LiveCaptioner:
                 pass
         self._player = None
         self._play_cb = None
+        self._flush_cb = None
         if self._out_stream is not None:
             try:
                 self._out_stream.stop()
@@ -146,6 +165,9 @@ class LiveCaptioner:
                 self.queue.get_nowait()
             except queue.Empty:
                 break
+
+    def _on_audio_flush(self, data, pts):
+        self.reset()
 
     def _on_audio_play(self, data, samples, count, pts):
         try:
