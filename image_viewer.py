@@ -300,6 +300,16 @@ class ComicViewer(tk.Tk):
         cy = y + int(h * 0.94) - ch
         self.caption_window.geometry("+%d+%d" % (cx, cy))
 
+    def _raise_caption_window(self):
+        """全屏后重新把字幕窗口置顶抬升。先关再开 -topmost 强制 Windows 重排
+        z-order，避免字幕被视频输出盖住。"""
+        if not self.caption_window.winfo_viewable():
+            return
+        self.caption_window.attributes("-topmost", False)
+        self.caption_window.attributes("-topmost", True)
+        self.caption_window.lift()
+        self._reposition_caption_window()
+
     def _btn(self, parent, text, cmd, tip=None, primary=False):
         b = tk.Button(parent, text=text, command=cmd, takefocus=0,
                       bg=ACCENT if primary else BTN_BG,
@@ -563,7 +573,11 @@ class ComicViewer(tk.Tk):
             # ("SetThumbNailClip failed")，怀疑是这张 GPU/驱动跟 VLC 的硬件
             # 加速视频输出路径收尾时的同步有问题，跟音频回调无关。软解可以
             # 绕开。
-            self.vlc_instance = vlc.Instance(["--avcodec-hw=none"])
+            # 视频输出也用 direct3d9 而不是默认的 direct3d11：D3D11 vout 走
+            # flip-model 合成层直接上屏，会盖住叠在它上面的独立字幕窗口（全屏
+            # 时尤其明显）；D3D9 渲染进窗口自身表面、尊重 z-order，字幕窗口才能
+            # 一直保持在视频之上。
+            self.vlc_instance = vlc.Instance(["--avcodec-hw=none", "--vout=direct3d9"])
             self.player = self.vlc_instance.media_player_new()
             return True
         except Exception:
@@ -1140,6 +1154,8 @@ class ComicViewer(tk.Tk):
         if self.is_video and self.player:
             # 全屏切换后，视频可能不自动适应新尺寸，稍后重设一次 hwnd 让 VLC 重新适配
             self.after(250, self._refresh_video_hwnd)
+            # 字幕窗口是独立置顶 Toplevel，全屏会打乱 z-order，重新置顶抬升
+            self.after(300, self._raise_caption_window)
 
     def _refresh_video_hwnd(self):
         if self.is_video and self.player and self.video_panel.winfo_manager():
