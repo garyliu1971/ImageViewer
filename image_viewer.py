@@ -46,6 +46,19 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+# ---- 高 DPI 适配（必须在创建任何窗口之前调用） ----
+# 本机是 150% 缩放的 1920x1080 屏。进程不做 DPI 感知时，Windows 会把界面按
+# 1280x720 逻辑分辨率渲染再位图放大到 1920x1080，结果：全屏只按 1280x720 计算、
+# 画面发虚。声明 DPI 感知后 Tk 能拿到真实分辨率，全屏与画面都按 1920x1080 渲染。
+import ctypes
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)   # PROCESS_SYSTEM_DPI_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()     # 旧版 Windows 回退
+    except Exception:
+        pass
+
 try:
     from PIL import Image, ImageTk
     RESAMPLE = Image.Resampling.LANCZOS
@@ -1261,7 +1274,7 @@ class ComicViewer(tk.Tk):
         if self.toolbar_outer.winfo_manager():
             self.toolbar_outer.pack_forget()
         else:
-            self.toolbar_outer.pack(side="top", fill="x", before=self.canvas)
+            self.toolbar_outer.pack(side="top", fill="x", before=self.content)
 
     def _on_wheel(self, e):
         # 垂直滚动 / 触控板上下滑 / 捏合(Ctrl+滚轮) => 缩放

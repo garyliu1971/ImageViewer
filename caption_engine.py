@@ -50,10 +50,11 @@ AI_PRESETS = {
 
 def _llm_translate(text, cfg):
     """OpenAI 兼容接口翻译成简体中文（阻塞调用，须在后台线程跑）。"""
-    if not cfg or not cfg.get("api_key"):
+    key = (cfg.get("api_key") or "").strip()
+    if not key:
         raise RuntimeError("未配置 AI 翻译 API Key")
     payload = {
-        "model": cfg.get("model", "deepseek-chat"),
+        "model": (cfg.get("model") or "deepseek-chat").strip(),
         "messages": [
             {"role": "system",
              "content": "你是字幕翻译，把输入内容翻译成简体中文，只输出译文，不要解释。"},
@@ -62,10 +63,10 @@ def _llm_translate(text, cfg):
         "temperature": 0.2,
     }
     req = urllib.request.Request(
-        cfg["api_base"].rstrip("/") + "/chat/completions",
+        (cfg.get("api_base") or "").strip().rstrip("/") + "/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json",
-                 "Authorization": "Bearer " + cfg["api_key"]},
+                 "Authorization": "Bearer " + key},
     )
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read())["choices"][0]["message"]["content"].strip()
