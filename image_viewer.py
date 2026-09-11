@@ -253,11 +253,38 @@ class ComicViewer(tk.Tk):
         self.caption_mode_combo.pack(side="left", padx=2)
         self.caption_mode_combo.bind("<<ComboboxSelected>>", self._on_caption_mode_change)
 
-        self.caption_label = tk.Label(self.video_panel, text="", bg="#000000", fg="#ffffff",
+        # VLC 硬件加速（D3D11）在 video_panel 的原生窗口上直接画视频画面，会盖住
+        # 任何叠在它上面的 Tk 子控件 -- Tk 的 lift()/z-order 对这种系统合成层面
+        # 的表面完全无效。所以字幕框不能是 video_panel 的子控件，得做成一个独立
+        # 的置顶 Toplevel 窗口，跟着 video_panel 的屏幕坐标走。
+        self.caption_window = tk.Toplevel(self)
+        self.caption_window.overrideredirect(True)
+        self.caption_window.attributes("-topmost", True)
+        self.caption_window.withdraw()
+        self.caption_label = tk.Label(self.caption_window, text="", bg="#000000", fg="#ffffff",
                                       font=("Microsoft YaHei", 14), wraplength=900, justify="center",
                                       padx=10, pady=4)
+        self.caption_label.pack()
+        self.video_panel.bind("<Configure>", lambda e: self._reposition_caption_window())
 
         self._sync_toggle_buttons()
+
+    def _reposition_caption_window(self):
+        if not self.caption_window.winfo_viewable():
+            return
+        vp = self.video_panel
+        if not vp.winfo_ismapped():
+            return
+        self.caption_window.update_idletasks()
+        x = vp.winfo_rootx()
+        y = vp.winfo_rooty()
+        w = vp.winfo_width()
+        h = vp.winfo_height()
+        cw = self.caption_label.winfo_reqwidth()
+        ch = self.caption_label.winfo_reqheight()
+        cx = x + max(0, (w - cw) // 2)
+        cy = y + int(h * 0.94) - ch
+        self.caption_window.geometry("+%d+%d" % (cx, cy))
 
     def _btn(self, parent, text, cmd, tip=None, primary=False):
         b = tk.Button(parent, text=text, command=cmd, takefocus=0,
@@ -705,8 +732,9 @@ class ComicViewer(tk.Tk):
                 or self._captioner.caption_mode != mode):
             from caption_engine import LiveCaptioner
             self._captioner = LiveCaptioner(source_lang=lang, caption_mode=mode)
-        self.caption_label.place(in_=self.video_panel, relx=0.5, rely=0.94, anchor="s")
         self.caption_label.configure(text="字幕模型加载中…")
+        self.caption_window.deiconify()
+        self._reposition_caption_window()
         self._captioner.start_async(self.player)
         if self._caption_await_after:
             self.after_cancel(self._caption_await_after)
@@ -725,9 +753,10 @@ class ComicViewer(tk.Tk):
             self.status.configure(text=error or "字幕启动失败")
             self.caption_enabled = False
             self._sync_toggle_buttons()
-            self.caption_label.place_forget()
+            self.caption_window.withdraw()
             return
         self.caption_label.configure(text="")
+        self._reposition_caption_window()
         self._poll_captions()
 
     def _stop_captions(self):
@@ -739,7 +768,7 @@ class ComicViewer(tk.Tk):
             self._caption_poll_after = None
         if self._captioner is not None:
             self._captioner.stop()
-        self.caption_label.place_forget()
+        self.caption_window.withdraw()
 
     def _poll_captions(self):
         self._caption_poll_after = None
@@ -754,6 +783,7 @@ class ComicViewer(tk.Tk):
             pass
         if latest is not None:
             self.caption_label.configure(text=latest)
+            self._reposition_caption_window()
         self._caption_poll_after = self.after(150, self._poll_captions)
 
     @staticmethod
