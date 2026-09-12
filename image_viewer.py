@@ -134,6 +134,8 @@ class ComicViewer(tk.Tk):
         self._resize_after = None
         self._haccum = 0
         self._haccum_timer = None
+        self._hseek_accum = 0
+        self._hseek_timer = None
         self._ui_hidden = False      # 是否进入沉浸式（全部 UI：工具栏/状态栏/缩略图/视频条都隐藏）
         self._dbl_click = False      # 本次点击是否为双击
         self._dbl_tick = 0           # 双击判定时间戳（毫秒）
@@ -160,6 +162,7 @@ class ComicViewer(tk.Tk):
         self._caption_await_after = None
 
         self._build_ui()
+        self._build_menu()
         self._bind_events()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(120, self._show_start)
@@ -191,31 +194,14 @@ class ComicViewer(tk.Tk):
         self.page_label = tk.Label(self.toolbar, text="0 / 0", bg=PANEL, fg=FG, width=10)
         self.page_label.pack(side="left", padx=4)
         self._btn(self.toolbar, "⏭", self.next, tip="下一页")
-        self._btn(self.toolbar, "跳页", self.jump_to_page, tip="跳到指定页 (G)")
-        self.auto_btn = self._state_btn(self.toolbar, "自动", self.toggle_auto)
         self._sep(self.toolbar)
-        self._btn(self.toolbar, "↺", lambda: self.rotate(-90), tip="逆时针旋转")
-        self._btn(self.toolbar, "↻", lambda: self.rotate(90), tip="顺时针旋转")
-        self._sep(self.toolbar)
-        self._btn(self.toolbar, "➖", lambda: self.zoom_center(0.8), tip="缩小")
+        self.zoom_out_btn = self._btn(self.toolbar, "➖", lambda: self.zoom_center(0.8), tip="缩小")
         self.zoom_label = tk.Label(self.toolbar, text="100%", bg=PANEL, fg=MUTED, width=6)
         self.zoom_label.pack(side="left", padx=4)
-        self._btn(self.toolbar, "➕", lambda: self.zoom_center(1.25), tip="放大")
+        self.zoom_in_btn = self._btn(self.toolbar, "➕", lambda: self.zoom_center(1.25), tip="放大")
         self._sep(self.toolbar)
-        self._btn(self.toolbar, "适应窗口", lambda: self.set_fit("window"))
-        self._btn(self.toolbar, "适应宽度", lambda: self.set_fit("width"))
-        self._btn(self.toolbar, "适应高度", lambda: self.set_fit("height"))
-        self._btn(self.toolbar, "100%", lambda: self.set_fit("actual"))
-        self._sep(self.toolbar)
-        # 带状态的开关按钮
-        self.spread_btn = self._state_btn(self.toolbar, "双页", self.toggle_spread)
-        self.dir_btn = self._state_btn(self.toolbar, "左→右", self.toggle_direction)
-        self.trim_btn = self._state_btn(self.toolbar, "去边", self.toggle_trim)
-        self._sep(self.toolbar)
-        self._btn(self.toolbar, "▤", self.toggle_thumbs, tip="缩略图 (T)")
-        self._btn(self.toolbar, "⛶", self.toggle_fullscreen, tip="全屏 (F)")
-        self._btn(self.toolbar, "⚙ AI翻译", self._open_ai_settings, tip="配置 AI 字幕翻译（DeepSeek / OpenAI / Qwen / Ollama）")
-        self._btn(self.toolbar, "?", self.show_help, tip="帮助")
+        self._btn(self.toolbar, "⛶ 全屏", self.toggle_fullscreen, tip="全屏 (回车 / F / F11)")
+        self._btn(self.toolbar, "? 帮助", self.show_help, tip="帮助")
 
         # 状态栏
         self.status = tk.Label(self, text="请打开一个图片文件夹 / 压缩包开始阅读", bg=PANEL, fg=MUTED,
@@ -283,6 +269,44 @@ class ComicViewer(tk.Tk):
 
         self._sync_toggle_buttons()
 
+    def _build_menu(self):
+        menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=0)
+        file_menu.add_command(label="打开文件夹", command=self.open_folder)
+        file_menu.add_command(label="打开图片", command=self.open_files)
+        file_menu.add_command(label="打开压缩包 (zip/cbz)", command=self.open_zip)
+        file_menu.add_separator()
+        file_menu.add_command(label="退出", command=self._on_close)
+        menubar.add_cascade(label="文件", menu=file_menu)
+
+        view = tk.Menu(menubar, tearoff=0)
+        view.add_command(label="全屏 / 退出全屏", command=self.toggle_fullscreen,
+                         accelerator="Enter / F / F11")
+        view.add_command(label="显示 / 隐藏缩略图", command=self.toggle_thumbs, accelerator="T")
+        view.add_separator()
+        view.add_command(label="跳到指定页", command=self.jump_to_page, accelerator="G")
+        view.add_command(label="自动翻页 开 / 关", command=self.toggle_auto, accelerator="A")
+        view.add_command(label="双页模式 开 / 关", command=self.toggle_spread, accelerator="D")
+        view.add_command(label="阅读方向 左→右 / 右→左", command=self.toggle_direction, accelerator="M")
+        view.add_command(label="裁白边 开 / 关", command=self.toggle_trim, accelerator="C")
+        view.add_separator()
+        view.add_command(label="适应窗口", command=lambda: self.set_fit("window"))
+        view.add_command(label="适应宽度", command=lambda: self.set_fit("width"))
+        view.add_command(label="适应高度", command=lambda: self.set_fit("height"))
+        view.add_command(label="实际大小 (100%)", command=lambda: self.set_fit("actual"))
+        view.add_separator()
+        view.add_command(label="顺时针旋转 90°", command=lambda: self.rotate(90), accelerator="R")
+        view.add_command(label="逆时针旋转 90°", command=lambda: self.rotate(-90), accelerator="Shift+R")
+        menubar.add_cascade(label="视图", menu=view)
+
+        help_menu = tk.Menu(menubar, tearoff=0)
+        help_menu.add_command(label="使用帮助", command=self.show_help, accelerator="?")
+        help_menu.add_command(label="AI 字幕翻译设置", command=self._open_ai_settings)
+        menubar.add_cascade(label="帮助", menu=help_menu)
+
+        self.configure(menu=menubar)
+
     def _reposition_caption_window(self):
         if not self.caption_window.winfo_viewable():
             return
@@ -349,6 +373,10 @@ class ComicViewer(tk.Tk):
 
         self.bind_all("<Key>", self._on_key)
         self.bind_all("<F11>", lambda e: self.toggle_fullscreen())
+        # 视频页：滚轮 / 触控板手势 / 单击
+        self.bind_all("<MouseWheel>", self._on_video_wheel)
+        self.bind_all("<Shift-MouseWheel>", self._on_video_hwheel)
+        self.video_panel.bind("<Button-1>", self._on_video_click)
 
     # ---------------- 配置 / 断点续读 ----------------
     def _load_config(self):
@@ -577,7 +605,12 @@ class ComicViewer(tk.Tk):
             # flip-model 合成层直接上屏，会盖住叠在它上面的独立字幕窗口（全屏
             # 时尤其明显）；D3D9 渲染进窗口自身表面、尊重 z-order，字幕窗口才能
             # 一直保持在视频之上。
-            self.vlc_instance = vlc.Instance(["--avcodec-hw=none", "--vout=direct3d9"])
+            self.vlc_instance = vlc.Instance([
+                "--avcodec-hw=none", "--vout=direct3d9",
+                # 不接管鼠标/键盘事件：让滚轮 / 触控板手势 / 快捷键传到 Tk
+                # （否则 VLC 会把 F=全屏、空格=暂停、回车=导航、滚轮=音量 都自己吃掉）
+                "--no-mouse-events", "--no-keyboard-events",
+            ])
             self.player = self.vlc_instance.media_player_new()
             return True
         except Exception:
@@ -630,6 +663,9 @@ class ComicViewer(tk.Tk):
             self.player.audio_set_volume(int(self.vol.get()))
             self.is_video = True
             self.play_btn.configure(text="⏸")
+            # VLC 的原生视频窗口会抢走键盘/滚轮焦点，导致快捷键和触控板手势失效；
+            # 等它播放起来后把焦点拉回 Tk 主窗口，事件才会走我们的分发。
+            self.after(300, self._refocus_main)
         except Exception as e:
             self.is_video = False
             self.status.configure(text="视频播放失败：%s" % e)
@@ -637,6 +673,13 @@ class ComicViewer(tk.Tk):
         self._show_video_bar()
         self._update_status()
         self._update_video_time_loop()
+
+    def _refocus_main(self):
+        """视频播放后把键盘焦点从 VLC 原生窗口拉回 Tk 主窗口。"""
+        try:
+            self.focus_force()
+        except Exception:
+            pass
 
     def _stop_video(self):
         if self._video_timer:
@@ -1115,15 +1158,7 @@ class ComicViewer(tk.Tk):
         self.next()  # show_file 内部会重新调度下一次计时
 
     def _sync_toggle_buttons(self):
-        self.spread_btn.configure(bg=ACCENT if self.spread_mode else BTN_BG,
-                                  fg="#fff" if self.spread_mode else FG)
-        self.dir_btn.configure(text="右→左" if self.reading_direction == "rtl" else "左→右",
-                               bg=ACCENT if self.reading_direction == "rtl" else BTN_BG,
-                               fg="#fff" if self.reading_direction == "rtl" else FG)
-        self.trim_btn.configure(bg=ACCENT if self.trim_mode else BTN_BG,
-                                fg="#fff" if self.trim_mode else FG)
-        self.auto_btn.configure(bg=ACCENT if self.auto_flip else BTN_BG,
-                                fg="#fff" if self.auto_flip else FG)
+        # 只有视频条上的「CC 字幕」还需要颜色状态；其余开关已移到菜单里
         self.caption_btn.configure(bg=ACCENT if self.caption_enabled else BTN_BG,
                                    fg="#fff" if self.caption_enabled else FG)
 
@@ -1311,9 +1346,64 @@ class ComicViewer(tk.Tk):
             forward = (e.delta < 0) if self._is_rtl() else (e.delta > 0)
             (self.next if forward else self.prev)()
 
+    def _on_video_wheel(self, e):
+        # 视频页：触控板上下滑 / 滚轮 => 音量（捏合 Ctrl+滚轮对视频无意义，忽略）
+        if e.state & 0x0004:
+            return
+        self._apply_video_wheel(e.delta)
+
+    def _apply_video_wheel(self, delta):
+        if not self.is_video:
+            return
+        step = 5 if delta > 0 else -5
+        new = clamp(self.vol.get() + step, 0, 100)
+        self.vol.set(new)
+        self._on_volume(new)
+
+    def _on_video_hwheel(self, e):
+        self._apply_video_hwheel(e.delta)
+
+    def _apply_video_hwheel(self, delta):
+        # 视频页：触控板左右滑 => 快进 / 快退（去抖，每 120 单位 = 5 秒）
+        if not self.is_video or not self.player:
+            return
+        self._hseek_accum += delta
+        if self._hseek_timer:
+            self.after_cancel(self._hseek_timer)
+        self._hseek_timer = self.after(200, self._reset_hseek)
+        while abs(self._hseek_accum) >= 120:
+            direction = 1 if self._hseek_accum > 0 else -1
+            self._seek_relative(direction * 5)
+            self._hseek_accum -= direction * 120
+
+    def _reset_hseek(self):
+        self._hseek_timer = None
+        self._hseek_accum = 0
+
+    def _seek_relative(self, seconds):
+        if not self.player or not self.is_video:
+            return
+        try:
+            length = self.player.get_length()
+            if length <= 0:
+                return
+            cur = self.player.get_time()
+            self.player.set_time(clamp(cur + int(seconds * 1000), 0, length))
+            self._last_seek = time.time()
+            if self._captioner is not None:
+                self._captioner.reset()
+        except Exception:
+            pass
+
+    def _on_video_click(self, e):
+        # 视频页：单击画面 => 播放 / 暂停
+        if self.is_video:
+            self._toggle_play()
+
     def _on_key(self, e):
         w = self.focus_get()
-        if isinstance(w, (tk.Entry, tk.Text)):
+        # 只保护对话框(Toplevel)里的输入框；主窗口里的组合框等不拦截快捷键
+        if isinstance(w, (tk.Entry, tk.Text)) and w.winfo_toplevel() is not self:
             return
         k = e.keysym
         if k in ("Right", "Next"):
@@ -1353,6 +1443,8 @@ class ComicViewer(tk.Tk):
             self.adjust_auto_interval(0.5)
         elif k in ("g", "G"):
             self.jump_to_page()
+        elif k in ("Return", "KP_Enter"):
+            self.toggle_fullscreen()
         elif k in ("f", "F"):
             self.toggle_fullscreen()
         elif k in ("t", "T"):
@@ -1365,8 +1457,7 @@ class ComicViewer(tk.Tk):
             self.show_help()
         elif k == "Escape":
             if self.attributes("-fullscreen"):
-                self.attributes("-fullscreen", False)
-                self._show_ui()
+                self.toggle_fullscreen()
 
     def _on_resize(self, e):
         if self._resize_after:
@@ -1482,6 +1573,8 @@ class ComicViewer(tk.Tk):
             name = self._display_name(self.sources[self.index])
             self.page_label.configure(text="%d / %d" % (self.index + 1, len(self.sources)))
             self.zoom_label.configure(text="视频")
+            self.zoom_out_btn.configure(state="disabled")
+            self.zoom_in_btn.configure(state="disabled")
             self.status.configure(text=name + "   ·   视频")
             return
         name = self._display_name(self.sources[self.index])
@@ -1496,6 +1589,8 @@ class ComicViewer(tk.Tk):
         auto = (" · 自动翻页 %gs" % self.auto_interval) if self.auto_flip else ""
         self.page_label.configure(text=page)
         self.zoom_label.configure(text="%d%%" % int(round(self.zoom * 100)))
+        self.zoom_out_btn.configure(state="normal")
+        self.zoom_in_btn.configure(state="normal")
         self.status.configure(text="%s   ·   %d×%d   ·   %d%%%s%s%s" % (
             name, w, h, int(round(self.zoom * 100)), rot, rtl, auto))
 
@@ -1541,7 +1636,7 @@ class ComicViewer(tk.Tk):
             "G                              跳到指定页\n"
             "A                              自动翻页 开 / 关\n"
             "[ / ]                          自动翻页每页停留时间 - / + 0.5 秒\n"
-            "F / F11                        全屏\n"
+            "回车 / F / F11                 全屏\n"
             "T                              显示 / 隐藏缩略图\n"
             "?                              帮助\n"
             "Esc                            退出全屏\n"
