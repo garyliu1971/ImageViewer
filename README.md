@@ -12,6 +12,7 @@
 | `translation_engine.py` | 离线字幕翻译（Argos / ctranslate2） |
 | `dlna_cast.py` | DLNA 投屏（SSDP 发现 + AVTransport SOAP 控制 + 本地流媒体） |
 | `remote_source.py` | 远程媒体源抽象 + WebDAV provider + 本地流代理（网盘视频免下载播放） |
+| `alist_manager.py` | AList 进程管理（启动/停止/密码设置，供「一键连接网盘」用） |
 | `viewer.ico` | 程序图标 |
 | `image_viewer.json` | 阅读进度（运行时自动生成，不纳入版本控制） |
 
@@ -118,7 +119,14 @@ DLNA 设备（极米投影仪 / 电视 / 盒子等）。原理是 DLNA：本地�
 - **海报墙**浏览片库（电影 / 剧集 / 音乐封面网格 + 标题/年份，异步加载封面）
 - 直连播放（Static 流，支持 Range/seek）；不兼容格式自动回退 HLS 转码流（VLC 直接播 master.m3u8）
 
-- 凭据保存在 `image_viewer.json` 的 `_webdav_` / `_jellyfin_` 段（明文，后续加密）
+**AList**（百度 / 夸克 / 移动云盘 / 115 / 123 等）
+
+- 菜单 **网盘 → 一键连接网盘 (AList)**：本机若有 `alist.exe`（放程序目录），自动启动并连好其 WebDAV；
+  首次自动设置管理员密码并打开 AList 网页后台（http://127.0.0.1:5244）供添加网盘账号
+- AList 把各网盘统一成 WebDAV，本程序经 WebDAV 流式播放；需自行在 AList 后台「存储」里扫码/填 cookie 添加网盘
+- 二进制从 GitHub 下载（AGPL-3.0）：https://github.com/AlistGo/alist/releases
+
+- 凭据保存在 `image_viewer.json` 的 `_webdav_` / `_jellyfin_` / `_alist_` 段（明文，后续加密）
 - 暂不支持：网盘内 zip/cbz 在线读、远程视频的同名字幕、转码流（HLS）的 DLNA 投屏
 
 ### 网页版

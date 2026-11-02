@@ -38,6 +38,9 @@ PROPFIND_XML = (
     '<d:response><d:href>/dav/Movies/song.mp3</d:href>'
     '<d:propstat><d:prop><d:resourcetype/><d:getcontentlength>100</d:getcontentlength></d:prop></d:propstat>'
     '</d:response>'
+    '<d:response><d:href>/dav/Movies/%E7%94%B5%E5%BD%B1.mp4</d:href>'
+    '<d:propstat><d:prop><d:resourcetype/><d:getcontentlength>64</d:getcontentlength></d:prop></d:propstat>'
+    '</d:response>'
     '</d:multistatus>'
 )
 
@@ -100,13 +103,21 @@ class TestWebDavProvider(unittest.TestCase):
     def test_list_dir_filters_videos_and_dirs(self):
         entries = self.make_provider().list_dir("/dav/Movies")
         # 保留目录 + 视频/图片/音频文件，目录自身被跳过
-        self.assertEqual(len(entries), 3)
+        self.assertEqual(len(entries), 4)
         kinds = {e.name: e.kind for e in entries}
-        self.assertEqual(kinds, {"a.mp4": "video", "poster.png": "image", "song.mp3": "audio"})
+        self.assertEqual(kinds, {"a.mp4": "video", "poster.png": "image",
+                                 "song.mp3": "audio", "电影.mp4": "video"})
         f = entries[0]
         self.assertFalse(f.is_dir)
         self.assertEqual(f.size, 64)
         self.assertEqual(f.path, "/dav/Movies/a.mp4")
+
+    def test_chinese_href_kept_encoded(self):
+        # 中文文件名：path 应保持百分号编码（用于请求 URL），name 应解码用于显示
+        entries = self.make_provider().list_dir("/dav/Movies")
+        by_name = {e.name: e for e in entries}
+        self.assertIn("电影.mp4", by_name)
+        self.assertEqual(by_name["电影.mp4"].path, "/dav/Movies/%E7%94%B5%E5%BD%B1.mp4")
 
     def test_open_stream_basic_auth(self):
         p = self.make_provider()

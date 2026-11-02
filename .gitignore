@@ -22,3 +22,9 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# AList 网盘网关（本地运行，不提交二进制与数据）
+alist.exe
+alist
+alist_data/
+data/

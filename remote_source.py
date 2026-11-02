@@ -155,7 +155,7 @@ class WebDavProvider(RemoteProvider):
             href = resp.findtext("{DAV:}href")
             if not href:
                 continue
-            href = urllib.parse.unquote(href)
+            # href 保持百分号编码，用于后续请求 URL；仅显示名解码
             if href.rstrip("/") == requested:
                 continue  # 跳过集合自身
             rt = resp.find(".//{DAV:}resourcetype")

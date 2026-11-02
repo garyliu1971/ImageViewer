@@ -44,6 +44,7 @@ import zipfile
 import tempfile
 import shutil
 import threading
+import webbrowser
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
@@ -61,6 +62,7 @@ from video_player import (fmt_time, build_vlc_args, build_video_media_options,
                           video_tmp_name, video_resume_key, RegionZoom)
 from remote_source import (RemoteSource, WebDavProvider, JellyfinProvider,
                            RemoteStreamProxy)
+import alist_manager
 
 # ---- 高 DPI 适配（必须在创建任何窗口之前调用） ----
 # 本机是 150% 缩放的 1920x1080 屏。进程不做 DPI 感知时，Windows 会把界面按
@@ -97,8 +99,9 @@ CAPTION_LANG_CODES = {"中文": "zh", "英文": "en", "日语": "ja", "韩语": 
 CAPTION_MODES = ["原声", "中文翻译", "AI 翻译"]
 CAPTION_MODE_CODES = {"原声": "original", "中文翻译": "translate", "AI 翻译": "ai_translate"}
 
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "image_viewer.json")
-HISTORY_PLAYLIST_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "播放历史.m3u")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(APP_DIR, "image_viewer.json")
+HISTORY_PLAYLIST_PATH = os.path.join(APP_DIR, "播放历史.m3u")
 HISTORY_LIMIT = 100
 
 RATE_OPTS = ["0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "2.5", "3.0", "4.0",
@@ -337,6 +340,7 @@ class ComicViewer(tk.Tk):
         self._remote_proxy = None     # 当前远程视频的本地流代理
         self._remote_hls = False      # 当前远程视频是否走 HLS 直连（不起代理）
         self._last_browse = {}        # 每个远程 provider 最后浏览的目录路径
+        self._alist_proc = None       # 本程序拉起的 AList 进程
         self._tmp_dir = tempfile.mkdtemp(prefix="image_viewer_")
 
         self.caption_enabled = False
@@ -546,6 +550,9 @@ class ComicViewer(tk.Tk):
         net_menu = tk.Menu(menubar, tearoff=0)
         help_menu = tk.Menu(menubar, tearoff=0)
         self._populate_menus(file_menu, view, help_menu)
+        net_menu.add_command(label="一键连接网盘 (AList)...", command=self._one_click_alist)
+        net_menu.add_command(label="打开 AList 网页后台", command=self._open_alist_web)
+        net_menu.add_separator()
         net_menu.add_command(label="连接 WebDAV 网盘...", command=self._open_webdav_dialog)
         net_menu.add_command(label="连接 Jellyfin / Emby 服务器...", command=self._open_jellyfin_dialog)
         net_menu.add_separator()
@@ -744,6 +751,7 @@ class ComicViewer(tk.Tk):
         self._close_cast_dialog()
         self._stop_video()
         self._stop_remote_proxy()
+        alist_manager.stop_alist(self._alist_proc)
         self._save_progress()
         self._close_zip()
         try:
@@ -1020,6 +1028,78 @@ class ComicViewer(tk.Tk):
             self._poster_wall(p, start)
         else:
             self._remote_browser(p, start)
+
+    def _one_click_alist(self):
+        """一键连接网盘：启动/管理本地 AList，并通过其 WebDAV 连接。"""
+        exe = alist_manager.find_alist()
+        if not exe:
+            if messagebox.askyesno(
+                    "未找到 AList",
+                    "本机没有找到 alist.exe。\n\n是否打开 AList 下载页？\n"
+                    "下载后请把 alist.exe 放到本程序所在目录。",
+                    parent=self):
+                webbrowser.open("https://github.com/AlistGo/alist/releases/latest")
+            return
+        alist_dir = os.path.dirname(exe)
+        # 数据目录用 AList 默认的 ./data（与手动双击 alist.exe 一致，避免两套密码）
+        cfg = self._config.setdefault("_alist_", {})
+        pw = cfg.get("password")
+        first = not pw
+        if first:
+            pw = alist_manager.generate_password()
+            # v3.9+ 需先停服务再设密码；首次服务未启动，直接设置
+            if not alist_manager.set_admin_password(exe, pw, cwd=alist_dir):
+                messagebox.showerror("AList 初始化失败",
+                                     "无法设置 AList 管理员密码。\n请确认 alist.exe 可执行。",
+                                     parent=self)
+                return
+            cfg["password"] = pw
+            self._save_config()
+        if not alist_manager.is_running():
+            try:
+                self._alist_proc = alist_manager.start_alist(exe, cwd=alist_dir)
+            except Exception as e:
+                messagebox.showerror("AList 启动失败", str(e), parent=self)
+                return
+        if not alist_manager.wait_ready():
+            messagebox.showerror("AList 启动失败",
+                                 "AList 服务未能就绪（端口 %d）。" % alist_manager.ALIST_PORT,
+                                 parent=self)
+            return
+        self._config["_webdav_"] = {
+            "base_url": alist_manager.WEBDAV_URL,
+            "username": "admin",
+            "password": pw,
+        }
+        self._save_config()
+        self._remote_providers.pop("webdav", None)  # 重建 provider
+        p = self._get_provider("webdav")
+        if not p:
+            messagebox.showerror("连接失败", "无法建立 WebDAV 连接。", parent=self)
+            return
+        if first:
+            messagebox.showinfo(
+                "AList 已就绪（首次使用）",
+                "AList 是「无界面」的网盘网关，请按下面 3 步添加网盘账号：\n\n"
+                "1. 浏览器已自动打开 http://127.0.0.1:5244\n"
+                "   （没打开就手动在浏览器输入这个地址）\n"
+                "2. 登录：用户名 admin，密码 %s\n"
+                "3. 左侧「存储」→「添加」→ 选你的网盘（百度/夸克/移动云盘…）\n"
+                "   → 按提示扫码或填 cookie → 保存\n\n"
+                "添加完成后，回本程序点菜单「网盘 → 浏览 WebDAV」即可看到并播放。" % pw,
+                parent=self)
+            webbrowser.open(alist_manager.WEB_URL)
+            return   # 首次先让用户去添加网盘，不打开空目录窗口
+        self._remote_browser(p, p.root_path)
+
+    def _open_alist_web(self):
+        """打开 AList 网页后台（用于添加/管理网盘账号）。"""
+        if not alist_manager.is_running():
+            messagebox.showinfo("AList 未运行",
+                                 "请先点「网盘 → 一键连接网盘 (AList)」启动 AList。",
+                                 parent=self)
+            return
+        webbrowser.open(alist_manager.WEB_URL)
 
     def _remote_browser(self, provider, path):
         dlg = tk.Toplevel(self)
