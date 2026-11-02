@@ -2,6 +2,9 @@
 image_viewer.json
 播放历史.m3u
 
+# 内置 AI 密钥的默认配置（不提交真实密钥）
+image_viewer.default.json
+
 # 原生崩溃日志（faulthandler 运行时生成）
 crash.log
 run.log

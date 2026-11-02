@@ -51,7 +51,7 @@ from viewer_core import (MIN_ZOOM, MAX_ZOOM, MIN_VISIBLE, clamp, natural_key,
                          compute_zoom, rotated_size, clamp_pan, zoom_at_pan,
                          zoom_slider_value, zoom_slider_pos)
 
-from media_source import (IMAGE_EXTS, ZIP_EXTS, PDF_EXTS, VIDEO_EXTS,
+from media_source import (IMAGE_EXTS, ZIP_EXTS, PDF_EXTS, VIDEO_EXTS, AUDIO_EXTS,
                           media_files_in, build_zip_chapters, expand_paths,
                           parse_playlist, files_book_key, playlist_book_key,
                           update_history)
@@ -59,6 +59,8 @@ from config_store import load_config, save_config
 
 from video_player import (fmt_time, build_vlc_args, build_video_media_options,
                           video_tmp_name, video_resume_key, RegionZoom)
+from remote_source import (RemoteSource, WebDavProvider, JellyfinProvider,
+                           RemoteStreamProxy)
 
 # ---- 高 DPI 适配（必须在创建任何窗口之前调用） ----
 # 本机是 150% 缩放的 1920x1080 屏。进程不做 DPI 感知时，Windows 会把界面按
@@ -331,6 +333,10 @@ class ComicViewer(tk.Tk):
         self._rz_panel = None       # 区域放大控制面板（Toplevel）
         self._transparent_ticks = 0  # 播放初期重试鼠标穿透的计数
         self._video_cache = {}
+        self._remote_providers = {}   # 远程 provider 缓存：名称 -> RemoteProvider
+        self._remote_proxy = None     # 当前远程视频的本地流代理
+        self._remote_hls = False      # 当前远程视频是否走 HLS 直连（不起代理）
+        self._last_browse = {}        # 每个远程 provider 最后浏览的目录路径
         self._tmp_dir = tempfile.mkdtemp(prefix="image_viewer_")
 
         self.caption_enabled = False
@@ -492,6 +498,8 @@ class ComicViewer(tk.Tk):
         self.caption_mode_combo.bind("<Down>", lambda e: (self._rz_pan_key("Down"), "break")[1] if (self.is_video and self._region_zoom) else None)
         self.cast_btn = self._state_btn(self.video_bar, "📺 投屏", self.toggle_cast)
         self.shot_btn = self._state_btn(self.video_bar, "📷 截图", self._video_screenshot)
+        self.browse_btn = self._state_btn(self.video_bar, "📁 目录", self._back_to_browse)
+        self.browse_btn.pack_forget()   # 播放远程视频时显示，其余隐藏
 
         # VLC 硬件加速（D3D11）在 video_panel 的原生窗口上直接画视频画面，会盖住
         # 任何叠在它上面的 Tk 子控件 -- Tk 的 lift()/z-order 对这种系统合成层面
@@ -535,15 +543,23 @@ class ComicViewer(tk.Tk):
 
         file_menu = tk.Menu(menubar, tearoff=0)
         view = tk.Menu(menubar, tearoff=0)
+        net_menu = tk.Menu(menubar, tearoff=0)
         help_menu = tk.Menu(menubar, tearoff=0)
         self._populate_menus(file_menu, view, help_menu)
+        net_menu.add_command(label="连接 WebDAV 网盘...", command=self._open_webdav_dialog)
+        net_menu.add_command(label="连接 Jellyfin / Emby 服务器...", command=self._open_jellyfin_dialog)
+        net_menu.add_separator()
+        net_menu.add_command(label="浏览 WebDAV...", command=lambda: self._browse_remote_menu("webdav"))
+        net_menu.add_command(label="浏览 Jellyfin...", command=lambda: self._browse_remote_menu("jellyfin"))
         menubar.add_cascade(label="文件", menu=file_menu)
         menubar.add_cascade(label="视图", menu=view)
+        menubar.add_cascade(label="网盘", menu=net_menu)
         menubar.add_cascade(label="帮助", menu=help_menu)
 
         self._menubar = menubar
         self._file_menu = file_menu
         self._view_menu = view
+        self._net_menu = net_menu
         self._help_menu = help_menu
         self.configure(menu=menubar)
         self._build_video_menu_overlay()
@@ -727,6 +743,7 @@ class ComicViewer(tk.Tk):
         self._cancel_auto()
         self._close_cast_dialog()
         self._stop_video()
+        self._stop_remote_proxy()
         self._save_progress()
         self._close_zip()
         try:
@@ -827,6 +844,8 @@ class ComicViewer(tk.Tk):
 
     def _record_history(self, src):
         """将实际播放的本地媒体写入最近播放 M3U，最新记录置顶。"""
+        if isinstance(src, RemoteSource):
+            return   # 远程媒体暂不写入本地播放历史
         if isinstance(src, tuple):
             if self._is_pdf_src(src):
                 src = src[0]   # PDF 按整本书记录
@@ -835,6 +854,451 @@ class ComicViewer(tk.Tk):
         if not os.path.isfile(src):
             return
         update_history(src, HISTORY_PLAYLIST_PATH, HISTORY_LIMIT)
+
+    # ---------------- 网盘 / 远程源 ----------------
+    def _get_provider(self, name):
+        """按名称取远程 provider（懒加载 WebDAV / Jellyfin 配置）。"""
+        if name in self._remote_providers:
+            return self._remote_providers[name]
+        if name == "webdav":
+            cfg = self._config.get("_webdav_")
+            if cfg and cfg.get("base_url"):
+                try:
+                    p = WebDavProvider(cfg["base_url"],
+                                       cfg.get("username", ""),
+                                       cfg.get("password", ""))
+                    self._remote_providers[name] = p
+                    return p
+                except Exception:
+                    return None
+        elif name == "jellyfin":
+            cfg = self._config.get("_jellyfin_")
+            if cfg and cfg.get("base_url") and cfg.get("token"):
+                p = JellyfinProvider(cfg["base_url"], cfg["token"],
+                                     cfg.get("user_id", ""),
+                                     username=cfg.get("username", ""),
+                                     device_id=cfg.get("device_id"))
+                self._remote_providers[name] = p
+                return p
+        return None
+
+    def _open_webdav_dialog(self):
+        cfg = self._config.get("_webdav_", {})
+        dlg = tk.Toplevel(self)
+        dlg.title("连接 WebDAV 网盘")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="地址（含路径，如 https://dav.jianguoyun.com/dav）").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        url_var = tk.StringVar(value=cfg.get("base_url", ""))
+        ttk.Entry(body, textvariable=url_var, width=48).grid(
+            row=1, column=0, columnspan=2, sticky="we", pady=(0, 6))
+        ttk.Label(body, text="用户名").grid(row=2, column=0, sticky="w")
+        ttk.Label(body, text="密码").grid(row=3, column=0, sticky="w")
+        user_var = tk.StringVar(value=cfg.get("username", ""))
+        pass_var = tk.StringVar(value=cfg.get("password", ""))
+        ttk.Entry(body, textvariable=user_var, width=48).grid(row=2, column=1, sticky="we", pady=2)
+        ttk.Entry(body, textvariable=pass_var, width=48, show="*").grid(row=3, column=1, sticky="we", pady=2)
+        ttk.Label(body, text="凭据将保存在本地配置文件中（明文）。", foreground="#888").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        def do_connect():
+            url = url_var.get().strip()
+            if not url:
+                messagebox.showwarning("提示", "请填写 WebDAV 地址。", parent=dlg)
+                return
+            try:
+                p = WebDavProvider(url, user_var.get().strip(), pass_var.get())
+                p.list_dir(p.root_path)   # 连通性自检
+            except Exception as e:
+                messagebox.showerror("连接失败", "无法连接 WebDAV：%s" % e, parent=dlg)
+                return
+            self._config["_webdav_"] = {
+                "base_url": url,
+                "username": user_var.get().strip(),
+                "password": pass_var.get(),
+            }
+            self._save_config()
+            self._remote_providers["webdav"] = p
+            dlg.destroy()
+            self._remote_browser(p, p.root_path)
+
+        btns = ttk.Frame(body)
+        btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="连接", command=do_connect).pack(side="left")
+        ttk.Button(btns, text="取消", command=dlg.destroy).pack(side="left", padx=6)
+        dlg.grab_set()
+
+    def _open_jellyfin_dialog(self):
+        cfg = self._config.get("_jellyfin_", {})
+        dlg = tk.Toplevel(self)
+        dlg.title("连接 Jellyfin / Emby")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        body = ttk.Frame(dlg, padding=12)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="服务器地址（如 http://192.168.1.5:8096）").grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        url_var = tk.StringVar(value=cfg.get("base_url", ""))
+        ttk.Entry(body, textvariable=url_var, width=48).grid(
+            row=1, column=0, columnspan=2, sticky="we", pady=(0, 6))
+        ttk.Label(body, text="用户名").grid(row=2, column=0, sticky="w")
+        ttk.Label(body, text="密码").grid(row=3, column=0, sticky="w")
+        user_var = tk.StringVar(value=cfg.get("username", ""))
+        pass_var = tk.StringVar(value="")
+        ttk.Entry(body, textvariable=user_var, width=48).grid(row=2, column=1, sticky="we", pady=2)
+        ttk.Entry(body, textvariable=pass_var, width=48, show="*").grid(row=3, column=1, sticky="we", pady=2)
+        ttk.Label(body, text="登录成功后 token 会保存在本地配置文件中（密码不保存）。", foreground="#888").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        def do_connect():
+            url = url_var.get().strip()
+            username = user_var.get().strip()
+            if not url:
+                messagebox.showwarning("提示", "请填写服务器地址。", parent=dlg)
+                return
+            try:
+                token, user_id, device_id = JellyfinProvider.authenticate(
+                    url, username, pass_var.get())
+                if not token or not user_id:
+                    raise RuntimeError("登录返回缺少 token 或用户 ID")
+                p = JellyfinProvider(url, token, user_id,
+                                     username=username, device_id=device_id)
+                p.list_dir("")   # 连通性自检（列顶层媒体库）
+            except Exception as e:
+                messagebox.showerror("连接失败", "无法连接 Jellyfin/Emby：%s" % e, parent=dlg)
+                return
+            self._config["_jellyfin_"] = {
+                "base_url": url,
+                "username": username,
+                "token": token,
+                "user_id": user_id,
+                "device_id": device_id,
+            }
+            self._save_config()
+            self._remote_providers["jellyfin"] = p
+            dlg.destroy()
+            self._poster_wall(p, p.root_path)
+
+        btns = ttk.Frame(body)
+        btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="连接", command=do_connect).pack(side="left")
+        ttk.Button(btns, text="取消", command=dlg.destroy).pack(side="left", padx=6)
+        dlg.grab_set()
+
+    def _browse_remote_menu(self, name="webdav"):
+        p = self._get_provider(name)
+        if not p:
+            if name == "jellyfin":
+                self._open_jellyfin_dialog()
+            else:
+                self._open_webdav_dialog()
+            return
+        start = self._last_browse.get(name, p.root_path)
+        if name == "jellyfin":
+            self._poster_wall(p, start)
+        else:
+            self._remote_browser(p, start)
+
+    def _back_to_browse(self):
+        """播放中返回远程目录浏览（先停播放，续播点已保存）。"""
+        if not self.sources:
+            return
+        src = self.sources[self.index]
+        if not isinstance(src, RemoteSource):
+            return
+        p = self._get_provider(src.provider)
+        if not p:
+            return
+        name = src.provider
+        start = self._last_browse.get(name, p.root_path)
+        if self.is_video:
+            self._stop_video()
+        if name == "jellyfin":
+            self._poster_wall(p, start)
+        else:
+            self._remote_browser(p, start)
+
+    def _remote_browser(self, provider, path):
+        dlg = tk.Toplevel(self)
+        dlg.transient(self)
+        body = ttk.Frame(dlg, padding=8)
+        body.pack(fill="both", expand=True)
+        lb = tk.Listbox(body, width=72, height=22)
+        lb.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(body, orient="vertical", command=lb.yview)
+        sb.pack(side="right", fill="y")
+        lb.configure(yscrollcommand=sb.set)
+        state = {"path": path, "entries": [], "stack": []}
+
+        def render():
+            dlg.title("浏览网盘 - " + (state["path"] or "/"))
+            state["entries"] = provider.list_dir(state["path"])
+            lb.delete(0, "end")
+            for e in state["entries"]:
+                label = ("[目录] " if e.is_dir else "       ") + e.name
+                if not e.is_dir and e.size:
+                    label += "   (%s)" % self._fmt_size(e.size)
+                lb.insert("end", label)
+
+        def on_enter():
+            sel = lb.curselection()
+            if not sel:
+                return
+            e = state["entries"][sel[0]]
+            if e.is_dir:
+                state["stack"].append(state["path"])
+                state["path"] = e.path
+                render()
+            else:
+                self._load_remote_list([e])
+                dlg.destroy()
+
+        def on_import():
+            self._load_remote_folder(provider, state["path"])
+            dlg.destroy()
+
+        def on_up():
+            state["path"] = state["stack"].pop() if state["stack"] else provider.root_path
+            render()
+
+        btns = ttk.Frame(dlg, padding=8)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="进入 / 播放", command=on_enter).pack(side="left")
+        ttk.Button(btns, text="导入此文件夹", command=on_import).pack(side="left", padx=4)
+        ttk.Button(btns, text="返回上级", command=on_up).pack(side="left", padx=4)
+        ttk.Button(btns, text="关闭", command=dlg.destroy).pack(side="right")
+        lb.bind("<Double-Button-1>", lambda e: on_enter())
+        render()
+
+    @staticmethod
+    def _fmt_size(n):
+        n = float(n)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if n < 1024 or unit == "TB":
+                if unit == "B":
+                    return "%d B" % int(n)
+                return "%.1f %s" % (n, unit)
+            n /= 1024
+
+    def _load_remote_folder(self, provider, path):
+        entries = provider.list_dir(path)
+        playable = [e for e in entries if not e.is_dir]
+        if not playable:
+            messagebox.showinfo("提示", "该目录下没有可播放的媒体文件。")
+            return
+        self._close_zip()
+        self._reset_chapters()
+        self._playlist = []
+        self._playlist_index0 = None
+        self.book_key = "remote:" + provider.name + ":" + path
+        self._load_list(playable)
+
+    def _load_remote_list(self, entries):
+        self._close_zip()
+        self._reset_chapters()
+        self._playlist = []
+        self._playlist_index0 = None
+        self.book_key = "remote:" + entries[0].provider + ":" + entries[0].path
+        self._load_list(entries)
+
+    def _remote_play_url(self, src):
+        """返回 VLC 可读的播放 URL：转码流直接返回 HLS 地址，否则起本地流代理。"""
+        provider = self._get_provider(src.provider)
+        if not provider:
+            return None
+        self._stop_remote_proxy()
+        self._remote_hls = False
+        direct = provider.direct_play_url(src)
+        if direct:
+            self._remote_hls = True
+            return direct
+        try:
+            proxy = RemoteStreamProxy(provider, src)
+            proxy.start()
+        except Exception:
+            return None
+        self._remote_proxy = proxy
+        return proxy.local_url
+
+    def _stop_remote_proxy(self):
+        if self._remote_proxy:
+            try:
+                self._remote_proxy.stop()
+            except Exception:
+                pass
+            self._remote_proxy = None
+
+    # ---------------- 海报墙（媒体库封面网格） ----------------
+    def _poster_wall(self, provider, path):
+        dlg = tk.Toplevel(self)
+        dlg.title("媒体库")
+        dlg.transient(self)
+        dlg.geometry("960x660")
+        dlg.configure(bg="#14161a")
+
+        top = ttk.Frame(dlg, padding=6)
+        top.pack(fill="x")
+        path_lbl = ttk.Label(top, text="")
+        path_lbl.pack(side="left", padx=6)
+        ttk.Button(top, text="播放此文件夹", command=lambda: nav_import()).pack(side="right", padx=4)
+        ttk.Button(top, text="关闭", command=lambda: close()).pack(side="right")
+        ttk.Button(top, text="返回上级", command=lambda: nav_up()).pack(side="right", padx=4)
+
+        canvas = tk.Canvas(dlg, bg="#14161a", highlightthickness=0)
+        vsb = ttk.Scrollbar(dlg, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        hint_lbl = ttk.Label(dlg, text="", foreground="#8892a0")
+        hint_lbl.pack(side="bottom", fill="x", padx=8, pady=4)
+
+        state = {"path": path, "stack": [], "entries": [], "cards": [],
+                 "photos": [], "queue": queue.Queue(), "gen": 0,
+                 "poll_after": None, "alive": True}
+
+        def close():
+            state["alive"] = False
+            if state["poll_after"]:
+                try:
+                    self.after_cancel(state["poll_after"])
+                except Exception:
+                    pass
+                state["poll_after"] = None
+            dlg.destroy()
+
+        def render():
+            state["gen"] += 1
+            gen = state["gen"]
+            self._last_browse[provider.name] = state["path"]
+            state["entries"] = provider.list_dir(state["path"])
+            state["cards"] = []
+            state["photos"] = []
+            canvas.delete("all")
+            path_lbl.configure(text=state["path"] or "/")
+            if not state["entries"]:
+                canvas.create_text(320, 120, text="（空）", fill="#5a6472",
+                                   font=("Segoe UI", 16))
+                canvas.configure(scrollregion=(0, 0, 640, 240))
+                hint_lbl.configure(text="此目录为空")
+                return
+            hint_lbl.configure(text="共 %d 项 · 单击目录卡片进入 · 单击影片/音乐播放 · 顶部按钮：返回上级 / 播放此文件夹" % len(state["entries"]))
+            cw = max(canvas.winfo_width(), 320)
+            PW, PH, GAP, M = 132, 198, 14, 18
+            ROW = PH + 52 + GAP
+            x, y = M, M
+            for i, e in enumerate(state["entries"]):
+                if x + PW > cw - M:
+                    x = M
+                    y += ROW
+                outline = "#8a6d3b" if e.is_dir else "#2a303c"
+                canvas.create_rectangle(x, y, x + PW, y + PH, fill="#1e222a",
+                                        outline=outline, width=2 if e.is_dir else 1,
+                                        tags=("c%d" % i,))
+                if e.is_dir:
+                    canvas.create_rectangle(x + 24, y + PH // 2 - 28, x + PW - 24, y + PH // 2 + 10,
+                                            fill="#5a4a2a", outline="", tags=("g%d" % i,))
+                    canvas.create_rectangle(x + 24, y + PH // 2 - 38, x + 66, y + PH // 2 - 26,
+                                            fill="#6a5832", outline="", tags=("g%d" % i,))
+                    canvas.create_text(x + PW / 2, y + PH // 2 + 32, text="目录", fill="#c9b06a",
+                                       font=("Segoe UI", 10, "bold"), tags=("g%d" % i,))
+                else:
+                    glyph = "♪" if e.kind == "audio" else "▶"
+                    canvas.create_text(x + PW / 2, y + PH / 2, text=glyph, fill="#5a6472",
+                                       font=("Segoe UI", 30), tags=("g%d" % i,))
+                canvas.create_text(x + PW / 2, y + PH + 12, text=e.name, fill="#e8eaee",
+                                   font=("Segoe UI", 9), width=PW + 8, anchor="n",
+                                   tags=("t%d" % i,))
+                year = e.extra.get("year")
+                if year:
+                    canvas.create_text(x + PW / 2, y + PH + 38, text=str(year),
+                                       fill="#8892a0", font=("Segoe UI", 9),
+                                       tags=("t%d" % i,))
+                state["cards"].append((x, y, x + PW, y + PH))
+                x += PW + GAP
+            canvas.configure(scrollregion=(0, 0, cw, y + ROW + M))
+            threading.Thread(target=self._poster_fetcher,
+                             args=(state, provider, gen), daemon=True).start()
+            state["poll_after"] = self.after(90, lambda: self._poster_poll(state, canvas))
+
+        def nav_up():
+            state["path"] = state["stack"].pop() if state["stack"] else provider.root_path
+            render()
+
+        def nav_import():
+            self._load_remote_folder(provider, state["path"])
+            close()
+
+        def on_click(ev):
+            cx = canvas.canvasx(ev.x)
+            cy = canvas.canvasy(ev.y)
+            for i, (x0, y0, x1, y1) in enumerate(state["cards"]):
+                if x0 <= cx <= x1 and y0 <= cy <= y1:
+                    ent = state["entries"][i]
+                    if ent.is_dir:
+                        state["stack"].append(state["path"])
+                        state["path"] = ent.path
+                        render()
+                    else:
+                        self._load_remote_list([ent])
+                        close()
+                    return
+
+        canvas.bind("<Button-1>", on_click)
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        dlg.protocol("WM_DELETE_WINDOW", close)
+        dlg.update_idletasks()
+        dlg.lift()
+        dlg.focus_force()
+        render()
+
+    def _poster_fetcher(self, state, provider, gen):
+        for i, e in enumerate(state["entries"]):
+            if state["gen"] != gen or not state["alive"]:
+                return
+            if e.is_dir:
+                continue   # 目录卡片保留「目录」图标，不拉海报
+            try:
+                data = provider.fetch_image(e)
+                if not data:
+                    continue
+                img = Image.open(io.BytesIO(data))
+                img.thumbnail((264, 396))
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                if state["gen"] == gen and state["alive"]:
+                    state["queue"].put((gen, i, img))
+            except Exception:
+                pass
+
+    def _poster_poll(self, state, canvas):
+        state["poll_after"] = None
+        if not state["alive"]:
+            return
+        try:
+            while True:
+                gen, i, img = state["queue"].get_nowait()
+                if gen == state["gen"] and i < len(state["cards"]):
+                    self._poster_apply(state, canvas, i, img)
+        except queue.Empty:
+            pass
+        if state["alive"]:
+            state["poll_after"] = self.after(90, lambda: self._poster_poll(state, canvas))
+
+    def _poster_apply(self, state, canvas, i, img):
+        if not state["alive"] or i >= len(state["cards"]):
+            return
+        try:
+            photo = ImageTk.PhotoImage(img)
+        except Exception:
+            return
+        state["photos"].append(photo)
+        x0, y0, x1, y1 = state["cards"][i]
+        canvas.delete("g%d" % i)
+        canvas.create_image((x0 + x1) / 2, (y0 + y1) / 2, image=photo, tags=("c%d" % i,))
 
     def _load_zip_path(self, p):
         try:
@@ -1061,6 +1525,8 @@ class ComicViewer(tk.Tk):
 
     # ---------------- 图片读取 ----------------
     def _display_name(self, src):
+        if isinstance(src, RemoteSource):
+            return src.name
         if isinstance(src, tuple):
             if self._is_pdf_src(src):
                 return "%s · 第 %d 页" % (os.path.basename(src[0]), src[1] + 1)
@@ -1070,6 +1536,19 @@ class ComicViewer(tk.Tk):
 
     def _open_raw(self, src):
         """惰性打开（用于缩略图，避免整图解码）。"""
+        if isinstance(src, RemoteSource):
+            provider = self._get_provider(src.provider)
+            if not provider:
+                raise RuntimeError("未找到网盘配置：" + src.provider)
+            resp = provider.open_stream(src, None)
+            try:
+                data = resp.read()
+            finally:
+                try:
+                    resp.close()
+                except Exception:
+                    pass
+            return Image.open(io.BytesIO(data))
         if isinstance(src, tuple):
             if self._is_pdf_src(src):
                 return self._render_pdf_page(src[0], src[1])
@@ -1117,7 +1596,7 @@ class ComicViewer(tk.Tk):
         nxt = self.index + 1
         if nxt >= len(self.sources):
             return None
-        if self._is_video(self.sources[nxt]):
+        if self._is_video(self.sources[nxt]) or self._is_audio(self.sources[nxt]):
             return None
         try:
             im2 = self._open_image(self.sources[nxt])
@@ -1148,8 +1627,22 @@ class ComicViewer(tk.Tk):
     def _is_video(self, src):
         if self._is_pdf_src(src):
             return False
+        if isinstance(src, RemoteSource):
+            if src.kind:
+                return src.kind == "video"
+            return not src.is_dir and os.path.splitext(src.name)[1].lower() in VIDEO_EXTS
         name = src[1] if isinstance(src, tuple) else src
         return os.path.splitext(name)[1].lower() in VIDEO_EXTS
+
+    def _is_audio(self, src):
+        if self._is_pdf_src(src):
+            return False
+        if isinstance(src, RemoteSource):
+            if src.kind:
+                return src.kind == "audio"
+            return not src.is_dir and os.path.splitext(src.name)[1].lower() in AUDIO_EXTS
+        name = src[1] if isinstance(src, tuple) else src
+        return os.path.splitext(name)[1].lower() in AUDIO_EXTS
 
     def _ensure_vlc(self):
         if self.vlc_instance is not None:
@@ -1174,6 +1667,8 @@ class ComicViewer(tk.Tk):
             return False
 
     def _video_path(self, src):
+        if isinstance(src, RemoteSource):
+            return self._remote_play_url(src)
         if isinstance(src, tuple):
             if src in self._video_cache:
                 return self._video_cache[src]
@@ -1234,6 +1729,10 @@ class ComicViewer(tk.Tk):
             self.player.play()
             self._apply_rate_now()
             self.player.audio_set_volume(int(self.vol.get()))
+            # 旧代码曾用 audio_set_mute(True) 静音缩略图播放器，把整个进程的 WASAPI
+            # 会话静音，且 Windows 按 exe 记住了该静音状态（重启后仍静音）。新代码已
+            # 改用 :no-audio 不再触发，但已记住的静音仍需显式解除，否则主播放器无声。
+            self.player.audio_set_mute(False)
             self.is_video = True
             self._apply_region_zoom()   # 清掉上一段视频残留的裁剪框，再按 zoom/区域放大应用
             self._apply_video_adjust()
@@ -1332,6 +1831,8 @@ class ComicViewer(tk.Tk):
             pass
 
     def _video_resume_key(self, src):
+        if isinstance(src, RemoteSource):
+            return src.key()
         return video_resume_key(src)
 
     def _get_resume_position(self, src):
@@ -1641,6 +2142,8 @@ class ComicViewer(tk.Tk):
         _sub_load_guard 防止再触发对外接字幕的显式加载。"""
         if not src or not self._sub_load_enabled or self._sub_load_guard:
             return
+        if isinstance(src, RemoteSource):
+            return   # 网盘视频的同名字幕后续再支持
         name = (src[1] if isinstance(src, tuple) else src)
         if not os.path.dirname(name):
             # zip 内条目无法根据条目名找同名外部文件
@@ -1918,6 +2421,9 @@ class ComicViewer(tk.Tk):
         if not self.is_video or not self.player:
             return
         src = self.sources[self.index]
+        if isinstance(src, RemoteSource):
+            self._apply_cast_remote(renderer, name, src)
+            return
         path = self._video_path(src)
         if not path:
             self.status.configure(text="投屏失败：无法读取视频文件")
@@ -1945,6 +2451,61 @@ class ComicViewer(tk.Tk):
             return
         self._dlna = renderer
         self._dlna_server = srv
+        self._dlna_playing = True
+        self._dlna_total = 0
+        self._dlna_pos = 0
+        self._dlna_sync_tick = 0
+        self._cast_name = name
+        self._cast_mode = "dlna"
+        self.is_video = True
+        self.play_btn.configure(text="⏸")
+        self._show_video_bar()
+        self._start_autohide()
+        self._sync_toggle_buttons()
+        self._update_status()
+        self._update_video_time_loop()
+        self.status.configure(text="已投屏到：%s（播放/暂停/进度条控制投影仪）" % name)
+
+    def _apply_cast_remote(self, renderer, name, src):
+        """把远程视频投屏到 DLNA：复用本地流代理的局域网 URL。"""
+        _p = self._get_provider(src.provider)
+        if self._remote_hls or (_p and _p.direct_play_url(src)):
+            self.status.configure(text="转码流（HLS）暂不支持投屏")
+            return
+        self._save_resume_position()
+        self._cancel_seek_thumbs()
+        self._seeking = False
+        self._hide_seek_preview()
+        self.is_video = False
+        self.rz.enabled = False
+        self._hide_rz_panel()
+        self._stop_captions()
+        self._stop_autohide()
+        self._stop_player()
+        self._hide_video_bar()
+        # 保留代理，DLNA 设备从局域网拉流
+        if not self._remote_proxy:
+            provider = self._get_provider(src.provider)
+            if not provider:
+                self.status.configure(text="投屏失败：未找到网盘配置")
+                return
+            proxy = RemoteStreamProxy(provider, src)
+            try:
+                proxy.start()
+            except Exception as e:
+                self.status.configure(text="投屏失败（无法启动媒体服务）：%s" % e)
+                return
+            self._remote_proxy = proxy
+        try:
+            renderer.set_uri(self._remote_proxy.lan_url, self._display_name(src))
+            renderer.play()
+        except Exception as e:
+            self._stop_remote_proxy()
+            self._show_video(src)
+            self.status.configure(text="投屏失败：%s" % e)
+            return
+        self._dlna = renderer
+        self._dlna_server = None
         self._dlna_playing = True
         self._dlna_total = 0
         self._dlna_pos = 0
@@ -2023,6 +2584,7 @@ class ComicViewer(tk.Tk):
         self._stop_captions()
         self._stop_autohide()
         self._stop_player()
+        self._stop_remote_proxy()
         self._hide_video_bar()
 
     def _stop_player(self, player=None):
@@ -2111,16 +2673,24 @@ class ComicViewer(tk.Tk):
         mb_file = mk_menubutton("文件")
         mb_view = mk_menubutton("视图")
         mb_help = mk_menubutton("帮助")
+        mb_net = mk_menubutton("网盘")
         ov_file = tk.Menu(mb_file, tearoff=0)
         ov_view = tk.Menu(mb_view, tearoff=0)
         ov_help = tk.Menu(mb_help, tearoff=0)
+        ov_net = tk.Menu(mb_net, tearoff=0)
         self._populate_menus(ov_file, ov_view, ov_help)
+        ov_net.add_command(label="返回目录", command=self._back_to_browse)
+        ov_net.add_separator()
+        ov_net.add_command(label="浏览 Jellyfin", command=lambda: self._browse_remote_menu("jellyfin"))
+        ov_net.add_command(label="浏览 WebDAV", command=lambda: self._browse_remote_menu("webdav"))
         mb_file.configure(menu=ov_file)
         mb_view.configure(menu=ov_view)
         mb_help.configure(menu=ov_help)
+        mb_net.configure(menu=ov_net)
         self._ov_file_menu = ov_file
         self._ov_view_menu = ov_view
         self._ov_help_menu = ov_help
+        self._ov_net_menu = ov_net
         self._ov_top = ov
 
     def _ov_top_show(self, show):
@@ -2465,6 +3035,10 @@ class ComicViewer(tk.Tk):
         self._cancel_seek_thumbs()
         if not self.is_video or self._cast_mode == "dlna":
             return
+        if self._is_audio(src):
+            return   # 纯音频没有视频帧，跳过进度缩略图
+        if getattr(self, "_remote_hls", False):
+            return   # HLS 转码流逐段拉取，生成缩略图代价高，跳过
         if self._seek_thumbs_src == src and self._seek_thumbs:
             return
         self._seek_thumbs_src = src
@@ -2571,6 +3145,7 @@ class ComicViewer(tk.Tk):
         if self.player and not self._video_is_stopping():
             try:
                 self.player.audio_set_volume(int(float(val)))
+                self.player.audio_set_mute(False)   # 解除旧代码残留的进程级静音
             except Exception:
                 pass
 
@@ -2613,6 +3188,9 @@ class ComicViewer(tk.Tk):
             return
         if self._cast_mode == "dlna":
             self.status.configure(text="投屏模式不支持本地截图")
+            return
+        if self.sources and self._is_audio(self.sources[self.index]):
+            self.status.configure(text="音频不支持视频截图")
             return
         if self._screenshot_busy:
             return
@@ -2930,6 +3508,7 @@ class ComicViewer(tk.Tk):
             if cur > 0:
                 self.player.set_time(cur)
             self.player.audio_set_volume(int(self.vol.get()))
+            self.player.audio_set_mute(False)   # 解除旧代码残留的进程级静音
         except Exception:
             pass
         # stop 期间时间刷新循环被暂停了（_video_is_stopping 让其提前返回且不重排），
@@ -3056,12 +3635,16 @@ class ComicViewer(tk.Tk):
         src = self.sources[i]
         self._record_history(src)
 
-        if self._is_video(src):
+        if self._is_video(src) or self._is_audio(src):
             self.orig = None
             self._spread_img = None
             self._video_rotation = 0   # 打开新视频时重置旋转，不记忆上一段的角度
             self._thumbs_hide_for_video()   # 视频页隐藏缩略图条
             self.canvas.delete("img")
+            if isinstance(src, RemoteSource):
+                self.browse_btn.pack(side="left", padx=2)
+            else:
+                self.browse_btn.pack_forget()
             self._show_video(src)
             self._highlight_thumb()
             self._save_progress()
@@ -3071,6 +3654,7 @@ class ComicViewer(tk.Tk):
 
         self._show_image_panel()
         self.is_video = False
+        self.browse_btn.pack_forget()
         self._thumbs_restore()   # 回到图片页按偏好恢复缩略图条
         try:
             self.orig = self._open_image(src)
@@ -3913,11 +4497,12 @@ class ComicViewer(tk.Tk):
         for i in range(self._thumb_build_index, batch_end):
             src = self._thumb_build_sources[i]
             x = self._thumb_build_x
-            if self._is_video(src):
+            if self._is_video(src) or self._is_audio(src):
                 self._thumb_photos.append(None)
                 self.thumbs.create_rectangle(x, Y - H / 2, x + 80, Y + H / 2,
                                              fill="#1b1e24", tags=("thumb", "t%d" % i))
-                self.thumbs.create_text(x + 40, Y, text="▶", fill=ACCENT,
+                glyph = "▶" if self._is_video(src) else "♪"
+                self.thumbs.create_text(x + 40, Y, text=glyph, fill=ACCENT,
                                         font=("Segoe UI", 18), tags=("thumb", "t%d" % i))
                 self._thumb_rects.append((x, x + 80))
                 self._thumb_build_x += 80 + 8
@@ -3980,6 +4565,25 @@ class ComicViewer(tk.Tk):
         if not self.sources:
             return
         src = self.sources[self.index]
+        if isinstance(src, RemoteSource):
+            if src.is_dir:
+                kind = "目录"
+            elif src.kind == "audio":
+                kind = "音频"
+            elif src.kind == "video":
+                kind = "视频"
+            else:
+                kind = "图片"
+            details = [
+                "文件名: " + src.name,
+                "来源: " + src.provider,
+                "远程路径: " + src.path,
+            ]
+            if src.size:
+                details.append("大小: %s（%d 字节）" % (self._fmt_size(src.size), src.size))
+            details.append("类型: " + kind)
+            messagebox.showinfo("详细信息", "\n".join(details), parent=self)
+            return
         name = self._display_name(src)
         details = ["文件名: " + name]
         if isinstance(src, tuple):
@@ -4030,11 +4634,18 @@ class ComicViewer(tk.Tk):
         self._sync_zoom_slider()
         if self.is_video:
             name = self._display_name(self.sources[self.index])
+            is_audio = self._is_audio(self.sources[self.index])
             self.page_label.configure(text="%d / %d" % (self.index + 1, len(self.sources)))
-            self.zoom_label.configure(text="画面 %d%%" % round(self._video_zoom * 100))
-            self.zoom_out_btn.configure(state="normal")
-            self.zoom_in_btn.configure(state="normal")
-            self.status.configure(text=self._chapter_prefix() + name + "   ·   视频   ·   画面 %d%%" % round(self._video_zoom * 100))
+            if is_audio:
+                self.zoom_label.configure(text="音频")
+                self.zoom_out_btn.configure(state="disabled")
+                self.zoom_in_btn.configure(state="disabled")
+                self.status.configure(text=self._chapter_prefix() + name + "   ·   音频")
+            else:
+                self.zoom_label.configure(text="画面 %d%%" % round(self._video_zoom * 100))
+                self.zoom_out_btn.configure(state="normal")
+                self.zoom_in_btn.configure(state="normal")
+                self.status.configure(text=self._chapter_prefix() + name + "   ·   视频   ·   画面 %d%%" % round(self._video_zoom * 100))
             return
         name = self._chapter_prefix() + self._display_name(self.sources[self.index])
         if self._spread_img is not None:

@@ -11,6 +11,7 @@
 | `caption_engine.py` | 视频实时字幕引擎（英文 vosk、中文 sherpa-onnx、日语 SenseVoice 识别 + 翻译） |
 | `translation_engine.py` | 离线字幕翻译（Argos / ctranslate2） |
 | `dlna_cast.py` | DLNA 投屏（SSDP 发现 + AVTransport SOAP 控制 + 本地流媒体） |
+| `remote_source.py` | 远程媒体源抽象 + WebDAV provider + 本地流代理（网盘视频免下载播放） |
 | `viewer.ico` | 程序图标 |
 | `image_viewer.json` | 阅读进度（运行时自动生成，不纳入版本控制） |
 
@@ -100,6 +101,25 @@ DLNA 设备（极米投影仪 / 电视 / 盒子等）。原理是 DLNA：本地�
 - 支持格式取决于投屏设备（mp4 一般没问题；mkv 视设备而定）
 - DLNA 不支持倍速、画面缩放；本地 vosk 实时字幕不跟投
 - 再点一次按钮可取消投屏、恢复本地播放（自动续播到原进度）
+
+### 网盘 / 媒体库（WebDAV、Jellyfin/Emby）
+
+菜单栏 **网盘** 提供两类远程源，均为**免下载流式播放**（本地只起 Range 流代理，不落盘）：
+
+**WebDAV**（坚果云 / NAS / 阿里云盘 WebDAV 等，Basic Auth）
+
+- 连接后浏览目录，支持**图片 / 视频 / 音频（mp3/flac 等）**：图片按需取到内存显示，
+  视频/音频经流代理由 VLC 直接播放
+- 断点续播、seek 缩略图、倍速、实时字幕、DLNA 投屏均可用
+
+**Jellyfin / Emby**（媒体服务器）
+
+- 填写服务器地址 + 账号密码登录（token 缓存，密码不保存）
+- **海报墙**浏览片库（电影 / 剧集 / 音乐封面网格 + 标题/年份，异步加载封面）
+- 直连播放（Static 流，支持 Range/seek）；不兼容格式自动回退 HLS 转码流（VLC 直接播 master.m3u8）
+
+- 凭据保存在 `image_viewer.json` 的 `_webdav_` / `_jellyfin_` 段（明文，后续加密）
+- 暂不支持：网盘内 zip/cbz 在线读、远程视频的同名字幕、转码流（HLS）的 DLNA 投屏
 
 ### 网页版
 

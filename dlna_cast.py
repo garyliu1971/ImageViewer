@@ -230,6 +230,13 @@ class _RangeHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass  # 静默
 
+    def handle_one_request(self):
+        """播放器 seek/断开时会中断连接，吞掉异常避免刷屏。"""
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TimeoutError):
+            self.close_connection = True
+
     def _serve(self, send_body=True):
         path = self.server.media_path
         try:

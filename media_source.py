@@ -18,6 +18,7 @@ IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff",
 ZIP_EXTS = {".zip", ".cbz"}
 PDF_EXTS = {".pdf"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
+AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".ape"}
 
 MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS | PDF_EXTS
 
