@@ -35,6 +35,8 @@
 
 import os
 import io
+import importlib
+import re
 import sys
 import math
 import time
@@ -57,11 +59,11 @@ from media_source import (IMAGE_EXTS, ZIP_EXTS, PDF_EXTS, VIDEO_EXTS, AUDIO_EXTS
                           parse_playlist, files_book_key, playlist_book_key,
                           update_history)
 from config_store import load_config, save_config
+from browser_view import fmt_size, fmt_mtime, kind_label, grid_layout, hit_test, sort_entries
 
 from video_player import (fmt_time, build_vlc_args, build_video_media_options,
                           video_tmp_name, video_resume_key, RegionZoom)
-from remote_source import (RemoteSource, WebDavProvider, JellyfinProvider,
-                           RemoteStreamProxy)
+from remote_types import RemoteSource
 import alist_manager
 
 # ---- 高 DPI 适配（必须在创建任何窗口之前调用） ----
@@ -84,15 +86,53 @@ except ImportError:
     print("缺少 Pillow 库，请先安装： pip install Pillow")
     sys.exit(1)
 
-try:
-    import numpy as np
-except ImportError:
-    np = None
+class _LazyModule:
+    """首次用到属性时才真正 import（numpy≈180ms、pymupdf≈80ms，启动时用不上）。
+    未安装时 bool() 为 False，调用方用 `if not np:` 判断，语义同原来的 `is None`。"""
 
-try:
-    import pymupdf as fitz  # PyMuPDF，用于读取 PDF 漫画
-except ImportError:
-    fitz = None
+    def __init__(self, *names):
+        self._names = names
+        self._mod = None
+        self._tried = False
+
+    def _load(self):
+        if not self._tried:
+            self._tried = True
+            for name in self._names:
+                try:
+                    self._mod = importlib.import_module(name)
+                    break
+                except ImportError:
+                    continue
+        return self._mod
+
+    def __bool__(self):
+        return self._load() is not None
+
+    def __getattr__(self, attr):
+        mod = self._load()
+        if mod is None:
+            raise ImportError("缺少依赖：" + "/".join(self._names))
+        return getattr(mod, attr)
+
+
+np = _LazyModule("numpy")
+fitz = _LazyModule("pymupdf")   # PyMuPDF，用于读取 PDF 漫画
+
+
+# 首屏按钮先用不含 emoji 的文字：Tk 第一次渲染彩色 emoji 要加载字体，约 400ms，
+# 会把窗口显示整整推迟；窗口出来后再由 _apply_emoji 换回带图标的文字。
+_EMOJI_RE = re.compile(r"[\U0001F000-\U0001FAFF☀-➿⬀-⯿⏩-⏺]️?\s*")
+
+
+def _plain_text(text):
+    return _EMOJI_RE.sub("", text).strip() or "·"
+
+
+def _remote():
+    """网盘模块（urllib.request / http.server 等较重）按需加载。"""
+    import remote_source
+    return remote_source
 
 CAPTION_LANGS = ["中文", "英文", "日语", "韩语", "粤语"]
 CAPTION_LANG_CODES = {"中文": "zh", "英文": "en", "日语": "ja", "韩语": "ko", "粤语": "yue"}
@@ -137,7 +177,7 @@ def _register_shift(ref_gray, frm_gray):
     ref_gray / frm_gray 为 float 灰度图，尺寸相同。返回的 (dx, dy) 表示
     frm(x, y) ≈ ref(x - dx, y - dy)，即 frm 的内容相对 ref 移动了 (dx, dy)。
     """
-    if np is None:
+    if not np:
         return 0.0, 0.0
     a = ref_gray.astype(np.float32)
     b = frm_gray.astype(np.float32)
@@ -180,7 +220,7 @@ def _merge_frames(frames, scale=2):
     def _lum(a):
         return (0.299 * a[..., 0] + 0.587 * a[..., 1] + 0.114 * a[..., 2]).astype(np.float32)
 
-    if n == 1 or np is None:
+    if n == 1 or not np:
         return np.repeat(np.repeat(ref, scale, axis=0), scale, axis=1)
 
     refg = _lum(ref)
@@ -339,6 +379,12 @@ class ComicViewer(tk.Tk):
         self._remote_providers = {}   # 远程 provider 缓存：名称 -> RemoteProvider
         self._remote_proxy = None     # 当前远程视频的本地流代理
         self._remote_hls = False      # 当前远程视频是否走 HLS 直连（不起代理）
+        self._rthumb_gen = 0          # 远程缩略图任务代号；每次重建缩略图条 +1，旧任务自动作废
+        self._rthumb_jobs = None
+        self._rthumb_results = queue.Queue()
+        self._rthumb_pending = 0
+        self._rthumb_poll_after = None
+        self._rthumb_started_gen = -1
         self._last_browse = {}        # 每个远程 provider 最后浏览的目录路径
         self._alist_proc = None       # 本程序拉起的 AList 进程
         self._tmp_dir = tempfile.mkdtemp(prefix="image_viewer_")
@@ -381,11 +427,15 @@ class ComicViewer(tk.Tk):
         self._dlna_pos = 0             # 本地计时的当前秒数
         self._dlna_sync_tick = 0       # 校准计数器
 
+        self._emoji_pending = []       # [(按钮, 带 emoji 的完整文字)]，窗口显示后再换上
         self._build_ui()
         self._build_menu()
         self._bind_events()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
-        self.after(120, self._show_start)
+        # 等窗口第一次真正画出来（<Expose>）再换 emoji；1.5s 兜底防止窗口一直没被绘制（如启动即最小化）
+        self._emoji_bind = self.bind("<Expose>", self._on_first_expose, add="+")
+        self.after(1500, self._apply_emoji)
+        self.after(120, lambda: self._show_start(icon=False))   # 首屏不带 emoji，见 _apply_emoji
 
     # ---------------- UI ----------------
     def _build_ui(self):
@@ -461,10 +511,11 @@ class ComicViewer(tk.Tk):
 
         # 视频控制条（默认隐藏）
         self.video_bar = tk.Frame(self, bg=PANEL, padx=8, pady=4)
-        self.play_btn = tk.Button(self.video_bar, text="⏸", command=self._toggle_play, takefocus=0,
+        self.play_btn = tk.Button(self.video_bar, text="||", command=self._toggle_play, takefocus=0,
                                   bg=BTN_BG, fg=FG, activebackground=BTN_ACTIVE, activeforeground="#fff",
                                   relief="flat", bd=0, width=4, cursor="hand2", font=("Segoe UI", 11))
         self.play_btn.pack(side="left", padx=2)
+        self._emoji_pending.append((self.play_btn, "⏸"))
         self.time_label = tk.Label(self.video_bar, text="0:00 / 0:00", bg=PANEL, fg=FG,
                                    font=("Consolas", 10))
         self.time_label.pack(side="left", padx=6)
@@ -665,8 +716,33 @@ class ComicViewer(tk.Tk):
         self.caption_window.lift()
         self._reposition_caption_window()
 
+    def _set_btn_text(self, b, text):
+        """改按钮文字；若该按钮的 emoji 还没换上（首屏推迟中），只更新待换文字，不触发 emoji 字体加载。"""
+        for k, (pb, _t) in enumerate(self._emoji_pending):
+            if pb is b:
+                self._emoji_pending[k] = (b, text)
+                return
+        b.configure(text=text)
+
+    def _on_first_expose(self, _event=None):
+        if self._emoji_bind:
+            self.unbind("<Expose>", self._emoji_bind)
+            self._emoji_bind = None
+            self.after(30, self._apply_emoji)
+
+    def _apply_emoji(self):
+        pending, self._emoji_pending = self._emoji_pending, []
+        for b, text in pending:
+            try:
+                b.configure(text=text)
+            except tk.TclError:
+                pass
+        if not self.sources:
+            self._show_start()    # 补上起始页标题的 emoji
+
     def _btn(self, parent, text, cmd, tip=None, primary=False):
-        b = tk.Button(parent, text=text, command=cmd, takefocus=0,
+        shown = _plain_text(text)
+        b = tk.Button(parent, text=shown, command=cmd, takefocus=0,
                       bg=ACCENT if primary else BTN_BG,
                       fg="#fff" if primary else FG,
                       activebackground="#5b9aff" if primary else BTN_ACTIVE,
@@ -674,14 +750,19 @@ class ComicViewer(tk.Tk):
                       relief="flat", bd=0, padx=10, pady=4,
                       cursor="hand2", font=("Microsoft YaHei", 10))
         b.pack(side="left", padx=2)
+        if shown != text:
+            self._emoji_pending.append((b, text))
         return b
 
     def _state_btn(self, parent, text, cmd):
-        b = tk.Button(parent, text=text, command=cmd, takefocus=0,
+        shown = _plain_text(text)
+        b = tk.Button(parent, text=shown, command=cmd, takefocus=0,
                       bg=BTN_BG, fg=FG, activebackground=BTN_ACTIVE, activeforeground="#fff",
                       relief="flat", bd=0, padx=10, pady=4,
                       cursor="hand2", font=("Microsoft YaHei", 10))
         b.pack(side="left", padx=2)
+        if shown != text:
+            self._emoji_pending.append((b, text))
         return b
 
     def _resize_toolbar_canvas(self, event=None):
@@ -872,7 +953,7 @@ class ComicViewer(tk.Tk):
             cfg = self._config.get("_webdav_")
             if cfg and cfg.get("base_url"):
                 try:
-                    p = WebDavProvider(cfg["base_url"],
+                    p = _remote().WebDavProvider(cfg["base_url"],
                                        cfg.get("username", ""),
                                        cfg.get("password", ""))
                     self._remote_providers[name] = p
@@ -882,7 +963,7 @@ class ComicViewer(tk.Tk):
         elif name == "jellyfin":
             cfg = self._config.get("_jellyfin_")
             if cfg and cfg.get("base_url") and cfg.get("token"):
-                p = JellyfinProvider(cfg["base_url"], cfg["token"],
+                p = _remote().JellyfinProvider(cfg["base_url"], cfg["token"],
                                      cfg.get("user_id", ""),
                                      username=cfg.get("username", ""),
                                      device_id=cfg.get("device_id"))
@@ -918,8 +999,8 @@ class ComicViewer(tk.Tk):
                 messagebox.showwarning("提示", "请填写 WebDAV 地址。", parent=dlg)
                 return
             try:
-                p = WebDavProvider(url, user_var.get().strip(), pass_var.get())
-                p.list_dir(p.root_path)   # 连通性自检
+                p = _remote().WebDavProvider(url, user_var.get().strip(), pass_var.get())
+                p.list_dir_strict(p.root_path)   # 连通性自检（失败会抛出，不再被当成空目录）
             except Exception as e:
                 messagebox.showerror("连接失败", "无法连接 WebDAV：%s" % e, parent=dlg)
                 return
@@ -968,13 +1049,13 @@ class ComicViewer(tk.Tk):
                 messagebox.showwarning("提示", "请填写服务器地址。", parent=dlg)
                 return
             try:
-                token, user_id, device_id = JellyfinProvider.authenticate(
+                token, user_id, device_id = _remote().JellyfinProvider.authenticate(
                     url, username, pass_var.get())
                 if not token or not user_id:
                     raise RuntimeError("登录返回缺少 token 或用户 ID")
-                p = JellyfinProvider(url, token, user_id,
+                p = _remote().JellyfinProvider(url, token, user_id,
                                      username=username, device_id=device_id)
-                p.list_dir("")   # 连通性自检（列顶层媒体库）
+                p.list_dir_strict("")   # 连通性自检（列顶层媒体库）
             except Exception as e:
                 messagebox.showerror("连接失败", "无法连接 Jellyfin/Emby：%s" % e, parent=dlg)
                 return
@@ -1101,67 +1182,396 @@ class ComicViewer(tk.Tk):
             return
         webbrowser.open(alist_manager.WEB_URL)
 
+    # ---------------- 网盘浏览器（列表 / 网格 两种视图） ----------------
+    _RB_TILE_W, _RB_TILE_H, _RB_LABEL_H, _RB_GAP, _RB_MARGIN = 150, 120, 34, 12, 14
+    _RB_THUMB_WORKERS = 4
+    _RB_PHOTO_CACHE_MAX = 600
+
     def _remote_browser(self, provider, path):
+        """WebDAV 等 provider 的目录浏览：列表（名称/类型/大小/修改时间，可点表头排序）
+        和网格（缩略图平铺）两种视图可切换；目录读取与缩略图都在后台线程，不卡界面。"""
         dlg = tk.Toplevel(self)
         dlg.transient(self)
-        body = ttk.Frame(dlg, padding=8)
-        body.pack(fill="both", expand=True)
-        lb = tk.Listbox(body, width=72, height=22)
-        lb.pack(side="left", fill="both", expand=True)
-        sb = ttk.Scrollbar(body, orient="vertical", command=lb.yview)
-        sb.pack(side="right", fill="y")
-        lb.configure(yscrollcommand=sb.set)
-        state = {"path": path, "entries": [], "stack": []}
+        dlg.geometry("1000x660")
+        TW, TH, LH, GAP, M = (self._RB_TILE_W, self._RB_TILE_H, self._RB_LABEL_H,
+                              self._RB_GAP, self._RB_MARGIN)
+        mode0 = (self._config.get("_remote_view_") or {}).get("mode", "list")
+        state = {"path": path, "stack": [], "entries": [], "sel": None,
+                 "sort": ("name", False), "gen": 0, "alive": True, "loading": False,
+                 "rects": [], "photos": {}, "requested": set(), "poll_after": None,
+                 "relayout_after": None, "grid_w": 0, "thumb_after": None, "want": set(),
+                 "events": queue.Queue(), "jobs": queue.Queue()}
+        mode_var = tk.StringVar(value=mode0 if mode0 in ("list", "grid") else "list")
 
-        def render():
-            dlg.title("浏览网盘 - " + (state["path"] or "/"))
-            state["entries"] = provider.list_dir(state["path"])
-            lb.delete(0, "end")
-            for e in state["entries"]:
-                label = ("[目录] " if e.is_dir else "       ") + e.name
-                if not e.is_dir and e.size:
-                    label += "   (%s)" % self._fmt_size(e.size)
-                lb.insert("end", label)
+        # ---- 顶栏：路径 + 视图切换 ----
+        top = ttk.Frame(dlg, padding=(8, 6))
+        top.pack(fill="x")
+        path_lbl = ttk.Label(top, text="")
+        path_lbl.pack(side="left")
+        ttk.Radiobutton(top, text="网格", value="grid", variable=mode_var,
+                        style="Toolbutton", command=lambda: set_mode()).pack(side="right")
+        ttk.Radiobutton(top, text="列表", value="list", variable=mode_var,
+                        style="Toolbutton", command=lambda: set_mode()).pack(side="right", padx=(0, 2))
 
-        def on_enter():
-            sel = lb.curselection()
-            if not sel:
+        # ---- 底栏（先 pack，保证内容区缩放时按钮始终可见）----
+        btns = ttk.Frame(dlg, padding=8)
+        btns.pack(side="bottom", fill="x")
+        status = ttk.Label(dlg, text="", foreground="#6b7480")
+        status.pack(side="bottom", fill="x", padx=10)
+
+        content = ttk.Frame(dlg, padding=(8, 0))
+        content.pack(fill="both", expand=True)
+
+        # ---- 列表视图 ----
+        list_frame = ttk.Frame(content)
+        cols = (("name", "名称", 460, "w"), ("kind", "类型", 70, "w"),
+                ("size", "大小", 100, "e"), ("mtime", "修改时间", 150, "w"))
+        tree = ttk.Treeview(list_frame, columns=[c[0] for c in cols], show="headings",
+                            selectmode="browse")
+        for key, title, width, anchor in cols:
+            tree.heading(key, text=title, command=lambda k=key: sort_by(k))
+            tree.column(key, width=width, anchor=anchor, stretch=(key == "name"))
+        tsb = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=tsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        tsb.pack(side="right", fill="y")
+
+        # ---- 网格视图 ----
+        grid_frame = ttk.Frame(content)
+        canvas = tk.Canvas(grid_frame, bg="#14161a", highlightthickness=0)
+        gsb = ttk.Scrollbar(grid_frame, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=lambda *a: on_yscroll(*a))
+        canvas.pack(side="left", fill="both", expand=True)
+        gsb.pack(side="right", fill="y")
+
+        def selected_entry():
+            i = state["sel"]
+            return state["entries"][i] if i is not None and i < len(state["entries"]) else None
+
+        def close():
+            state["alive"] = False
+            for k in ("poll_after", "relayout_after", "thumb_after"):
+                if state[k]:
+                    try:
+                        self.after_cancel(state[k])
+                    except Exception:
+                        pass
+                    state[k] = None
+            dlg.destroy()
+
+        # ---------- 数据加载（后台线程） ----------
+        def load(new_path):
+            state["gen"] += 1
+            gen = state["gen"]
+            state["path"] = new_path
+            state["loading"] = True
+            state["sel"] = None
+            state["entries"] = []
+            state["rects"] = []
+            state["want"] = set()
+            state["requested"].clear()
+            tree.delete(*tree.get_children())
+            canvas.delete("all")
+            path_lbl.configure(text=(new_path or "/"))
+            dlg.title("浏览网盘 - " + (new_path or "/"))
+            status.configure(text="加载中…")
+
+            def work():
+                try:
+                    lister = getattr(provider, "list_dir_strict", provider.list_dir)
+                    entries, err = lister(new_path), None
+                except Exception as ex:
+                    entries, err = [], str(ex)
+                if state["alive"]:
+                    state["events"].put(("list", gen, entries, err))
+            threading.Thread(target=work, daemon=True).start()
+
+        def apply_list(entries, err):
+            state["loading"] = False
+            col, desc = state["sort"]
+            state["entries"] = sort_entries(entries, col, desc)
+            n = len(state["entries"])
+            if err:
+                status.configure(text="读取失败：" + err)
+            else:
+                status.configure(text=("共 %d 项" % n) if n else "此目录为空")
+            self._last_browse[provider.name] = state["path"]
+            refresh()
+
+        # ---------- 渲染 ----------
+        def refresh():
+            if mode_var.get() == "grid":
+                fill_grid()
+            else:
+                fill_list()
+
+        def fill_list():
+            tree.delete(*tree.get_children())
+            for i, e in enumerate(state["entries"]):
+                tree.insert("", "end", iid=str(i), values=(
+                    e.name, kind_label(e), "" if e.is_dir else fmt_size(e.size),
+                    fmt_mtime(e.mtime)))
+            if state["sel"] is not None and state["sel"] < len(state["entries"]):
+                tree.selection_set(str(state["sel"]))
+                tree.see(str(state["sel"]))
+
+        def fill_grid():
+            state["relayout_after"] = None
+            canvas.delete("all")
+            width = max(canvas.winfo_width(), TW + 2 * M)
+            state["grid_w"] = width
+            entries = state["entries"]
+            rects, total = grid_layout(len(entries), width, TW, TH, LH, GAP, M)
+            state["rects"] = rects
+            for i, (e, (x0, y0, x1, y1)) in enumerate(zip(entries, rects)):
+                canvas.create_rectangle(x0, y0, x1, y1, fill="#1e222a", outline="#2a303c",
+                                        tags=("r%d" % i,))
+                photo = state["photos"].get(e.path) if e.kind == "image" else None
+                if photo is not None:
+                    canvas.create_image((x0 + x1) / 2, (y0 + y1) / 2, image=photo,
+                                        tags=("i%d" % i,))
+                else:
+                    draw_glyph(i, e, x0, y0, x1, y1)
+                canvas.create_text((x0 + x1) / 2, y1 + 4, text=e.name, fill="#e8eaee",
+                                   font=("Segoe UI", 9), width=TW, anchor="n",
+                                   tags=("t%d" % i,))
+            canvas.configure(scrollregion=(0, 0, width, max(total, 1)))
+            highlight()
+            queue_thumbs()
+
+        def draw_glyph(i, e, x0, y0, x1, y1):
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            if e.is_dir:
+                canvas.create_rectangle(cx - 34, cy - 20, cx + 34, cy + 22,
+                                        fill="#5a4a2a", outline="", tags=("g%d" % i,))
+                canvas.create_rectangle(cx - 34, cy - 30, cx - 4, cy - 18,
+                                        fill="#6a5832", outline="", tags=("g%d" % i,))
+            else:
+                glyph = {"audio": "♪", "video": "▶"}.get(e.kind, "▣")
+                canvas.create_text(cx, cy, text=glyph, fill="#5a6472",
+                                   font=("Segoe UI", 28), tags=("g%d" % i,))
+
+        def highlight():
+            for i in range(len(state["rects"])):
+                on = (i == state["sel"])
+                canvas.itemconfigure("r%d" % i, outline="#4a90e2" if on else "#2a303c",
+                                     width=3 if on else 1)
+
+        def scroll_to_sel():
+            i = state["sel"]
+            if i is None or i >= len(state["rects"]):
                 return
-            e = state["entries"][sel[0]]
+            x0, y0, x1, y1 = state["rects"][i]
+            region = canvas.cget("scrollregion").split()
+            total = float(region[3]) if len(region) == 4 else 0
+            if total <= 0:
+                return
+            top_y, bot_y = canvas.canvasy(0), canvas.canvasy(canvas.winfo_height())
+            if y0 < top_y:
+                canvas.yview_moveto(max(0.0, (y0 - M) / total))
+            elif y1 + LH > bot_y:
+                canvas.yview_moveto(min(1.0, (y1 + LH + M - canvas.winfo_height()) / total))
+
+        # ---------- 缩略图（后台线程池） ----------
+        def queue_thumbs():
+            state["thumb_after"] = None
+            if mode_var.get() != "grid" or not state["alive"]:
+                return
+            gen = state["gen"]
+            h = max(canvas.winfo_height(), 1)
+            lo, hi = canvas.canvasy(0) - h, canvas.canvasy(h) + h
+            want = set()
+            for e, (x0, y0, x1, y1) in zip(state["entries"], state["rects"]):
+                if e.kind != "image" or y1 + LH < lo or y0 > hi:
+                    continue
+                want.add(e.path)
+                if e.path in state["photos"] or e.path in state["requested"]:
+                    continue
+                state["requested"].add(e.path)
+                state["jobs"].put((gen, e))
+            state["want"] = want
+
+        def on_yscroll(*a):
+            gsb.set(*a)
+            if state["thumb_after"] is None and state["alive"]:
+                state["thumb_after"] = self.after(80, queue_thumbs)
+
+        def thumb_worker():
+            while state["alive"]:
+                try:
+                    gen, e = state["jobs"].get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if gen != state["gen"] or not state["alive"]:
+                    continue
+                if e.path not in state["want"]:      # 已滚出可见范围：丢弃，回来时会重新排队
+                    state["requested"].discard(e.path)
+                    continue
+                try:
+                    data = provider.fetch_image(e)
+                    if not data:
+                        continue
+                    img = Image.open(io.BytesIO(data))
+                    img.thumbnail((TW - 8, TH - 8))
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    state["events"].put(("thumb", gen, e.path, img))
+                except Exception:
+                    pass
+
+        def apply_thumb(path_key, img):
+            try:
+                photo = ImageTk.PhotoImage(img)
+            except Exception:
+                return
+            if len(state["photos"]) >= self._RB_PHOTO_CACHE_MAX:
+                keep = {e.path for e in state["entries"]}   # 只淘汰别的目录留下的，屏幕上的不能丢
+                for k in [k for k in state["photos"] if k not in keep]:
+                    del state["photos"][k]
+            state["photos"][path_key] = photo
+            if mode_var.get() != "grid":
+                return
+            for i, e in enumerate(state["entries"]):
+                if e.path == path_key and i < len(state["rects"]):
+                    x0, y0, x1, y1 = state["rects"][i]
+                    canvas.delete("g%d" % i)
+                    canvas.create_image((x0 + x1) / 2, (y0 + y1) / 2, image=photo,
+                                        tags=("i%d" % i,))
+                    canvas.tag_raise("t%d" % i)
+                    break
+
+        def poll():
+            state["poll_after"] = None
+            if not state["alive"]:
+                return
+            try:
+                while True:
+                    ev = state["events"].get_nowait()
+                    try:
+                        if ev[0] == "list":
+                            if ev[1] == state["gen"]:
+                                apply_list(ev[2], ev[3])
+                        elif ev[0] == "thumb" and ev[1] == state["gen"]:
+                            apply_thumb(ev[2], ev[3])
+                    except Exception:
+                        pass
+            except queue.Empty:
+                pass
+            if state["alive"]:
+                state["poll_after"] = self.after(60, poll)
+
+        # ---------- 交互 ----------
+        def set_mode():
+            mode = mode_var.get()
+            self._config["_remote_view_"] = {"mode": mode}
+            self._save_config()
+            if mode == "grid":
+                list_frame.pack_forget()
+                grid_frame.pack(fill="both", expand=True)
+                dlg.update_idletasks()
+            else:
+                grid_frame.pack_forget()
+                list_frame.pack(fill="both", expand=True)
+            refresh()
+
+        def sort_by(col):
+            cur, desc = state["sort"]
+            state["sort"] = (col, (not desc) if cur == col else False)
+            sel_entry = selected_entry()
+            state["entries"] = sort_entries(state["entries"], *state["sort"])
+            state["sel"] = state["entries"].index(sel_entry) if sel_entry in state["entries"] else None
+            arrow = " ▼" if state["sort"][1] else " ▲"
+            for key, title, _w, _a in cols:
+                tree.heading(key, text=title + (arrow if key == state["sort"][0] else ""))
+            refresh()
+
+        def on_enter(_ev=None):
+            e = None if state["loading"] else selected_entry()
+            if e is None:
+                return
             if e.is_dir:
                 state["stack"].append(state["path"])
-                state["path"] = e.path
-                render()
+                load(e.path)
             else:
                 self._load_remote_list([e])
-                dlg.destroy()
+                close()
 
         def on_import():
             self._load_remote_folder(provider, state["path"])
-            dlg.destroy()
+            close()
 
-        def on_up():
-            state["path"] = state["stack"].pop() if state["stack"] else provider.root_path
-            render()
+        def on_up(_ev=None):
+            if state["loading"]:
+                return
+            load(state["stack"].pop() if state["stack"] else provider.root_path)
 
-        btns = ttk.Frame(dlg, padding=8)
-        btns.pack(fill="x")
+        def on_tree_select(_ev=None):
+            sel = tree.selection()
+            state["sel"] = int(sel[0]) if sel else None
+
+        def on_canvas_click(ev):
+            canvas.focus_set()
+            i = hit_test(state["rects"], canvas.canvasx(ev.x), canvas.canvasy(ev.y), LH)
+            state["sel"] = i
+            highlight()
+
+        def on_canvas_double(ev):
+            on_canvas_click(ev)
+            on_enter()
+
+        def on_canvas_key(ev):
+            n = len(state["entries"])
+            if not n:
+                return
+            cols_n = max(1, (state["grid_w"] - 2 * M + GAP) // (TW + GAP))
+            cur = state["sel"]
+            step = {"Left": -1, "Right": 1, "Up": -cols_n, "Down": cols_n}[ev.keysym]
+            nxt = 0 if cur is None else min(max(cur + step, 0), n - 1)
+            state["sel"] = nxt
+            highlight()
+            scroll_to_sel()
+
+        def on_canvas_configure(ev):
+            if mode_var.get() != "grid" or ev.width == state["grid_w"]:
+                return
+            if state["relayout_after"]:
+                try:
+                    self.after_cancel(state["relayout_after"])
+                except Exception:
+                    pass
+            state["relayout_after"] = self.after(120, fill_grid)
+
         ttk.Button(btns, text="进入 / 播放", command=on_enter).pack(side="left")
         ttk.Button(btns, text="导入此文件夹", command=on_import).pack(side="left", padx=4)
         ttk.Button(btns, text="返回上级", command=on_up).pack(side="left", padx=4)
-        ttk.Button(btns, text="关闭", command=dlg.destroy).pack(side="right")
-        lb.bind("<Double-Button-1>", lambda e: on_enter())
-        render()
+        ttk.Button(btns, text="关闭", command=close).pack(side="right")
+
+        tree.bind("<<TreeviewSelect>>", on_tree_select)
+        tree.bind("<Double-Button-1>", lambda e: on_enter() if tree.identify_region(e.x, e.y) == "cell" else None)
+        tree.bind("<Return>", on_enter)
+        tree.bind("<BackSpace>", on_up)
+        canvas.bind("<Button-1>", on_canvas_click)
+        canvas.bind("<Double-Button-1>", on_canvas_double)
+        canvas.bind("<Return>", on_enter)
+        canvas.bind("<BackSpace>", on_up)
+        for key in ("Left", "Right", "Up", "Down"):
+            canvas.bind("<%s>" % key, on_canvas_key)
+        canvas.bind("<Configure>", on_canvas_configure)
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        dlg.protocol("WM_DELETE_WINDOW", close)
+
+        for _ in range(self._RB_THUMB_WORKERS):
+            threading.Thread(target=thumb_worker, daemon=True).start()
+        state["poll_after"] = self.after(60, poll)
+        set_mode_initial = grid_frame if mode_var.get() == "grid" else list_frame
+        set_mode_initial.pack(fill="both", expand=True)
+        dlg.update_idletasks()
+        load(path)
 
     @staticmethod
     def _fmt_size(n):
-        n = float(n)
-        for unit in ("B", "KB", "MB", "GB", "TB"):
-            if n < 1024 or unit == "TB":
-                if unit == "B":
-                    return "%d B" % int(n)
-                return "%.1f %s" % (n, unit)
-            n /= 1024
+        return fmt_size(n)
 
     def _load_remote_folder(self, provider, path):
         entries = provider.list_dir(path)
@@ -1196,7 +1606,7 @@ class ComicViewer(tk.Tk):
             self._remote_hls = True
             return direct
         try:
-            proxy = RemoteStreamProxy(provider, src)
+            proxy = _remote().RemoteStreamProxy(provider, src)
             proxy.start()
         except Exception:
             return None
@@ -1459,7 +1869,7 @@ class ComicViewer(tk.Tk):
 
     def _pdf_document(self, path):
         """打开并缓存 PDF 文档（按路径复用，避免每页反复打开大文件）。"""
-        if fitz is None:
+        if not fitz:
             return None
         if self._pdf_path == path and self._pdf_doc is not None:
             return self._pdf_doc
@@ -1472,7 +1882,7 @@ class ComicViewer(tk.Tk):
             return None
 
     def _pdf_page_count(self, path):
-        if fitz is None:
+        if not fitz:
             return 0
         try:
             doc = self._pdf_document(path)
@@ -1490,7 +1900,7 @@ class ComicViewer(tk.Tk):
         return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
 
     def _load_pdf_path(self, p):
-        if fitz is None:
+        if not fitz:
             messagebox.showerror("错误", "缺少 PyMuPDF 库，无法打开 PDF。\n请在命令行运行：pip install pymupdf")
             return
         self._close_zip()
@@ -1816,7 +2226,7 @@ class ComicViewer(tk.Tk):
             self.is_video = True
             self._apply_region_zoom()   # 清掉上一段视频残留的裁剪框，再按 zoom/区域放大应用
             self._apply_video_adjust()
-            self.play_btn.configure(text="⏸")
+            self._set_btn_text(self.play_btn, "⏸")
             # VLC 的原生视频窗口会抢走键盘/滚轮焦点，导致快捷键和触控板手势失效；
             # 等它播放起来后把焦点拉回 Tk 主窗口，事件才会走我们的分发。
             self.after(300, self._refocus_main)
@@ -2538,7 +2948,7 @@ class ComicViewer(tk.Tk):
         self._cast_name = name
         self._cast_mode = "dlna"
         self.is_video = True
-        self.play_btn.configure(text="⏸")
+        self._set_btn_text(self.play_btn, "⏸")
         self._show_video_bar()
         self._start_autohide()
         self._sync_toggle_buttons()
@@ -2569,7 +2979,7 @@ class ComicViewer(tk.Tk):
             if not provider:
                 self.status.configure(text="投屏失败：未找到网盘配置")
                 return
-            proxy = RemoteStreamProxy(provider, src)
+            proxy = _remote().RemoteStreamProxy(provider, src)
             try:
                 proxy.start()
             except Exception as e:
@@ -2593,7 +3003,7 @@ class ComicViewer(tk.Tk):
         self._cast_name = name
         self._cast_mode = "dlna"
         self.is_video = True
-        self.play_btn.configure(text="⏸")
+        self._set_btn_text(self.play_btn, "⏸")
         self._show_video_bar()
         self._start_autohide()
         self._sync_toggle_buttons()
@@ -2940,11 +3350,11 @@ class ComicViewer(tk.Tk):
                 if self._dlna_playing:
                     self._dlna.pause()
                     self._dlna_playing = False
-                    self.play_btn.configure(text="▶")
+                    self._set_btn_text(self.play_btn, "▶")
                 else:
                     self._dlna.play()
                     self._dlna_playing = True
-                    self.play_btn.configure(text="⏸")
+                    self._set_btn_text(self.play_btn, "⏸")
             except Exception:
                 pass
             return
@@ -2953,10 +3363,10 @@ class ComicViewer(tk.Tk):
         try:
             if self.player.is_playing():
                 self.player.pause()
-                self.play_btn.configure(text="▶")
+                self._set_btn_text(self.play_btn, "▶")
             else:
                 self.player.play()
-                self.play_btn.configure(text="⏸")
+                self._set_btn_text(self.play_btn, "⏸")
         except Exception:
             pass
 
@@ -3286,7 +3696,7 @@ class ComicViewer(tk.Tk):
             if was_playing:
                 try:
                     self.player.pause()
-                    self.play_btn.configure(text="▶")
+                    self._set_btn_text(self.play_btn, "▶")
                 except Exception:
                     pass
             try:
@@ -3330,7 +3740,7 @@ class ComicViewer(tk.Tk):
                 try:
                     if ok == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:
                         im = Image.open(tmp).convert("RGB")
-                        if np is None:
+                        if not np:
                             if not frames:
                                 frames.append(im)
                             continue
@@ -3349,14 +3759,14 @@ class ComicViewer(tk.Tk):
             if was_playing:
                 try:
                     self.player.play()
-                    self.play_btn.configure(text="⏸")
+                    self._set_btn_text(self.play_btn, "⏸")
                 except Exception:
                     pass
 
             if not frames:
                 self.status.configure(text="截图失败：未能从视频抓取画面")
                 return
-            if np is None:
+            if not np:
                 # 未安装 numpy：退化为保存单帧截图
                 img = frames[0]
             else:
@@ -3409,7 +3819,7 @@ class ComicViewer(tk.Tk):
                     self.player.set_time(self._ab_start_ms)
                     self._last_seek = time.time()
             if self.player.get_state() == self.vlc.State.Ended:
-                self.play_btn.configure(text="▶")
+                self._set_btn_text(self.play_btn, "▶")
                 if not self._video_ended:
                     self._video_ended = True
                     self._play_next_at_end()
@@ -3946,7 +4356,7 @@ class ComicViewer(tk.Tk):
     def _apply_book_filter(self, im, is_spread):
         """模拟纸质书质感：光影 + 书脊阴影 + 页边厚度阴影 + 纸张纹理。
         全部按亮度乘法处理，不改变图片内容，只叠加阅读氛围。"""
-        if np is None:
+        if not np:
             return im
         im = self._to_rgb(im)
         w, h = im.size
@@ -4053,8 +4463,8 @@ class ComicViewer(tk.Tk):
         self.caption_btn.configure(bg=ACCENT if self.caption_enabled else BTN_BG,
                                    fg="#fff" if self.caption_enabled else FG)
         if hasattr(self, "cast_btn"):
+            self._set_btn_text(self.cast_btn, "📺 投屏中" if self._cast_name else "📺 投屏")
             self.cast_btn.configure(
-                text="📺 投屏中" if self._cast_name else "📺 投屏",
                 bg=ACCENT if self._cast_name else BTN_BG,
                 fg="#fff" if self._cast_name else FG)
 
@@ -4542,7 +4952,7 @@ class ComicViewer(tk.Tk):
         self._resize_after = None
         if not self.orig:
             if not self.is_video:
-                self._show_start()
+                self._show_start(icon=not self._emoji_pending)
             return
         if self.fit_mode != "custom":
             self._render()
@@ -4559,6 +4969,9 @@ class ComicViewer(tk.Tk):
         self._thumb_build_sources = list(self.sources)
         self._thumb_build_index = 0
         self._thumb_build_x = 6
+        self._rthumb_gen += 1
+        self._rthumb_jobs = queue.Queue()
+        self._rthumb_pending = 0
         self._thumb_build_after = self.after_idle(self._build_thumbnail_batch)
 
     def _cancel_thumbnail_build(self):
@@ -4566,6 +4979,75 @@ class ComicViewer(tk.Tk):
         if after_id:
             self.after_cancel(after_id)
             self._thumb_build_after = None
+
+    # ---- 远程图片缩略图（后台线程取图，界面线程只负责贴图） ----
+    _RTHUMB_W = 96
+
+    def _thumb_remote_tile(self, i, src, x, H, Y):
+        W = self._RTHUMB_W
+        self._thumb_photos.append(None)
+        self.thumbs.create_rectangle(x, Y - H / 2, x + W, Y + H / 2, fill="#1b1e24",
+                                     tags=("thumb", "t%d" % i, "rp%d" % i))
+        self.thumbs.create_text(x + W / 2, Y, text="▣", fill="#5a6472",
+                                font=("Segoe UI", 18), tags=("thumb", "t%d" % i, "rp%d" % i))
+        self._thumb_rects.append((x, x + W))
+        self._thumb_build_x += W + 8
+        provider = self._get_provider(src.provider)
+        if not provider or src.is_dir:
+            return
+        self._rthumb_jobs.put((i, provider, src))
+        self._rthumb_pending += 1
+        if self._rthumb_started_gen != self._rthumb_gen:
+            self._rthumb_started_gen = self._rthumb_gen
+            threading.Thread(target=self._rthumb_worker,
+                             args=(self._rthumb_gen, self._rthumb_jobs), daemon=True).start()
+        if self._rthumb_poll_after is None:
+            self._rthumb_poll_after = self.after(100, self._rthumb_poll)
+
+    def _rthumb_worker(self, gen, jobs):
+        while gen == self._rthumb_gen:
+            try:
+                i, provider, src = jobs.get(timeout=0.5)
+            except queue.Empty:
+                if self._thumb_build_after is None:   # 缩略图条已建完且任务耗尽
+                    return
+                continue
+            im = None
+            try:
+                data = provider.fetch_image(src, self._RTHUMB_W * 2)
+                if data:
+                    im = Image.open(io.BytesIO(data))
+                    im.thumbnail((self._RTHUMB_W, 70))
+                    if im.mode not in ("RGB", "RGBA", "L"):
+                        im = im.convert("RGB")
+                    im.load()
+            except Exception:
+                im = None
+            self._rthumb_results.put((gen, i, im))
+
+    def _rthumb_poll(self):
+        self._rthumb_poll_after = None
+        try:
+            while True:
+                gen, i, im = self._rthumb_results.get_nowait()
+                if gen != self._rthumb_gen:
+                    continue
+                self._rthumb_pending -= 1
+                if im is None or i >= len(self._thumb_photos):
+                    continue
+                try:
+                    ph = ImageTk.PhotoImage(im)
+                except Exception:
+                    continue
+                self._thumb_photos[i] = ph
+                x0, x1 = self._thumb_rects[i]
+                self.thumbs.delete("rp%d" % i)
+                self.thumbs.create_image((x0 + x1) / 2, 48, image=ph, anchor="center",
+                                         tags=("thumb", "t%d" % i))
+        except queue.Empty:
+            pass
+        if self._rthumb_pending > 0:
+            self._rthumb_poll_after = self.after(100, self._rthumb_poll)
 
     def _build_thumbnail_batch(self):
         if not self._thumbs_visible or self._thumb_build_sources != self.sources:
@@ -4586,6 +5068,10 @@ class ComicViewer(tk.Tk):
                                         font=("Segoe UI", 18), tags=("thumb", "t%d" % i))
                 self._thumb_rects.append((x, x + 80))
                 self._thumb_build_x += 80 + 8
+                continue
+            if isinstance(src, RemoteSource):
+                # 远程图片不在界面线程里下载：先放占位块，后台线程取到缩略图再替换
+                self._thumb_remote_tile(i, src, x, H, Y)
                 continue
             ph = None
             try:
@@ -4745,11 +5231,11 @@ class ComicViewer(tk.Tk):
         self.status.configure(text="%s   ·   %d×%d   ·   %d%%%s%s%s%s" % (
             name, w, h, int(round(self.zoom * 100)), rot, rtl, auto, book))
 
-    def _show_start(self):
+    def _show_start(self, icon=True):
         self.canvas.delete("all")
         cw = max(self.canvas.winfo_width(), 200)
         ch = max(self.canvas.winfo_height(), 120)
-        self.canvas.create_text(cw / 2, ch / 2 - 30, text="🖼 图片 / 漫画浏览器",
+        self.canvas.create_text(cw / 2, ch / 2 - 30, text=("🖼 " if icon else "") + "图片 / 漫画浏览器",
                                 fill=FG, font=("Microsoft YaHei", 22, "bold"))
         self.canvas.create_text(cw / 2, ch / 2 + 10,
                                 text="打开文件夹 / 图片 / zip·cbz 压缩包 / 视频开始阅读（竖图可双页并排显示）",
