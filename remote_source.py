@@ -29,6 +29,7 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from media_source import IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS
+from remote_types import RemoteSource  # noqa: F401  (re-export，保持 remote_source.RemoteSource 可用)
 
 
 def _natural_key(s):
@@ -46,41 +47,6 @@ def _lan_ip():
             s.close()
     except Exception:
         return "127.0.0.1"
-
-
-class RemoteSource:
-    """一个远程媒体条目（文件或目录）。
-
-    path 存服务端原始 href（已百分号编码，形如 "/dav/Movies/a.mp4"），
-    name 存解码后的显示名。provider 用于回查对应的 RemoteProvider。
-    """
-
-    __slots__ = ("provider", "path", "name", "size", "is_dir", "mtime", "kind", "extra")
-
-    def __init__(self, provider, path, name=None, size=None, is_dir=False, mtime=None,
-                 kind=None, extra=None):
-        self.provider = provider
-        self.path = path
-        self.name = name or urllib.parse.unquote(path.rstrip("/").split("/")[-1])
-        self.size = size
-        self.is_dir = is_dir
-        self.mtime = mtime
-        self.kind = kind          # "image" | "video" | "audio" | "folder" | None
-        self.extra = extra or {}  # provider 私有数据（如 Jellyfin 的 item 元数据）
-
-    def __repr__(self):
-        return "<RemoteSource %s:%s>" % (self.provider, self.path)
-
-    def __eq__(self, other):
-        return (isinstance(other, RemoteSource)
-                and self.provider == other.provider and self.path == other.path)
-
-    def __hash__(self):
-        return hash((self.provider, self.path))
-
-    def key(self):
-        """续播点 / 历史的稳定标识。"""
-        return "remote:" + self.provider + ":" + self.path
 
 
 class RemoteProvider:
@@ -113,9 +79,18 @@ class WebDavProvider(RemoteProvider):
     def __init__(self, base_url, username="", password=""):
         split = urllib.parse.urlsplit(base_url)
         self.origin = "%s://%s" % (split.scheme or "https", split.netloc)
-        self.root_path = split.path or "/"
+        self.root_path = self._encode_path(split.path or "/")
         self.username = username
         self.password = password
+
+    @staticmethod
+    def _encode_path(path):
+        """用户输入的地址可能含中文/空格（http://host/dav/我的网盘）：urlopen 要求 ASCII，
+        这里只对非 ASCII 和空格做百分号编码，已编码的 %XX 与服务端给的 href 保持原样。"""
+        if path.isascii() and " " not in path:
+            return path
+        path = re.sub(r"%(?![0-9A-Fa-f]{2})", "%25", path)   # 字面 % 不是转义，先转成 %25
+        return urllib.parse.quote(path, safe="/%")
 
     def _auth_header(self):
         token = base64.b64encode(
@@ -123,7 +98,7 @@ class WebDavProvider(RemoteProvider):
         return "Basic " + token
 
     def _url(self, path):
-        return self.origin + "/" + path.lstrip("/")
+        return self.origin + "/" + self._encode_path(path).lstrip("/")
 
     def _propfind(self, path):
         body = ('<?xml version="1.0" encoding="utf-8"?>'
@@ -143,21 +118,25 @@ class WebDavProvider(RemoteProvider):
             return r.read()
 
     def list_dir(self, path):
-        path = path or self.root_path
         try:
-            data = self._propfind(path)
-            root = ET.fromstring(data)
+            return self.list_dir_strict(path)
         except Exception:
             return []
+
+    def list_dir_strict(self, path):
+        """同 list_dir，但网络/认证/解析错误直接抛出，供界面显示真实原因。"""
+        path = self._encode_path(path or self.root_path)
+        data = self._propfind(path)
+        root = ET.fromstring(data)
         entries = []
-        requested = path.rstrip("/")
+        requested = urllib.parse.unquote(path).rstrip("/")
         for resp in root.findall(".//{DAV:}response"):
             href = resp.findtext("{DAV:}href")
             if not href:
                 continue
             # href 保持百分号编码，用于后续请求 URL；仅显示名解码
-            if href.rstrip("/") == requested:
-                continue  # 跳过集合自身
+            if urllib.parse.unquote(href).rstrip("/") == requested:
+                continue  # 跳过集合自身（按解码后比较，兼容 %e4/%E4 大小写与中文原文）
             rt = resp.find(".//{DAV:}resourcetype")
             is_dir = rt is not None and rt.find("{DAV:}collection") is not None
             size = resp.findtext(".//{DAV:}getcontentlength")
@@ -188,6 +167,22 @@ class WebDavProvider(RemoteProvider):
             hdrs.update(headers)
         req = urllib.request.Request(self._url(src.path), headers=hdrs)
         return urllib.request.urlopen(req, timeout=60)
+
+    THUMB_MAX_BYTES = 20 * 1024 * 1024
+
+    def fetch_image(self, src, max_width=300):
+        """图片条目：GET 整个文件交给调用方缩放（WebDAV 无服务端缩略图）；
+        视频/音频/目录或超过 THUMB_MAX_BYTES 的文件返回 None。"""
+        if src.is_dir or src.kind != "image":
+            return None
+        if src.size and src.size > self.THUMB_MAX_BYTES:
+            return None
+        r = self.open_stream(src, None)
+        try:
+            data = r.read(self.THUMB_MAX_BYTES + 1)
+        finally:
+            r.close()
+        return data if len(data) <= self.THUMB_MAX_BYTES else None
 
 
 class JellyfinProvider(RemoteProvider):
@@ -247,16 +242,20 @@ class JellyfinProvider(RemoteProvider):
         return data.get("AccessToken"), data.get("User", {}).get("Id"), device_id
 
     def list_dir(self, path):
+        try:
+            return self.list_dir_strict(path)
+        except Exception:
+            return []
+
+    def list_dir_strict(self, path):
+        """同 list_dir，但网络/认证错误直接抛出，供连接自检与界面显示真实原因。"""
         path = path or ""
         url = self.base_url + "/Users/%s/Items" % self.user_id
         params = {"Recursive": "false", "Fields": "Overview,ProductionYear"}
         if path:
             params["ParentId"] = path
         url += "?" + urllib.parse.urlencode(params)
-        try:
-            data = self._get_json(url)
-        except Exception:
-            return []
+        data = self._get_json(url)
         entries = []
         for it in data.get("Items", []):
             itype = it.get("Type")
