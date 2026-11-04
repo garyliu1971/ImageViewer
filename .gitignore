@@ -9,6 +9,10 @@ image_viewer.default.json
 crash.log
 run.log
 
+# 进度缩略图诊断日志（运行时生成）
+seek_thumbs.log
+seek_thumbs.log.old
+
 # Python 缓存
 __pycache__/
 *.pyc
