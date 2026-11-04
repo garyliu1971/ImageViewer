@@ -77,13 +77,23 @@ def expand_paths(paths, page_count_fn, pdf_exts=PDF_EXTS):
     return sources
 
 
-def parse_playlist(lines, base_dir, page_count_fn, pdf_exts=PDF_EXTS):
-    """解析 m3u 播放列表文本为媒体来源列表。相对路径基于 base_dir 解析。"""
+def parse_playlist(lines, base_dir, page_count_fn, pdf_exts=PDF_EXTS, remote_parser=None):
+    """解析 m3u 播放列表文本为媒体来源列表。相对路径基于 base_dir 解析。
+
+    remote_parser: 可选回调。非本地路径的行先交给它解析（用于 "remote:provider:path"
+    形式的远程条目）；返回非 None 则作为该行来源，否则当作普通路径/忽略。
+    历史播放文件本地与远程混存，靠这个参数还原远程条目。
+    """
     sources = []
     for line in lines:
         entry = line.strip()
         if not entry or entry.startswith("#"):
             continue
+        if remote_parser is not None:
+            remote = remote_parser(entry)
+            if remote is not None:
+                sources.append(remote)
+                continue
         source = entry if os.path.isabs(entry) else os.path.normpath(os.path.join(base_dir, entry))
         if os.path.isfile(source):
             if os.path.splitext(source)[1].lower() in pdf_exts:
@@ -104,23 +114,36 @@ def playlist_book_key(path):
     return "playlist:" + os.path.abspath(path)
 
 
-def update_history(path, history_path, limit):
-    """把一条本地媒体路径写入最近播放 M3U（最新置顶、去重、限量）。
+def _history_key(entry):
+    """历史条目的去重键。
 
-    若已在顶部则跳过写盘，避免重复写。仅捕获 OSError，其它异常向上抛。
+    远程条目（remote:provider:path[\\tname\\tkind]）按 key 部分精确比较（路径大小写
+    敏感）；本地路径按 Windows 习惯 normcase/normpath 归一化后比较。
     """
-    path = os.path.abspath(path)
+    if entry.startswith("remote:"):
+        return entry.split("\t", 1)[0]
+    return os.path.normcase(os.path.normpath(os.path.abspath(entry)))
+
+
+def update_history(path, history_path, limit):
+    """把一条媒体记录写入最近播放 M3U（最新置顶、去重、限量）。
+
+    path 可以是本地文件路径，也可以是远程条目字符串
+    （"remote:provider:path" 或 "remote:provider:path\\tname\\tkind"）。
+    若已在顶部则跳过写盘，避免重复写。仅捕获 OSError。
+    """
+    entry = path if path.startswith("remote:") else os.path.abspath(path)
     try:
         history = []
         if os.path.isfile(history_path):
             with open(history_path, "r", encoding="utf-8-sig") as f:
                 history = [line.strip() for line in f
                            if line.strip() and not line.startswith("#")]
-        key = os.path.normcase(os.path.normpath(path))
-        if history and os.path.normcase(os.path.normpath(history[0])) == key:
+        key = _history_key(entry)
+        if history and _history_key(history[0]) == key:
             return
-        history = [e for e in history if os.path.normcase(os.path.normpath(e)) != key]
-        history.insert(0, path)
+        history = [e for e in history if _history_key(e) != key]
+        history.insert(0, entry)
         with open(history_path, "w", encoding="utf-8") as f:
             f.write("#EXTM3U\n")
             f.write("\n".join(history[:limit]))

@@ -256,9 +256,17 @@ class _Punctuator:
 class _SenseVoiceASR:
     """SenseVoice 离线多语种识别 + silero-vad 分句（日语）。
 
-    离线模型没有逐帧 partial，靠 silero-vad 按静音把音频切成语音段，段结束
-    即整句转写（use_itn 自带标点）。字幕比流式模型晚 0.5~1.5s，接近 YouTube
-    自动字幕的节奏。"""
+    离线模型本身没有逐帧 partial。为了降低「整句说完才出字幕」的延迟，这里在
+    VAD 分句之外再加一个滚动窗口：每积累约 1 秒音频，就把最近几秒转写一次，
+    先作为「半成品」字幕显示；等 VAD 切出完整句子，再用准确结果替换。
+
+    代价：滚动窗口会重复转写重叠音频，CPU 占用上升；两个常量可按机器性能调整。
+    """
+
+    # 半成品字幕：每积累这么多秒音频转写一次（越小越跟手、越耗 CPU）
+    PARTIAL_EVERY_SEC = 1.0
+    # 半成品字幕最多参考最近这么多秒音频（越长越准、越慢）
+    PARTIAL_WINDOW_SEC = 4.5
 
     def __init__(self, tokens, model, vad_model, sample_rate, num_threads, language="ja"):
         import sherpa_onnx
@@ -269,31 +277,67 @@ class _SenseVoiceASR:
         vad_cfg = sherpa_onnx.VadModelConfig(
             silero_vad=sherpa_onnx.SileroVadModelConfig(
                 model=vad_model, threshold=0.5,
-                min_silence_duration=0.6, min_speech_duration=0.25,
-                max_speech_duration=20),
+                # 调低静音判定与最大段长：原先要等 0.6s 静音、最长 20s 才切句，
+                # 整句说完才转写，观感延迟 4~5s。缩短后更早切句，字幕更跟手；
+                # 代价是切得更碎（翻译模式下语句可能不完整）。
+                min_silence_duration=0.35, min_speech_duration=0.2,
+                max_speech_duration=6),
             sample_rate=sample_rate, num_threads=num_threads)
         self._vad = sherpa_onnx.VoiceActivityDetector(vad_cfg, buffer_size_in_seconds=60)
         self._sample_rate = sample_rate
+        self._partial_every = int(sample_rate * self.PARTIAL_EVERY_SEC)
+        self._partial_window = int(sample_rate * self.PARTIAL_WINDOW_SEC)
+        self._roll = []            # 最近音频块（np.float32）
+        self._roll_len = 0         # 滚动窗口累计样本数
+        self._since_partial = 0    # 距上次出半成品的样本数
 
     def create_stream(self):
         # 离线模型无流式 stream，返回 None 占位（_rec_worker 不依赖它）。
         return None
 
     def feed(self, stream, pcm_bytes):
-        """喂 PCM 给 VAD；切出完整语音段就转写，返回 ("final", text) 或 None。"""
+        """喂 PCM 给 VAD；切出完整语音段返回 ("final", text)，否则按滚动窗口
+        定期返回 ("partial", text)，都没有则 None。"""
         import numpy as np
         samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         self._vad.accept_waveform(samples)
-        if self._vad.empty():
-            return None
-        seg = self._vad.front
-        seg_samples = np.asarray(seg.samples, dtype=np.float32)
-        self._vad.pop()
-        text = self._transcribe(seg_samples)
-        return ("final", text) if text else None
+
+        # 滚动窗口累积 + 裁剪到窗口长度
+        self._roll.append(samples)
+        self._roll_len += len(samples)
+        while (len(self._roll) > 1
+               and self._roll_len - len(self._roll[0]) >= self._partial_window):
+            self._roll_len -= len(self._roll.pop(0))
+
+        # 1) VAD 切出完整句子：出 final，重置滚动窗口避免重复
+        if not self._vad.empty():
+            seg = self._vad.front
+            seg_samples = np.asarray(seg.samples, dtype=np.float32)
+            self._vad.pop()
+            text = self._transcribe(seg_samples)
+            self._roll = []
+            self._roll_len = 0
+            self._since_partial = 0
+            return ("final", text) if text else None
+
+        # 2) 还没成句：每积累约 1 秒，把最近几秒转写成半成品字幕
+        self._since_partial += len(samples)
+        if (self._since_partial >= self._partial_every
+                and self._roll_len >= int(self._sample_rate * 0.4)):
+            self._since_partial = 0
+            try:
+                buf = np.concatenate(self._roll) if len(self._roll) > 1 else self._roll[0]
+            except Exception:
+                return None
+            text = self._transcribe(buf)
+            return ("partial", text) if text else None
+        return None
 
     def reset(self, stream):
         self._vad.reset()
+        self._roll = []
+        self._roll_len = 0
+        self._since_partial = 0
 
     def _transcribe(self, samples):
         s = self._recognizer.create_stream()

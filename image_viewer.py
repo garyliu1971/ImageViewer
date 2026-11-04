@@ -134,6 +134,16 @@ def _remote():
     import remote_source
     return remote_source
 
+
+def _seek_dbg(msg):
+    """临时诊断：进度缩略图生成失败时的排查日志（写 seek_thumbs.log）。"""
+    try:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seek_thumbs.log")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except Exception:
+        pass
+
 CAPTION_LANGS = ["中文", "英文", "日语", "韩语", "粤语"]
 CAPTION_LANG_CODES = {"中文": "zh", "英文": "en", "日语": "ja", "韩语": "ko", "粤语": "yue"}
 CAPTION_MODES = ["原声", "中文翻译", "AI 翻译"]
@@ -143,6 +153,34 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "image_viewer.json")
 HISTORY_PLAYLIST_PATH = os.path.join(APP_DIR, "播放历史.m3u")
 HISTORY_LIMIT = 100
+
+
+def _remote_history_line(src):
+    """远程条目在播放历史里的持久化格式：remote:provider:path<tab>name<tab>kind。
+
+    本地文件靠路径本身就能还原；Jellyfin 的 path 只是 item id（不含文件名/类型），
+    所以额外把 name/kind 一起存下来，重新打开历史时才能正确显示与播放。
+    """
+    line = src.key()
+    if src.name:
+        line += "\t" + str(src.name).replace("\t", " ").replace("\n", " ")
+    if src.kind:
+        line += "\t" + str(src.kind)
+    return line
+
+
+def _remote_from_history_line(entry):
+    """把播放历史里的远程条目还原成 RemoteSource；非远程条目返回 None。"""
+    if not entry.startswith("remote:"):
+        return None
+    fields = entry.split("\t")
+    rest = fields[0][len("remote:"):]
+    provider, sep, path = rest.partition(":")
+    if not sep or not provider or not path:
+        return None
+    name = fields[1] if len(fields) > 1 and fields[1] else None
+    kind = fields[2] if len(fields) > 2 and fields[2] else None
+    return RemoteSource(provider, path, name=name, kind=kind)
 
 RATE_OPTS = ["0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "2.5", "3.0", "4.0",
              "5.0", "6.0", "8.0", "10.0", "12.0", "15.0", "20.0", "30.0",
@@ -900,7 +938,7 @@ class ComicViewer(tk.Tk):
 
     def open_history_playlist(self):
         if not os.path.isfile(HISTORY_PLAYLIST_PATH):
-            messagebox.showinfo("提示", "尚无播放历史。打开本地图片或视频后会自动创建。")
+            messagebox.showinfo("提示", "尚无播放历史。打开本地或网盘/Jellyfin 媒体后会自动创建。")
             return
         self._load_playlist_path(HISTORY_PLAYLIST_PATH)
 
@@ -919,7 +957,8 @@ class ComicViewer(tk.Tk):
             messagebox.showerror("错误", "无法读取播放列表：%s" % error)
             return
 
-        sources = parse_playlist(lines, os.path.dirname(path), self._pdf_page_count)
+        sources = parse_playlist(lines, os.path.dirname(path), self._pdf_page_count,
+                                 remote_parser=_remote_from_history_line)
         if not sources:
             messagebox.showinfo("提示", "播放列表中没有可访问的媒体文件。")
             return
@@ -932,9 +971,14 @@ class ComicViewer(tk.Tk):
         self._load_list(sources)
 
     def _record_history(self, src):
-        """将实际播放的本地媒体写入最近播放 M3U，最新记录置顶。"""
+        """将实际播放的媒体写入最近播放 M3U，最新记录置顶。
+
+        本地文件存绝对路径；远程（网盘/Jellyfin）用 _remote_history_line 的编码，
+        这样从历史里重新打开也能直接连回原位置，不用重新一层层浏览。
+        """
         if isinstance(src, RemoteSource):
-            return   # 远程媒体暂不写入本地播放历史
+            update_history(_remote_history_line(src), HISTORY_PLAYLIST_PATH, HISTORY_LIMIT)
+            return
         if isinstance(src, tuple):
             if self._is_pdf_src(src):
                 src = src[0]   # PDF 按整本书记录
@@ -1646,40 +1690,38 @@ class ComicViewer(tk.Tk):
         hint_lbl.pack(side="bottom", fill="x", padx=8, pady=4)
 
         state = {"path": path, "stack": [], "entries": [], "cards": [],
-                 "photos": [], "queue": queue.Queue(), "gen": 0,
-                 "poll_after": None, "alive": True}
+                 "photos": [], "imgs": {}, "queue": queue.Queue(), "gen": 0,
+                 "poll_after": None, "relayout_after": None, "alive": True}
 
         def close():
             state["alive"] = False
-            if state["poll_after"]:
-                try:
-                    self.after_cancel(state["poll_after"])
-                except Exception:
-                    pass
-                state["poll_after"] = None
+            for k in ("poll_after", "relayout_after"):
+                if state[k]:
+                    try:
+                        self.after_cancel(state[k])
+                    except Exception:
+                        pass
+                    state[k] = None
             dlg.destroy()
 
-        def render():
-            state["gen"] += 1
-            gen = state["gen"]
-            self._last_browse[provider.name] = state["path"]
-            state["entries"] = provider.list_dir(state["path"])
-            state["cards"] = []
-            state["photos"] = []
+        def layout():
+            """按当前 canvas 宽度重排卡片（不重新拉取目录/海报，海报用缓存）。"""
             canvas.delete("all")
-            path_lbl.configure(text=state["path"] or "/")
-            if not state["entries"]:
+            state["cards"] = []
+            state["photos"] = []   # 释放上一轮 PhotoImage，避免 resize 累积内存
+            entries = state["entries"]
+            if not entries:
                 canvas.create_text(320, 120, text="（空）", fill="#5a6472",
                                    font=("Segoe UI", 16))
                 canvas.configure(scrollregion=(0, 0, 640, 240))
                 hint_lbl.configure(text="此目录为空")
                 return
-            hint_lbl.configure(text="共 %d 项 · 单击目录卡片进入 · 单击影片/音乐播放 · 顶部按钮：返回上级 / 播放此文件夹" % len(state["entries"]))
+            hint_lbl.configure(text="共 %d 项 · 单击目录卡片进入 · 单击影片/音乐播放 · 顶部按钮：返回上级 / 播放此文件夹" % len(entries))
             cw = max(canvas.winfo_width(), 320)
             PW, PH, GAP, M = 132, 198, 14, 18
             ROW = PH + 52 + GAP
             x, y = M, M
-            for i, e in enumerate(state["entries"]):
+            for i, e in enumerate(entries):
                 if x + PW > cw - M:
                     x = M
                     y += ROW
@@ -1687,7 +1729,16 @@ class ComicViewer(tk.Tk):
                 canvas.create_rectangle(x, y, x + PW, y + PH, fill="#1e222a",
                                         outline=outline, width=2 if e.is_dir else 1,
                                         tags=("c%d" % i,))
-                if e.is_dir:
+                img = state["imgs"].get(i)
+                if img is not None:
+                    try:
+                        photo = ImageTk.PhotoImage(img)
+                        state["photos"].append(photo)
+                        canvas.create_image((x + PW) / 2, (y + PH) / 2, image=photo,
+                                            tags=("c%d" % i,))
+                    except Exception:
+                        pass
+                elif e.is_dir:
                     canvas.create_rectangle(x + 24, y + PH // 2 - 28, x + PW - 24, y + PH // 2 + 10,
                                             fill="#5a4a2a", outline="", tags=("g%d" % i,))
                     canvas.create_rectangle(x + 24, y + PH // 2 - 38, x + 66, y + PH // 2 - 26,
@@ -1709,6 +1760,16 @@ class ComicViewer(tk.Tk):
                 state["cards"].append((x, y, x + PW, y + PH))
                 x += PW + GAP
             canvas.configure(scrollregion=(0, 0, cw, y + ROW + M))
+
+        def render():
+            state["gen"] += 1
+            gen = state["gen"]
+            self._last_browse[provider.name] = state["path"]
+            state["entries"] = provider.list_dir(state["path"])
+            state["imgs"] = {}
+            state["photos"] = []
+            path_lbl.configure(text=state["path"] or "/")
+            layout()
             threading.Thread(target=self._poster_fetcher,
                              args=(state, provider, gen), daemon=True).start()
             state["poll_after"] = self.after(90, lambda: self._poster_poll(state, canvas))
@@ -1736,14 +1797,20 @@ class ComicViewer(tk.Tk):
                         close()
                     return
 
+        def on_configure(e=None):
+            if state["relayout_after"]:
+                self.after_cancel(state["relayout_after"])
+            state["relayout_after"] = self.after(120, layout)
+
         canvas.bind("<Button-1>", on_click)
         canvas.bind("<MouseWheel>",
                     lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
         dlg.protocol("WM_DELETE_WINDOW", close)
-        dlg.update_idletasks()
+        dlg.update()                # 先完成布局，让 canvas.winfo_width() 拿到真实宽度
+        render()
+        canvas.bind("<Configure>", on_configure)   # 之后用户拉伸窗口时重排网格
         dlg.lift()
         dlg.focus_force()
-        render()
 
     def _poster_fetcher(self, state, provider, gen):
         for i, e in enumerate(state["entries"]):
@@ -1781,6 +1848,7 @@ class ComicViewer(tk.Tk):
     def _poster_apply(self, state, canvas, i, img):
         if not state["alive"] or i >= len(state["cards"]):
             return
+        state["imgs"][i] = img   # 缓存原始图，窗口重排时免重新拉取
         try:
             photo = ImageTk.PhotoImage(img)
         except Exception:
@@ -2262,6 +2330,12 @@ class ComicViewer(tk.Tk):
         """
         if not self.is_video:
             return
+        # 重入/并发护栏：此函数会遍历并子类化 video_panel 下的原生子窗口，
+        # 若与窗口消息回调（proc）或自身重入并发，会死锁（主线程 SetWindowLongW
+        # 等目标线程、回调又回链到 Tk）。若已有一次在跑，直接放弃本次。
+        if getattr(self, "_transparent_busy", False):
+            return
+        self._transparent_busy = True
         try:
             hwnd = self.video_panel.winfo_id()
             if not hwnd:
@@ -2319,6 +2393,8 @@ class ComicViewer(tk.Tk):
             walk(hwnd)
         except Exception:
             pass
+        finally:
+            self._transparent_busy = False
 
     def _video_resume_key(self, src):
         if isinstance(src, RemoteSource):
@@ -3534,22 +3610,30 @@ class ComicViewer(tk.Tk):
         self._seek_thumbs_src = src
         self._seek_thumbs = []
         self._seek_thumbs_busy = True
+        _seek_dbg("start remote=%s hls=%s kind=%s name=%r path=%s" % (
+            isinstance(src, RemoteSource), getattr(self, "_remote_hls", False),
+            getattr(src, "kind", "?"), getattr(src, "name", "?"), path))
         try:
             tp = self.vlc_instance.media_player_new()
             # 不能用 tp.audio_set_mute(True)：VLC 在 Windows 上的静音是按进程的
             # WASAPI 会话设置的，会把主播放器也静音，且 Windows 会按 exe 记住该
             # 静音状态（重启后仍静音）。改为 media 选项直接不开音频输出。
-            media = self.vlc_instance.media_new(path, ":no-audio")
+            # 与主播放器一致关掉 D3D11VA 硬件解码（:avcodec-hw=none），否则
+            # 缩略图播放器走硬件解码，video_take_snapshot 会报
+            # SetThumbNailClip failed / 截图失败。
+            media = self.vlc_instance.media_new(path, ":no-audio", ":avcodec-hw=none")
             tp.set_media(media)
             self.update_idletasks()
             tp.set_hwnd(self._thumb_frame.winfo_id())
             tp.play()
-            tp.set_pause(1)   # 暂停后 seek，画面停在目标帧，截图更准确
+            # 不要立刻 set_pause(1)：远程流（alist 代理）要先缓冲+解码出第一帧，
+            # 立即暂停会让 vout 不产帧，video_take_snapshot 返回 -1。
+            # 改为在 _seek_thumb_step 里等第一帧出来后再暂停。
         except Exception:
             self._seek_thumbs_busy = False
             return
         self._thumb_player = tp
-        self._thumb_state = {"idx": 0, "total": 12, "waits": 0}
+        self._thumb_state = {"idx": 0, "total": 12, "waits": 0, "vout_ready": False}
         self._thumb_gen_after = self.after(400, self._seek_thumb_step)
 
     def _cancel_seek_thumbs(self):
@@ -3576,6 +3660,27 @@ class ComicViewer(tk.Tk):
         if self.sources and self._seek_thumbs_src != self.sources[self.index]:
             self._cancel_seek_thumbs()
             return
+        if not st.get("vout_ready"):
+            # 等第一帧解码出来（远程流缓冲慢），否则截图时 vout 还没画面
+            try:
+                size = tp.video_get_size()
+            except Exception:
+                size = (0, 0)
+            if size and size[0] > 0 and size[1] > 0:
+                st["vout_ready"] = True
+                st["waits"] = 0
+                _seek_dbg("vout ready size=%s" % (size,))
+                # 关键：不要暂停。实测暂停后对远程流 seek，wingdi vout 停在
+                # 空帧，video_take_snapshot 拿不到画面（文件不生成或整张全黑）。
+                # 保持播放让 vout 持续产帧，seek 后等一会儿再截图才有效。
+            else:
+                st["waits"] += 1
+                if st["waits"] > 40:
+                    _seek_dbg("giveup vout-not-ready waits=%d" % st["waits"])
+                    self._cancel_seek_thumbs()
+                    return
+                self._thumb_gen_after = self.after(250, self._seek_thumb_step)
+                return
         try:
             length = tp.get_length()
         except Exception:
@@ -3583,6 +3688,7 @@ class ComicViewer(tk.Tk):
         if length <= 0:
             st["waits"] += 1
             if st["waits"] > 24:
+                _seek_dbg("giveup length<=0 waits=%d src=%r" % (st["waits"], getattr(self._seek_thumbs_src, "name", "?")))
                 self._cancel_seek_thumbs()
                 return
             self._thumb_gen_after = self.after(300, self._seek_thumb_step)
@@ -3597,25 +3703,53 @@ class ComicViewer(tk.Tk):
             tp.set_time(pos)
         except Exception:
             pass
-        self._thumb_gen_after = self.after(220, self._seek_thumb_snap, idx, pos)
+        # 远程流 seek 后要重新缓冲，给足时间；本地文件几乎瞬时
+        delay = 700 if isinstance(self._seek_thumbs_src, RemoteSource) else 220
+        self._thumb_gen_after = self.after(delay, self._seek_thumb_snap, idx, pos)
 
-    def _seek_thumb_snap(self, idx, pos):
+    def _thumb_image_ok(self, p):
+        """截图是否有效：文件存在、非空、且不是整张纯黑。
+
+        实测 video_take_snapshot 的返回值不可靠（可能有画面也返回 -1），
+        远程流暂停时还可能写出整张全黑的 PNG，所以以文件内容为准。"""
+        try:
+            if not (os.path.exists(p) and os.path.getsize(p) > 0):
+                return False
+            im = Image.open(p)
+            _lo, hi = im.convert("L").getextrema()
+            return hi > 12   # 全黑/几乎全黑视为失败
+        except Exception:
+            return False
+
+    def _seek_thumb_snap(self, idx, pos, attempt=0):
         self._thumb_gen_after = None
         tp = self._thumb_player
-        if tp is None or not self.is_video:
+        st = self._thumb_state
+        if tp is None or st is None or not self.is_video:
             self._cancel_seek_thumbs()
             return
         p = os.path.join(self._tmp_dir, "seek_thumb_%d.png" % idx)
-        ok = False
         try:
-            ok = tp.video_take_snapshot(0, p, 240, 135) == 0
+            if os.path.exists(p):
+                os.remove(p)
         except Exception:
-            ok = False
-        if ok:
+            pass
+        try:
+            tp.video_take_snapshot(0, p, 240, 135)
+        except Exception as ex:
+            _seek_dbg("snap idx=%d pos=%d attempt=%d exc=%r" % (idx, pos, attempt, ex))
+        # 不迷信返回值：以「文件有效且非全黑」为准；失败就短间隔重试等帧就绪
+        if self._thumb_image_ok(p):
+            if attempt:
+                _seek_dbg("snap idx=%d pos=%d ok after %d retries" % (idx, pos, attempt))
             self._thumb_gen_after = self.after(60, self._seek_thumb_load, idx, pos, p)
-        else:
-            self._thumb_state["idx"] = idx + 1
-            self._thumb_gen_after = self.after(80, self._seek_thumb_step)
+            return
+        if attempt < 5:
+            self._thumb_gen_after = self.after(320, self._seek_thumb_snap, idx, pos, attempt + 1)
+            return
+        _seek_dbg("snap idx=%d pos=%d giveup after %d tries" % (idx, pos, attempt + 1))
+        st["idx"] = idx + 1
+        self._thumb_gen_after = self.after(80, self._seek_thumb_step)
 
     def _seek_thumb_load(self, idx, pos, p):
         self._thumb_gen_after = None
@@ -3828,11 +3962,11 @@ class ComicViewer(tk.Tk):
             pass
         self._video_timer = self.after(500, self._update_video_time_loop)
 
-        # 持续把 VLC 原生窗口设为鼠标穿透（窗口可能延迟创建，也可能在播放中重建，
-        # 每 ~1s 重试；已钩过的窗口会跳过，代价很低）。
-        self._transparent_ticks += 1
-        if self._transparent_ticks % 2 == 0:
-            self._make_video_window_transparent()
+        # 注：不再在 500ms 轮询里周期性重挂鼠标穿透。每秒遍历并 SetWindowLongW
+        # 子类化 VLC 原生子窗口，会与最小化/还原/焦点切换时的窗口消息（proc 回调）
+        # 竞争，实测把主线程死锁在 SetWindowLongW / CallWindowProcW 上（窗口半宽、
+        # 无法拖拽）。穿透改为只在窗口重建的确定性时机重挂（见 _refresh_video_hwnd
+        # / 打开视频后 400ms+1200ms / 区域放大）。
 
         # 刷新视频条上的字幕/速率按钮状态（~2Hz，轻量，避免手动在各处重绘）
         try:
