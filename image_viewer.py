@@ -1646,40 +1646,37 @@ class ComicViewer(tk.Tk):
         hint_lbl.pack(side="bottom", fill="x", padx=8, pady=4)
 
         state = {"path": path, "stack": [], "entries": [], "cards": [],
-                 "photos": [], "queue": queue.Queue(), "gen": 0,
-                 "poll_after": None, "alive": True}
+                 "photos": [], "imgs": {}, "queue": queue.Queue(), "gen": 0,
+                 "poll_after": None, "relayout_after": None, "alive": True}
 
         def close():
             state["alive"] = False
-            if state["poll_after"]:
-                try:
-                    self.after_cancel(state["poll_after"])
-                except Exception:
-                    pass
-                state["poll_after"] = None
+            for k in ("poll_after", "relayout_after"):
+                if state[k]:
+                    try:
+                        self.after_cancel(state[k])
+                    except Exception:
+                        pass
+                    state[k] = None
             dlg.destroy()
 
-        def render():
-            state["gen"] += 1
-            gen = state["gen"]
-            self._last_browse[provider.name] = state["path"]
-            state["entries"] = provider.list_dir(state["path"])
-            state["cards"] = []
-            state["photos"] = []
+        def layout():
+            """按当前 canvas 宽度重排卡片（不重新拉取目录/海报，海报用缓存）。"""
             canvas.delete("all")
-            path_lbl.configure(text=state["path"] or "/")
-            if not state["entries"]:
+            state["cards"] = []
+            entries = state["entries"]
+            if not entries:
                 canvas.create_text(320, 120, text="（空）", fill="#5a6472",
                                    font=("Segoe UI", 16))
                 canvas.configure(scrollregion=(0, 0, 640, 240))
                 hint_lbl.configure(text="此目录为空")
                 return
-            hint_lbl.configure(text="共 %d 项 · 单击目录卡片进入 · 单击影片/音乐播放 · 顶部按钮：返回上级 / 播放此文件夹" % len(state["entries"]))
+            hint_lbl.configure(text="共 %d 项 · 单击目录卡片进入 · 单击影片/音乐播放 · 顶部按钮：返回上级 / 播放此文件夹" % len(entries))
             cw = max(canvas.winfo_width(), 320)
             PW, PH, GAP, M = 132, 198, 14, 18
             ROW = PH + 52 + GAP
             x, y = M, M
-            for i, e in enumerate(state["entries"]):
+            for i, e in enumerate(entries):
                 if x + PW > cw - M:
                     x = M
                     y += ROW
@@ -1687,7 +1684,16 @@ class ComicViewer(tk.Tk):
                 canvas.create_rectangle(x, y, x + PW, y + PH, fill="#1e222a",
                                         outline=outline, width=2 if e.is_dir else 1,
                                         tags=("c%d" % i,))
-                if e.is_dir:
+                img = state["imgs"].get(i)
+                if img is not None:
+                    try:
+                        photo = ImageTk.PhotoImage(img)
+                        state["photos"].append(photo)
+                        canvas.create_image((x + PW) / 2, (y + PH) / 2, image=photo,
+                                            tags=("c%d" % i,))
+                    except Exception:
+                        pass
+                elif e.is_dir:
                     canvas.create_rectangle(x + 24, y + PH // 2 - 28, x + PW - 24, y + PH // 2 + 10,
                                             fill="#5a4a2a", outline="", tags=("g%d" % i,))
                     canvas.create_rectangle(x + 24, y + PH // 2 - 38, x + 66, y + PH // 2 - 26,
@@ -1709,6 +1715,16 @@ class ComicViewer(tk.Tk):
                 state["cards"].append((x, y, x + PW, y + PH))
                 x += PW + GAP
             canvas.configure(scrollregion=(0, 0, cw, y + ROW + M))
+
+        def render():
+            state["gen"] += 1
+            gen = state["gen"]
+            self._last_browse[provider.name] = state["path"]
+            state["entries"] = provider.list_dir(state["path"])
+            state["imgs"] = {}
+            state["photos"] = []
+            path_lbl.configure(text=state["path"] or "/")
+            layout()
             threading.Thread(target=self._poster_fetcher,
                              args=(state, provider, gen), daemon=True).start()
             state["poll_after"] = self.after(90, lambda: self._poster_poll(state, canvas))
@@ -1736,14 +1752,20 @@ class ComicViewer(tk.Tk):
                         close()
                     return
 
+        def on_configure(e=None):
+            if state["relayout_after"]:
+                self.after_cancel(state["relayout_after"])
+            state["relayout_after"] = self.after(120, layout)
+
         canvas.bind("<Button-1>", on_click)
         canvas.bind("<MouseWheel>",
                     lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
         dlg.protocol("WM_DELETE_WINDOW", close)
-        dlg.update_idletasks()
+        dlg.update()                # 先完成布局，让 canvas.winfo_width() 拿到真实宽度
+        render()
+        canvas.bind("<Configure>", on_configure)   # 之后用户拉伸窗口时重排网格
         dlg.lift()
         dlg.focus_force()
-        render()
 
     def _poster_fetcher(self, state, provider, gen):
         for i, e in enumerate(state["entries"]):
@@ -1781,6 +1803,7 @@ class ComicViewer(tk.Tk):
     def _poster_apply(self, state, canvas, i, img):
         if not state["alive"] or i >= len(state["cards"]):
             return
+        state["imgs"][i] = img   # 缓存原始图，窗口重排时免重新拉取
         try:
             photo = ImageTk.PhotoImage(img)
         except Exception:
@@ -2262,6 +2285,12 @@ class ComicViewer(tk.Tk):
         """
         if not self.is_video:
             return
+        # 重入/并发护栏：此函数会遍历并子类化 video_panel 下的原生子窗口，
+        # 若与窗口消息回调（proc）或自身重入并发，会死锁（主线程 SetWindowLongW
+        # 等目标线程、回调又回链到 Tk）。若已有一次在跑，直接放弃本次。
+        if getattr(self, "_transparent_busy", False):
+            return
+        self._transparent_busy = True
         try:
             hwnd = self.video_panel.winfo_id()
             if not hwnd:
@@ -2319,6 +2348,8 @@ class ComicViewer(tk.Tk):
             walk(hwnd)
         except Exception:
             pass
+        finally:
+            self._transparent_busy = False
 
     def _video_resume_key(self, src):
         if isinstance(src, RemoteSource):
@@ -3828,11 +3859,11 @@ class ComicViewer(tk.Tk):
             pass
         self._video_timer = self.after(500, self._update_video_time_loop)
 
-        # 持续把 VLC 原生窗口设为鼠标穿透（窗口可能延迟创建，也可能在播放中重建，
-        # 每 ~1s 重试；已钩过的窗口会跳过，代价很低）。
-        self._transparent_ticks += 1
-        if self._transparent_ticks % 2 == 0:
-            self._make_video_window_transparent()
+        # 注：不再在 500ms 轮询里周期性重挂鼠标穿透。每秒遍历并 SetWindowLongW
+        # 子类化 VLC 原生子窗口，会与最小化/还原/焦点切换时的窗口消息（proc 回调）
+        # 竞争，实测把主线程死锁在 SetWindowLongW / CallWindowProcW 上（窗口半宽、
+        # 无法拖拽）。穿透改为只在窗口重建的确定性时机重挂（见 _refresh_video_hwnd
+        # / 打开视频后 400ms+1200ms / 区域放大）。
 
         # 刷新视频条上的字幕/速率按钮状态（~2Hz，轻量，避免手动在各处重绘）
         try:
