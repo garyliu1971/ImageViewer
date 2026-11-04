@@ -23,6 +23,7 @@
 ```bash
 pip install Pillow        # 必需
 pip install pymupdf       # 可选：阅读 PDF 漫画需要
+pip install rarfile       # 可选：阅读 rar / cbr 漫画需要（另需 7-Zip 或 WinRAR）
 pip install python-vlc    # 可选：播放视频需要（另需安装 VLC）
 pip install vosk sounddevice          # 可选：视频实时字幕（英文）需要
 pip install sherpa-onnx               # 可选：中文实时字幕（准确率更高）需要
@@ -135,7 +136,7 @@ DLNA 设备（极米投影仪 / 电视 / 盒子等）。原理是 DLNA：本地�
 
 ## 功能
 
-- 打开 **文件夹 / 多张图片 / zip·cbz 压缩包 / PDF / 播放列表（m3u/m3u8）**
+- 打开 **文件夹 / 多张图片 / zip·cbz·rar·cbr 压缩包 / PDF / 播放列表（m3u/m3u8）**
 - 章节管理：文件夹含子文件夹、压缩包含子目录时，自动识别为「章节」，顶部出现章节下拉框 + 上一话/下一话
 - 双页模式、日漫右→左阅读方向、图片对比模式（两图并排）
 - 断点续读、跳到指定页、自动翻页
@@ -149,6 +150,7 @@ DLNA 设备（极米投影仪 / 电视 / 盒子等）。原理是 DLNA：本地�
   - 投屏：把视频投到局域网里的 Chromecast / DLNA 电视 / 盒子（视频条「📺 投屏」按钮）
 - 视频实时字幕（英文 vosk、中文 sherpa-onnx、日语 SenseVoice 离线识别）+ 离线翻译（Argos）+ AI 翻译（LLM）+ 外挂字幕（.srt/.ass）
 - 支持格式：png / jpg / jpeg / gif / webp / bmp / tif / tiff / avif / jfif / pdf（漫画 PDF，按页阅读）
+- 压缩包：zip / cbz（内置解压）；rar / cbr（需 rarfile 库 + 7-Zip 或 WinRAR 的 UnRAR 等解压工具，安装包已内置 7-Zip）
 
 ## 快捷键
 
