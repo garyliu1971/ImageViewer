@@ -4,7 +4,7 @@
 依赖：tkinter（自带）+ Pillow
 安装 Pillow： pip install Pillow
 
-支持：文件夹 / 多张图片 / zip·cbz 压缩包；双页模式；日漫右→左方向；
+支持：文件夹 / 多张图片 / zip·cbz·rar·cbr 压缩包；双页模式；日漫右→左方向；
 断点续读；跳到指定页；自动裁白边；视频播放（mp4 等，需 VLC）。
 
 快捷键：
@@ -43,6 +43,10 @@ import time
 import random
 import queue
 import zipfile
+try:
+    import rarfile
+except ImportError:
+    rarfile = None
 import tempfile
 import shutil
 import threading
@@ -54,10 +58,10 @@ from viewer_core import (MIN_ZOOM, MAX_ZOOM, MIN_VISIBLE, clamp, natural_key,
                          compute_zoom, rotated_size, clamp_pan, zoom_at_pan,
                          zoom_slider_value, zoom_slider_pos)
 
-from media_source import (IMAGE_EXTS, ZIP_EXTS, PDF_EXTS, VIDEO_EXTS, AUDIO_EXTS,
-                          media_files_in, build_zip_chapters, expand_paths,
-                          parse_playlist, files_book_key, playlist_book_key,
-                          update_history)
+from media_source import (IMAGE_EXTS, RAR_EXTS, ARCHIVE_EXTS, PDF_EXTS,
+                          VIDEO_EXTS, AUDIO_EXTS, media_files_in, build_zip_chapters,
+                          expand_paths, parse_playlist, files_book_key,
+                          playlist_book_key, update_history)
 from config_store import load_config, save_config
 from browser_view import fmt_size, fmt_mtime, kind_label, grid_layout, hit_test, sort_entries
 
@@ -78,6 +82,70 @@ except Exception:
         ctypes.windll.user32.SetProcessDPIAware()     # 旧版 Windows 回退
     except Exception:
         pass
+
+
+# ---- rar / cbr 支持 ----
+# rarfile 只负责解析 rar 头部（拿文件列表），真正解压靠外部命令行工具：
+# UnRAR / unar / 7-Zip / bsdtar。这里自动探测可用的工具并配置好 rarfile。
+_rarfile_ready = None   # None = 未探测；True/False = 探测结果
+
+
+def _find_rar_backend():
+    """探测并配置 rarfile 的解压工具，返回 True 表示有可用后端。"""
+    if rarfile is None:
+        return False
+    # 应用自身目录（打包后解压工具可随程序一起分发），优先级最高
+    app_dirs = []
+    for base in (getattr(sys, "_MEIPASS", None),
+                 os.path.dirname(os.path.abspath(sys.executable))):
+        if base:
+            app_dirs.append(base)
+    # (rarfile 工具名, 可执行文件候选名, 系统固定安装位置)
+    fixed = [
+        ("UNRAR_TOOL", ("UnRAR.exe", "unrar", "unrar-free"),
+         (r"C:\Program Files\WinRAR\UnRAR.exe", r"C:\Program Files (x86)\WinRAR\UnRAR.exe")),
+        ("UNAR_TOOL", ("unar",), ()),
+        ("SEVENZIP_TOOL", ("7z.exe", "7z", "7za", "7zz"),
+         (r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe")),
+        ("SEVENZIP2_TOOL", ("7z.exe", "7zz"),
+         (r"C:\Program Files\7-Zip\7z.exe", r"C:\Program Files (x86)\7-Zip\7z.exe")),
+        ("BSDTAR_TOOL", ("bsdtar",), ()),
+    ]
+    for attr, names, paths in fixed:
+        found = None
+        for d in app_dirs:
+            for n in names:
+                cand = os.path.join(d, n)
+                if os.path.isfile(cand):
+                    found = cand
+                    break
+            if found:
+                break
+        if not found:
+            for p in paths:
+                if os.path.isfile(p):
+                    found = p
+                    break
+        if not found:
+            for n in names:
+                found = shutil.which(n)
+                if found:
+                    break
+        if found:
+            setattr(rarfile, attr, found)
+    try:
+        rarfile.tool_setup(force=True)
+        return True
+    except Exception:
+        return False
+
+
+def _rarfile_available():
+    global _rarfile_ready
+    if _rarfile_ready is None:
+        _rarfile_ready = _find_rar_backend()
+    return _rarfile_ready
+
 
 try:
     from PIL import Image, ImageTk, ExifTags
@@ -495,7 +563,7 @@ class ComicViewer(tk.Tk):
 
         self._btn(self.toolbar, "📂 打开文件夹", self.open_folder, primary=True)
         self._btn(self.toolbar, "🖼 打开图片", self.open_files)
-        self._btn(self.toolbar, "📦 压缩包", self.open_zip, tip="打开 zip / cbz")
+        self._btn(self.toolbar, "📦 压缩包", self.open_archive, tip="打开 zip / cbz / rar / cbr")
         self._sep(self.toolbar)
         self._btn(self.toolbar, "⏮", self.prev, tip="上一页")
         self.page_label = tk.Label(self.toolbar, text="0 / 0", bg=PANEL, fg=FG, width=10)
@@ -664,7 +732,7 @@ class ComicViewer(tk.Tk):
         """往三个菜单里填入命令（原生菜单栏与浮动菜单复用同一份）。"""
         file_menu.add_command(label="打开文件夹", command=self.open_folder)
         file_menu.add_command(label="打开图片", command=self.open_files)
-        file_menu.add_command(label="打开压缩包 (zip/cbz)", command=self.open_zip)
+        file_menu.add_command(label="打开压缩包 (zip/cbz/rar/cbr)", command=self.open_archive)
         file_menu.add_command(label="打开 PDF", command=self.open_pdf)
         file_menu.add_command(label="打开播放列表 (m3u/m3u8)", command=self.open_playlist)
         file_menu.add_command(label="打开历史播放", command=self.open_history_playlist)
@@ -888,16 +956,16 @@ class ComicViewer(tk.Tk):
     def open_files(self):
         paths = filedialog.askopenfilenames(
             title="选择图片 / 视频 / PDF / 压缩包（可多选）",
-            filetypes=[("图片 / 视频 / PDF / 压缩包", "*.png *.jpg *.jpeg *.gif *.webp *.bmp *.tif *.tiff *.jfif *.mp4 *.mkv *.avi *.webm *.mov *.wmv *.flv *.m4v *.ts *.pdf *.zip *.cbz"),
+            filetypes=[("图片 / 视频 / PDF / 压缩包", "*.png *.jpg *.jpeg *.gif *.webp *.bmp *.tif *.tiff *.jfif *.mp4 *.mkv *.avi *.webm *.mov *.wmv *.flv *.m4v *.ts *.pdf *.zip *.cbz *.rar *.cbr"),
                        ("图片文件", "*.png *.jpg *.jpeg *.gif *.webp *.bmp *.tif *.tiff *.jfif"),
                        ("视频文件", "*.mp4 *.mkv *.avi *.webm *.mov *.wmv *.flv *.m4v *.ts"),
                        ("PDF 文件", "*.pdf"),
-                       ("压缩包", "*.zip *.cbz"),
+                       ("压缩包", "*.zip *.cbz *.rar *.cbr"),
                        ("所有文件", "*.*")])
         if not paths:
             return
         pdfs = [p for p in paths if os.path.splitext(p)[1].lower() in PDF_EXTS]
-        zips = [p for p in paths if os.path.splitext(p)[1].lower() in ZIP_EXTS]
+        zips = [p for p in paths if os.path.splitext(p)[1].lower() in ARCHIVE_EXTS]
         imgs = [p for p in paths if p not in pdfs and p not in zips]
         if pdfs:
             if len(pdfs) > 1 or zips or imgs:
@@ -906,7 +974,7 @@ class ComicViewer(tk.Tk):
         elif zips:
             if len(zips) > 1 or imgs:
                 messagebox.showinfo("提示", "压缩包请单独打开。")
-            self._load_zip_path(zips[0])
+            self._load_archive_path(zips[0])
         elif imgs:
             imgs.sort(key=lambda p: natural_key(os.path.basename(p)))
             self._close_zip()
@@ -916,11 +984,11 @@ class ComicViewer(tk.Tk):
             self.book_key = files_book_key(imgs)
             self._load_list(imgs)
 
-    def open_zip(self):
-        p = filedialog.askopenfilename(title="选择压缩包（zip / cbz）",
-                                       filetypes=[("压缩包", "*.zip *.cbz"), ("所有文件", "*.*")])
+    def open_archive(self):
+        p = filedialog.askopenfilename(title="选择压缩包（zip / cbz / rar / cbr）",
+                                       filetypes=[("压缩包", "*.zip *.cbz *.rar *.cbr"), ("所有文件", "*.*")])
         if p:
-            self._load_zip_path(p)
+            self._load_archive_path(p)
 
     def open_pdf(self):
         p = filedialog.askopenfilename(title="选择 PDF 文件（漫画）",
@@ -1858,16 +1926,28 @@ class ComicViewer(tk.Tk):
         canvas.delete("g%d" % i)
         canvas.create_image((x0 + x1) / 2, (y0 + y1) / 2, image=photo, tags=("c%d" % i,))
 
-    def _load_zip_path(self, p):
+    @staticmethod
+    def _open_archive(path):
+        """按扩展名打开 zip / rar 压缩包，返回 namelist/read/close 兼容对象。"""
+        ext = os.path.splitext(path)[1].lower()
+        if ext in RAR_EXTS:
+            if not _rarfile_available():
+                raise RuntimeError(
+                    "读取 rar/cbr 需要 rarfile 库以及 7-Zip 或 WinRAR(UnRAR) 等解压工具，"
+                    "当前环境未检测到，请安装后再试。")
+            return rarfile.RarFile(path)
+        return zipfile.ZipFile(path)
+
+    def _load_archive_path(self, p):
         try:
-            with zipfile.ZipFile(p) as z:
+            with self._open_archive(p) as z:
                 chapters = build_zip_chapters(p, z.namelist())
             if not chapters:
                 messagebox.showinfo("提示", "压缩包内没有图片或视频文件。")
                 return
 
             self._close_zip()
-            self._zip = zipfile.ZipFile(p)
+            self._zip = self._open_archive(p)
             if len(chapters) > 1:
                 self._load_chapters(chapters, book_key=p)
             else:
@@ -2110,7 +2190,7 @@ class ComicViewer(tk.Tk):
         if isinstance(src, tuple):
             if self._is_pdf_src(src):
                 return self._render_pdf_page(src[0], src[1])
-            z = self._zip or zipfile.ZipFile(src[0])
+            z = self._zip or self._open_archive(src[0])
             return Image.open(io.BytesIO(z.read(src[1])))
         return Image.open(src)
 
@@ -2232,7 +2312,7 @@ class ComicViewer(tk.Tk):
                 return self._video_cache[src]
             tmp = video_tmp_name(src[1], self._tmp_dir)
             try:
-                z = self._zip or zipfile.ZipFile(src[0])
+                z = self._zip or self._open_archive(src[0])
                 with open(tmp, "wb") as f:
                     f.write(z.read(src[1]))
                 self._video_cache[src] = tmp
@@ -5117,18 +5197,18 @@ class ComicViewer(tk.Tk):
     # ---- 远程图片缩略图（后台线程取图，界面线程只负责贴图） ----
     _RTHUMB_W = 96
 
-    def _thumb_remote_tile(self, i, src, x, H, Y):
-        W = self._RTHUMB_W
+    def _thumb_async_placeholder(self, i, x, H, Y, W, glyph):
+        """占位块：先画深色底 + 图标，后台线程出图后在 _rthumb_poll 里替换。"""
         self._thumb_photos.append(None)
         self.thumbs.create_rectangle(x, Y - H / 2, x + W, Y + H / 2, fill="#1b1e24",
                                      tags=("thumb", "t%d" % i, "rp%d" % i))
-        self.thumbs.create_text(x + W / 2, Y, text="▣", fill="#5a6472",
+        self.thumbs.create_text(x + W / 2, Y, text=glyph, fill="#5a6472",
                                 font=("Segoe UI", 18), tags=("thumb", "t%d" % i, "rp%d" % i))
         self._thumb_rects.append((x, x + W))
         self._thumb_build_x += W + 8
-        provider = self._get_provider(src.provider)
-        if not provider or src.is_dir:
-            return
+
+    def _rthumb_submit(self, i, provider, src):
+        """提交一个后台缩略图任务（provider 为 None 表示本地 zip 内文件）。"""
         self._rthumb_jobs.put((i, provider, src))
         self._rthumb_pending += 1
         if self._rthumb_started_gen != self._rthumb_gen:
@@ -5137,6 +5217,30 @@ class ComicViewer(tk.Tk):
                              args=(self._rthumb_gen, self._rthumb_jobs), daemon=True).start()
         if self._rthumb_poll_after is None:
             self._rthumb_poll_after = self.after(100, self._rthumb_poll)
+
+    def _thumb_remote_tile(self, i, src, x, H, Y):
+        self._thumb_async_placeholder(i, x, H, Y, self._RTHUMB_W, "▣")
+        provider = self._get_provider(src.provider)
+        if not provider or src.is_dir:
+            return
+        self._rthumb_submit(i, provider, src)
+
+    def _thumb_local_archive_tile(self, i, src, x, H, Y):
+        """本地 zip/cbz 内文件：后台线程独立打开压缩包解出缩略图，不卡界面。"""
+        self._thumb_async_placeholder(i, x, H, Y, self._RTHUMB_W, "▤")
+        self._rthumb_submit(i, None, src)
+
+    def _thumb_rar_placeholder(self, i, x, H, Y):
+        """rar/cbr 固实压缩解压任意一个文件都要从头解包，缩略图不做，
+        只放静态占位块（点击仍可跳转到对应页）。"""
+        W = 80
+        self._thumb_photos.append(None)
+        self.thumbs.create_rectangle(x, Y - H / 2, x + W, Y + H / 2, fill="#1b1e24",
+                                     tags=("thumb", "t%d" % i))
+        self.thumbs.create_text(x + W / 2, Y, text="RAR", fill="#5a6472",
+                                font=("Segoe UI", 9, "bold"), tags=("thumb", "t%d" % i))
+        self._thumb_rects.append((x, x + W))
+        self._thumb_build_x += W + 8
 
     def _rthumb_worker(self, gen, jobs):
         while gen == self._rthumb_gen:
@@ -5148,9 +5252,19 @@ class ComicViewer(tk.Tk):
                 continue
             im = None
             try:
-                data = provider.fetch_image(src, self._RTHUMB_W * 2)
-                if data:
+                if provider is not None:
+                    data = provider.fetch_image(src, self._RTHUMB_W * 2)
+                    if data:
+                        im = Image.open(io.BytesIO(data))
+                else:
+                    # 本地 zip/cbz 内文件：独立打开压缩包（不共享主线程的 self._zip）
+                    z = self._open_archive(src[0])
+                    try:
+                        data = z.read(src[1])
+                    finally:
+                        z.close()
                     im = Image.open(io.BytesIO(data))
+                if im is not None:
                     im.thumbnail((self._RTHUMB_W, 70))
                     if im.mode not in ("RGB", "RGBA", "L"):
                         im = im.convert("RGB")
@@ -5206,6 +5320,13 @@ class ComicViewer(tk.Tk):
             if isinstance(src, RemoteSource):
                 # 远程图片不在界面线程里下载：先放占位块，后台线程取到缩略图再替换
                 self._thumb_remote_tile(i, src, x, H, Y)
+                continue
+            if isinstance(src, tuple) and not self._is_pdf_src(src):
+                # 本地压缩包内文件：rar/cbr 固实解压慢，降级为占位块；zip/cbz 后台生成
+                if os.path.splitext(src[0])[1].lower() in RAR_EXTS:
+                    self._thumb_rar_placeholder(i, x, H, Y)
+                else:
+                    self._thumb_local_archive_tile(i, src, x, H, Y)
                 continue
             ph = None
             try:
@@ -5372,7 +5493,7 @@ class ComicViewer(tk.Tk):
         self.canvas.create_text(cw / 2, ch / 2 - 30, text=("🖼 " if icon else "") + "图片 / 漫画浏览器",
                                 fill=FG, font=("Microsoft YaHei", 22, "bold"))
         self.canvas.create_text(cw / 2, ch / 2 + 10,
-                                text="打开文件夹 / 图片 / zip·cbz 压缩包 / 视频开始阅读（竖图可双页并排显示）",
+                                text="打开文件夹 / 图片 / zip·cbz·rar·cbr 压缩包 / 视频开始阅读（竖图可双页并排显示）",
                                 fill=MUTED, font=("Microsoft YaHei", 12))
         self.canvas.create_text(cw / 2, ch / 2 + 44,
                                 text="← → 翻页 · 滚轮缩放 · R 旋转 · D 双页 · M 方向 · C 去边 · G 跳页 · A 自动 · ? 帮助",
@@ -5418,7 +5539,7 @@ class ComicViewer(tk.Tk):
             "?                              帮助\n"
             "Esc                            退出全屏\n"
             "\n"
-            "支持：文件夹 / 多张图片 / zip·cbz 压缩包。\n"
+            "支持：文件夹 / 多张图片 / zip·cbz·rar·cbr 压缩包。\n"
             "支持：mp4 / mkv / avi / webm 等视频（内嵌播放，需 VLC）。\n"
             "自动记忆每本书的阅读进度、双页、方向、去边设置。\n"
         )

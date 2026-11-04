@@ -1,12 +1,25 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+
+# rar/cbr 支持：把 7-Zip 随程序分发（没装 7-Zip 时优雅跳过）
+sevenzip_binaries = []
+for _f in ("7z.exe", "7z.dll"):
+    _p = os.path.join(r"C:\Program Files\7-Zip", _f)
+    if os.path.isfile(_p):
+        sevenzip_binaries.append((_p, "."))
+    else:
+        _p86 = os.path.join(r"C:\Program Files (x86)\7-Zip", _f)
+        if os.path.isfile(_p86):
+            sevenzip_binaries.append((_p86, "."))
+
 
 a = Analysis(
     ['image_viewer.py'],
     pathex=[],
-    binaries=[],
+    binaries=sevenzip_binaries,
     datas=[('image-viewer.html', '.')],
-    hiddenimports=[],
+    hiddenimports=['rarfile'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

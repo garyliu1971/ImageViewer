@@ -16,6 +16,8 @@ from viewer_core import natural_key
 # 支持的扩展名（与 image_viewer.py 保持一致）
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".jfif"}
 ZIP_EXTS = {".zip", ".cbz"}
+RAR_EXTS = {".rar", ".cbr"}
+ARCHIVE_EXTS = ZIP_EXTS | RAR_EXTS
 PDF_EXTS = {".pdf"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".ape"}
