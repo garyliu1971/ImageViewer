@@ -134,6 +134,16 @@ def _remote():
     import remote_source
     return remote_source
 
+
+def _seek_dbg(msg):
+    """临时诊断：进度缩略图生成失败时的排查日志（写 seek_thumbs.log）。"""
+    try:
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seek_thumbs.log")
+        with open(p, "a", encoding="utf-8") as f:
+            f.write("[%s] %s\n" % (time.strftime("%H:%M:%S"), msg))
+    except Exception:
+        pass
+
 CAPTION_LANGS = ["中文", "英文", "日语", "韩语", "粤语"]
 CAPTION_LANG_CODES = {"中文": "zh", "英文": "en", "日语": "ja", "韩语": "ko", "粤语": "yue"}
 CAPTION_MODES = ["原声", "中文翻译", "AI 翻译"]
@@ -143,6 +153,34 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "image_viewer.json")
 HISTORY_PLAYLIST_PATH = os.path.join(APP_DIR, "播放历史.m3u")
 HISTORY_LIMIT = 100
+
+
+def _remote_history_line(src):
+    """远程条目在播放历史里的持久化格式：remote:provider:path<tab>name<tab>kind。
+
+    本地文件靠路径本身就能还原；Jellyfin 的 path 只是 item id（不含文件名/类型），
+    所以额外把 name/kind 一起存下来，重新打开历史时才能正确显示与播放。
+    """
+    line = src.key()
+    if src.name:
+        line += "\t" + str(src.name).replace("\t", " ").replace("\n", " ")
+    if src.kind:
+        line += "\t" + str(src.kind)
+    return line
+
+
+def _remote_from_history_line(entry):
+    """把播放历史里的远程条目还原成 RemoteSource；非远程条目返回 None。"""
+    if not entry.startswith("remote:"):
+        return None
+    fields = entry.split("\t")
+    rest = fields[0][len("remote:"):]
+    provider, sep, path = rest.partition(":")
+    if not sep or not provider or not path:
+        return None
+    name = fields[1] if len(fields) > 1 and fields[1] else None
+    kind = fields[2] if len(fields) > 2 and fields[2] else None
+    return RemoteSource(provider, path, name=name, kind=kind)
 
 RATE_OPTS = ["0.5", "0.75", "1.0", "1.25", "1.5", "2.0", "2.5", "3.0", "4.0",
              "5.0", "6.0", "8.0", "10.0", "12.0", "15.0", "20.0", "30.0",
@@ -900,7 +938,7 @@ class ComicViewer(tk.Tk):
 
     def open_history_playlist(self):
         if not os.path.isfile(HISTORY_PLAYLIST_PATH):
-            messagebox.showinfo("提示", "尚无播放历史。打开本地图片或视频后会自动创建。")
+            messagebox.showinfo("提示", "尚无播放历史。打开本地或网盘/Jellyfin 媒体后会自动创建。")
             return
         self._load_playlist_path(HISTORY_PLAYLIST_PATH)
 
@@ -919,7 +957,8 @@ class ComicViewer(tk.Tk):
             messagebox.showerror("错误", "无法读取播放列表：%s" % error)
             return
 
-        sources = parse_playlist(lines, os.path.dirname(path), self._pdf_page_count)
+        sources = parse_playlist(lines, os.path.dirname(path), self._pdf_page_count,
+                                 remote_parser=_remote_from_history_line)
         if not sources:
             messagebox.showinfo("提示", "播放列表中没有可访问的媒体文件。")
             return
@@ -932,9 +971,14 @@ class ComicViewer(tk.Tk):
         self._load_list(sources)
 
     def _record_history(self, src):
-        """将实际播放的本地媒体写入最近播放 M3U，最新记录置顶。"""
+        """将实际播放的媒体写入最近播放 M3U，最新记录置顶。
+
+        本地文件存绝对路径；远程（网盘/Jellyfin）用 _remote_history_line 的编码，
+        这样从历史里重新打开也能直接连回原位置，不用重新一层层浏览。
+        """
         if isinstance(src, RemoteSource):
-            return   # 远程媒体暂不写入本地播放历史
+            update_history(_remote_history_line(src), HISTORY_PLAYLIST_PATH, HISTORY_LIMIT)
+            return
         if isinstance(src, tuple):
             if self._is_pdf_src(src):
                 src = src[0]   # PDF 按整本书记录
@@ -1664,6 +1708,7 @@ class ComicViewer(tk.Tk):
             """按当前 canvas 宽度重排卡片（不重新拉取目录/海报，海报用缓存）。"""
             canvas.delete("all")
             state["cards"] = []
+            state["photos"] = []   # 释放上一轮 PhotoImage，避免 resize 累积内存
             entries = state["entries"]
             if not entries:
                 canvas.create_text(320, 120, text="（空）", fill="#5a6472",
@@ -3565,22 +3610,30 @@ class ComicViewer(tk.Tk):
         self._seek_thumbs_src = src
         self._seek_thumbs = []
         self._seek_thumbs_busy = True
+        _seek_dbg("start remote=%s hls=%s kind=%s name=%r path=%s" % (
+            isinstance(src, RemoteSource), getattr(self, "_remote_hls", False),
+            getattr(src, "kind", "?"), getattr(src, "name", "?"), path))
         try:
             tp = self.vlc_instance.media_player_new()
             # 不能用 tp.audio_set_mute(True)：VLC 在 Windows 上的静音是按进程的
             # WASAPI 会话设置的，会把主播放器也静音，且 Windows 会按 exe 记住该
             # 静音状态（重启后仍静音）。改为 media 选项直接不开音频输出。
-            media = self.vlc_instance.media_new(path, ":no-audio")
+            # 与主播放器一致关掉 D3D11VA 硬件解码（:avcodec-hw=none），否则
+            # 缩略图播放器走硬件解码，video_take_snapshot 会报
+            # SetThumbNailClip failed / 截图失败。
+            media = self.vlc_instance.media_new(path, ":no-audio", ":avcodec-hw=none")
             tp.set_media(media)
             self.update_idletasks()
             tp.set_hwnd(self._thumb_frame.winfo_id())
             tp.play()
-            tp.set_pause(1)   # 暂停后 seek，画面停在目标帧，截图更准确
+            # 不要立刻 set_pause(1)：远程流（alist 代理）要先缓冲+解码出第一帧，
+            # 立即暂停会让 vout 不产帧，video_take_snapshot 返回 -1。
+            # 改为在 _seek_thumb_step 里等第一帧出来后再暂停。
         except Exception:
             self._seek_thumbs_busy = False
             return
         self._thumb_player = tp
-        self._thumb_state = {"idx": 0, "total": 12, "waits": 0}
+        self._thumb_state = {"idx": 0, "total": 12, "waits": 0, "vout_ready": False}
         self._thumb_gen_after = self.after(400, self._seek_thumb_step)
 
     def _cancel_seek_thumbs(self):
@@ -3607,6 +3660,27 @@ class ComicViewer(tk.Tk):
         if self.sources and self._seek_thumbs_src != self.sources[self.index]:
             self._cancel_seek_thumbs()
             return
+        if not st.get("vout_ready"):
+            # 等第一帧解码出来（远程流缓冲慢），否则截图时 vout 还没画面
+            try:
+                size = tp.video_get_size()
+            except Exception:
+                size = (0, 0)
+            if size and size[0] > 0 and size[1] > 0:
+                st["vout_ready"] = True
+                st["waits"] = 0
+                _seek_dbg("vout ready size=%s" % (size,))
+                # 关键：不要暂停。实测暂停后对远程流 seek，wingdi vout 停在
+                # 空帧，video_take_snapshot 拿不到画面（文件不生成或整张全黑）。
+                # 保持播放让 vout 持续产帧，seek 后等一会儿再截图才有效。
+            else:
+                st["waits"] += 1
+                if st["waits"] > 40:
+                    _seek_dbg("giveup vout-not-ready waits=%d" % st["waits"])
+                    self._cancel_seek_thumbs()
+                    return
+                self._thumb_gen_after = self.after(250, self._seek_thumb_step)
+                return
         try:
             length = tp.get_length()
         except Exception:
@@ -3614,6 +3688,7 @@ class ComicViewer(tk.Tk):
         if length <= 0:
             st["waits"] += 1
             if st["waits"] > 24:
+                _seek_dbg("giveup length<=0 waits=%d src=%r" % (st["waits"], getattr(self._seek_thumbs_src, "name", "?")))
                 self._cancel_seek_thumbs()
                 return
             self._thumb_gen_after = self.after(300, self._seek_thumb_step)
@@ -3628,25 +3703,53 @@ class ComicViewer(tk.Tk):
             tp.set_time(pos)
         except Exception:
             pass
-        self._thumb_gen_after = self.after(220, self._seek_thumb_snap, idx, pos)
+        # 远程流 seek 后要重新缓冲，给足时间；本地文件几乎瞬时
+        delay = 700 if isinstance(self._seek_thumbs_src, RemoteSource) else 220
+        self._thumb_gen_after = self.after(delay, self._seek_thumb_snap, idx, pos)
 
-    def _seek_thumb_snap(self, idx, pos):
+    def _thumb_image_ok(self, p):
+        """截图是否有效：文件存在、非空、且不是整张纯黑。
+
+        实测 video_take_snapshot 的返回值不可靠（可能有画面也返回 -1），
+        远程流暂停时还可能写出整张全黑的 PNG，所以以文件内容为准。"""
+        try:
+            if not (os.path.exists(p) and os.path.getsize(p) > 0):
+                return False
+            im = Image.open(p)
+            _lo, hi = im.convert("L").getextrema()
+            return hi > 12   # 全黑/几乎全黑视为失败
+        except Exception:
+            return False
+
+    def _seek_thumb_snap(self, idx, pos, attempt=0):
         self._thumb_gen_after = None
         tp = self._thumb_player
-        if tp is None or not self.is_video:
+        st = self._thumb_state
+        if tp is None or st is None or not self.is_video:
             self._cancel_seek_thumbs()
             return
         p = os.path.join(self._tmp_dir, "seek_thumb_%d.png" % idx)
-        ok = False
         try:
-            ok = tp.video_take_snapshot(0, p, 240, 135) == 0
+            if os.path.exists(p):
+                os.remove(p)
         except Exception:
-            ok = False
-        if ok:
+            pass
+        try:
+            tp.video_take_snapshot(0, p, 240, 135)
+        except Exception as ex:
+            _seek_dbg("snap idx=%d pos=%d attempt=%d exc=%r" % (idx, pos, attempt, ex))
+        # 不迷信返回值：以「文件有效且非全黑」为准；失败就短间隔重试等帧就绪
+        if self._thumb_image_ok(p):
+            if attempt:
+                _seek_dbg("snap idx=%d pos=%d ok after %d retries" % (idx, pos, attempt))
             self._thumb_gen_after = self.after(60, self._seek_thumb_load, idx, pos, p)
-        else:
-            self._thumb_state["idx"] = idx + 1
-            self._thumb_gen_after = self.after(80, self._seek_thumb_step)
+            return
+        if attempt < 5:
+            self._thumb_gen_after = self.after(320, self._seek_thumb_snap, idx, pos, attempt + 1)
+            return
+        _seek_dbg("snap idx=%d pos=%d giveup after %d tries" % (idx, pos, attempt + 1))
+        st["idx"] = idx + 1
+        self._thumb_gen_after = self.after(80, self._seek_thumb_step)
 
     def _seek_thumb_load(self, idx, pos, p):
         self._thumb_gen_after = None
