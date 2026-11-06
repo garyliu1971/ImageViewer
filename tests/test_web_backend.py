@@ -461,19 +461,19 @@ class TestUploadAndRemote(FixtureCase):
     def setUpClass(cls):
         from tests.fake_webdav import FakeWebDav
         from tests.make_web_fixtures import png, rar3
-        cls.p1 = png(100, 160, (10, 20, 30))
-        cls.p2 = png(120, 90, (40, 50, 60))
-        cls.cbz = io.BytesIO()
-        with zipfile.ZipFile(cls.cbz, "w") as z:
-            z.writestr("01.png", cls.p1)
-            z.writestr("02.png", cls.p2)
-        cls.cbz = cls.cbz.getvalue()
-        cls.cbr = rar3([("01.png", cls.p1), ("ch2/02.png", cls.p2)])
+        cls.FIX_P1 = png(100, 160, (10, 20, 30))
+        cls.FIX_P2 = png(120, 90, (40, 50, 60))
+        cls.FIX_CBZ = io.BytesIO()
+        with zipfile.ZipFile(cls.FIX_CBZ, "w") as z:
+            z.writestr("01.png", cls.FIX_P1)
+            z.writestr("02.png", cls.FIX_P2)
+        cls.FIX_CBZ = cls.FIX_CBZ.getvalue()
+        cls.FIX_CBR = rar3([("01.png", cls.FIX_P1), ("ch2/02.png", cls.FIX_P2)])
         cls.dav = FakeWebDav({
-            "/dav/cover.png": cls.p2,
-            "/dav/漫画/01.png": cls.p1,
-            "/dav/漫画/02.png": cls.p1,
-            "/dav/漫画/书.cbz": cls.cbz,
+            "/dav/cover.png": cls.FIX_P2,
+            "/dav/漫画/01.png": cls.FIX_P1,
+            "/dav/漫画/02.png": cls.FIX_P1,
+            "/dav/漫画/书.cbz": cls.FIX_CBZ,
             "/dav/漫画/扫描.pdf": b"%PDF-1.4\nfake\n",
             "/dav/漫画/说明.txt": b"junk",
         }, user="u", pw="p")
@@ -494,7 +494,7 @@ class TestUploadAndRemote(FixtureCase):
 
     def test_upload_then_open_as_archive(self):
         st, body = http_post(self.base + "/api/upload?name=%E4%B9%A6.cbr&mtime=123",
-                             raw=self.cbr, token=self.token, ctype="application/octet-stream")
+                             raw=self.FIX_CBR, token=self.token, ctype="application/octet-stream")
         self.assertEqual(st, 200)
         path = json.loads(body)["path"]
         self.assertTrue(path.endswith(".cbr"))
@@ -502,11 +502,11 @@ class TestUploadAndRemote(FixtureCase):
         self.assertEqual(ents, ["01.png", "ch2/02.png"])
         # 再传一次同样的（name/size/mtime 相同）应复用，不重复写盘
         st2, body2 = http_post(self.base + "/api/upload?name=%E4%B9%A6.cbr&mtime=123",
-                               raw=self.cbr, token=self.token, ctype="application/octet-stream")
+                               raw=self.FIX_CBR, token=self.token, ctype="application/octet-stream")
         self.assertEqual(json.loads(body2)["path"], path)
 
     def test_upload_over_http_and_too_large(self):
-        st, body = http_post(self.base + "/api/upload?name=a.cbz", raw=self.cbz,
+        st, body = http_post(self.base + "/api/upload?name=a.cbz", raw=self.FIX_CBZ,
                              token=self.token, ctype="application/octet-stream")
         self.assertEqual(st, 200)
         st2, b2 = http_post(self.base + "/api/upload?name=b.cbz", raw=b"",
@@ -514,7 +514,7 @@ class TestUploadAndRemote(FixtureCase):
         self.assertEqual(st2, 400)
 
     def test_upload_requires_token(self):
-        st, _ = http_post(self.base + "/api/upload?name=x.cbz", raw=self.cbz,
+        st, _ = http_post(self.base + "/api/upload?name=x.cbz", raw=self.FIX_CBZ,
                           ctype="application/octet-stream")
         self.assertEqual(st, 403)
 
@@ -534,7 +534,7 @@ class TestUploadAndRemote(FixtureCase):
         cfg = wb.remote_config()
         self.assertEqual(cfg["base_url"], self.root)
         self.assertEqual(cfg["password"], "p")            # 存的是本地 json（和桌面版一样明文，已知问题）
-        st2, body2 = http_get(self.base + "/api/remote/config", self.token)
+        st2, _h2, body2 = http_get(self.base + "/api/remote/config", self.token)
         j = json.loads(body2)
         self.assertTrue(j["connected"])
         self.assertNotIn("password", j)                    # 不回传给页面
@@ -551,13 +551,13 @@ class TestUploadAndRemote(FixtureCase):
 
     def test_remote_ls_kinds(self):
         self._connect()
-        st, body = http_get(self.base + "/api/remote/ls?path=/dav", self.token)
+        st, _h, body = http_get(self.base + "/api/remote/ls?path=/dav", self.token)
         self.assertEqual(st, 200)
         ents = json.loads(body)["entries"]
         kinds = {e["name"]: e["kind"] for e in ents}
         self.assertEqual(kinds.get("漫画"), "dir")
         self.assertEqual(kinds.get("cover.png"), "image")
-        st2, body2 = http_get(self.base + "/api/remote/ls?path=/dav/%E6%BC%AB%E7%94%BB", self.token)
+        st2, _h2, body2 = http_get(self.base + "/api/remote/ls?path=/dav/%E6%BC%AB%E7%94%BB", self.token)
         ents2 = {e["name"]: e["kind"] for e in json.loads(body2)["entries"]}
         self.assertEqual(ents2["书.cbz"], "archive")
         self.assertEqual(ents2["扫描.pdf"], "pdf")
@@ -568,7 +568,7 @@ class TestUploadAndRemote(FixtureCase):
         self._connect()
         st, _, data = http_get(self.base + "/api/remote/data?path=/dav/%E6%BC%AB%E7%94%BB/01.png",
                                self.token)
-        self.assertEqual((st, data), (200, self.p1))
+        self.assertEqual((st, data), (200, self.FIX_P1))
         st2, hdr, chunk = http_get(self.base + "/api/remote/data?path=/dav/%E6%BC%AB%E7%94%BB/01.png"
                                    "&range=bytes=0-9", self.token)
         self.assertEqual(st2, 206)
@@ -582,20 +582,20 @@ class TestUploadAndRemote(FixtureCase):
         st, _, data = http_get(self.base + "/api/remote/thumb?path=/dav/%E6%BC%AB%E7%94%BB/01.png&w=64",
                                self.token)
         self.assertEqual((st, data[:8]), (200, b"\x89PNG\r\n\x1a\n"))
-        st2, body2 = http_get(self.base + "/api/remote/local?path=/dav/%E6%BC%AB%E7%94%BB/%E4%B9%A6.cbz"
-                              "&size=%d" % len(self.cbz), self.token)
+        # 注意：URL 里已有 %E6 这类百分号，不能再拿 % 格式化拼 size
+        dav_cbz = "/api/remote/local?path=/dav/%E6%BC%AB%E7%94%BB/%E4%B9%A6.cbz&size=" + str(len(self.FIX_CBZ))
+        st2, _h2, body2 = http_get(self.base + dav_cbz, self.token)
         local = json.loads(body2)["path"]
         self.assertTrue(os.path.isfile(local))
         self.assertEqual([e["name"] for e in wb.archive_entries(local)], ["01.png", "02.png"])
         # 缓存：再要一次是同一个文件
-        st3, body3 = http_get(self.base + "/api/remote/local?path=/dav/%E6%BC%AB%E7%94%BB/%E4%B9%A6.cbz"
-                              "&size=%d" % len(self.cbz), self.token)
+        st3, _h3, body3 = http_get(self.base + dav_cbz, self.token)
         self.assertEqual(json.loads(body3)["path"], local)
 
     def test_remote_endpoints_need_config_and_token(self):
         with self.assertRaises(RuntimeError):
             wb.remote_list("/dav")
-        st, _ = http_get(self.base + "/api/remote/ls?path=/dav")
+        st, _h, _b = http_get(self.base + "/api/remote/ls?path=/dav")
         self.assertEqual(st, 403)
 
     def test_capabilities_mentions_webdav(self):

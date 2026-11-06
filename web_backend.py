@@ -51,6 +51,10 @@ API_VERSION = 1
 # 只允许这些扩展名被当作文件读出来（图片/视频/音频/压缩包/PDF）
 SERVABLE = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS | ARCHIVE_EXTS | PDF_EXTS
 
+# 这些接口拿的是「本机磁盘路径」，必须先过白名单；/api/remote/* 走的是网盘路径
+# （可能是目录、也可能是远端任意文件名），不能套本地这条规则。
+LOCAL_PATH_ROUTES = {"/api/archive", "/api/data", "/api/thumb", "/api/pdf", "/api/pdfpage"}
+
 # 浏览器选中的文件上传到后端的上限（只走 127.0.0.1，不跨机器）
 UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 
@@ -514,8 +518,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api(self, route, q):
         path = (q.get("path") or [""])[0]
-        # 防越权：凡拿磁盘路径的接口都先过媒体扩展名白名单（目录列表除外）
-        if route != "/api/ls" and path and not is_servable(path):
+        # 防越权：凡拿本机磁盘路径的接口都先过媒体扩展名白名单（目录列表、网盘转发除外）
+        if route in LOCAL_PATH_ROUTES and path and not is_servable(path):
             raise PermissionError("不允许读取该文件")
         if route == "/api/ls":
             rec = (q.get("recursive", ["1"])[0] != "0")

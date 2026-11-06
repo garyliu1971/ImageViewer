@@ -162,3 +162,35 @@ python web_backend.py                            # 浏览器自动打开
 - 磁盘路径 → 粘 `tests\fixtures\sample.pdf` → 3 页，尺寸是 600×800 的 2 倍（1200×1600）
 - 读到第 3 页 → 打开**桌面版** → 同一本 cbr 的进度应出现在 `image_viewer.json`（key 是正斜杠绝对路径）
 - 关掉 `python web_backend.py`（Ctrl+C）→ 桌面版菜单里再点「网页版」应能重新起（端口会变）
+
+---
+
+## 9. 后续补丁（第 3 个 commit 之后）
+
+**补丁 A · 网页版 rar/cbr 入口补齐**（用户实测「rar 还是不支持」后定位）
+
+问题不在后端：运行中的后端 `/api/ping` 报 `rar: true`，`/api/archive?path=xxx.cbr`
+能正常列出条目。是入口只有「🖧 磁盘路径」一条 —— `📦 压缩包` 按钮/拖拽走的是纯 JS zip 解析，
+而后端 `/api/upload` 虽然早就写了，前端从没调用过。
+
+- `image-viewer.html`：新增 `uploadFile / canServeFile / openViaBackend`；
+  `📦` 按钮、`🖼 图片`（单选）、拖拽三条路径在 `BE.on && caps.rar/pdf` 时先上传再按路径打开；
+  `file://` 模式行为不变（提示「需要本地后端」）；`accept` 在后端模式下放宽到 `.rar/.cbr/.pdf`
+- 文案：开始页/帮助表格里「PDF、rar·cbr 请用桌面版」已过期，改成「需连本地后端」
+- 测试：`web_backend_e2e.mjs` +5（[8] 真实 .cbr 走 `#zipInput` → 上传 → 4 页/3 章/渲染 OK/accept）；
+  `web_e2e.mjs` +3（[21b] file:// 下选 .cbr 必须明确提示，不静默失败）
+- 顺手修掉 `web_backend_e2e.mjs` [1] 的偶发假阴性（等 `has-backend` 再断言）
+
+**补丁 B · 修上一轮遗留的红灯**（提交时 `tests/test_web_backend.py` 里那张 WebDAV 测试表）
+
+- `http_get` 返回三元组，新测试却按二元组解包（6 处）
+- 测试类里 `cls.p1/cls.cbz/...` 被 `FixtureCase.setUp` 的同名实例属性遮住（拿到的是路径字符串），
+  改名 `FIX_*`
+- `remote_source.list_dir_strict(media_only=False)` 用了没 import 的 `ARCHIVE_EXTS/PDF_EXTS` → NameError；
+  同时 `other`（txt/exe）不该进列表
+- `web_backend._api`：本地扩展名白名单误伤了网盘路径（`/dav` 是目录，没有扩展名）→ 只对
+  `LOCAL_PATH_ROUTES` 生效
+- `tests/fake_webdav.py` PROPFIND 的 href 拼接少了个 `/`（`/dav漫画`）
+- 测试里 URL 已含 `%E6` 这类转义，再拿 `%` 拼 `size=` 会报 `not enough arguments`
+
+全量：**159 + 7 + 14 + 125 + 22 + 45 = 372 项，全绿**。
