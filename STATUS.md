@@ -1,6 +1,8 @@
 # 开发状态报告 · 网页版对齐（路线 A → 路线 B/D）
 
-生成时间：2026-11-06 · 分支：`feature/rar-cbr-support` · 状态：已按第 7 节拆成 3 个 commit 并推送
+生成时间：2026-11-06 · 分支：`feature/rar-cbr-support`（`8b22bb7`）
+状态：9 个 commit 已全部推送；**PR #7 已开** → https://github.com/garyliu-seismic/ImageViewer/pull/7
+（base `garyliu-seismic:main` @ `879d383` · 6 commits · 27 files · +6578/−444 · mergeable=clean）
 
 ---
 
@@ -109,16 +111,26 @@ Node ≥ 21（自带 WebSocket/fetch，无需 npm 安装）；浏览器测试会
 
 ---
 
-## 6. 还没做（按性价比排序）
+## 6. 还没做（按性价比排序 · 2026-11-06 更新）
 
-1. **视频播放（后端模式）**：`/api/data` 已支持 Range，`<video src="/api/data?path=x.mp4">` 理论上直接能播；
-   未验证（本机无 ffmpeg，造不出 mp4 样本）。要做得补：格式探测提示、倍速上限 16×、seek 缩略图、
-   `/api/cast` 复用 `dlna_cast.py`。**下一步首选这里。**
-2. **网盘**：`/api/remote/*` 转发 WebDAV `PROPFIND` / Jellyfin API（后端一做，CORS 问题自动消失），
-   海报墙、AList 进程管理（`alist_manager.py` 现成）。
-3. **字幕**：`/api/caption/*` 复用 `caption_engine.py`（浏览器出 PCM → 后端识别 → 回文字轨）。
-4. tif/heic：浏览器和后端都不解，要么加 `tifffile`/Pillow 后端渲染成 PNG（简单，值得），要么维持提示。
-5. 打包：`web_backend.py` 已进 `hiddenimports`，但**没实际跑过 PyInstaller 验证 exe 里的后端能起**（`_MEIPASS` 路径已按 frozen 处理）。
+> 手机访问 & VLC 已在第 10 节落地，不在待办里了。
+
+1. **网盘前端 UI**（后端已就绪）：`/api/remote/config|ls|data|thumb|local|disconnect` 全部实现，
+   `tests/fake_webdav.py` 带动 10 项测试；只差前端入口（凭据弹窗 + 目录浏览，可复用 🖧 路径浏览器组件）。
+   **下一步首选这里** —— 纯前端，后端零改动。
+2. **网页版视频播放器**：`/api/data` 已支持 Range，`<video src="/api/data?path=x.mp4">` 理论上直接能播；
+   要补格式探测提示、倍速上限 16×、seek 缩略图。**手机看视频已可用 VLC + `/api/m3u` 绕过，优先级下调。**
+3. **tif / heic**：浏览器不解；后端有 Pillow 但只用来出缩略图。可加一个 `/api/pageimg`（像 `/api/pdfpage`
+   那样渲染成 PNG，约 20 行），网页版就能看 tif。
+4. **字幕**：`/api/caption/*` 复用 `caption_engine.py`（浏览器出 PCM → 后端识别 → 回文字轨）。依赖视频先做。
+5. **投屏**：`/api/cast` 复用 `dlna_cast.LocalMediaServer`（已绑 `0.0.0.0` + Range，是最接近现成的一步）。
+6. **Jellyfin/Emby + AList**：后端目前只有 WebDAV（`grep jellyfin\|alist web_backend.py` = 0）。
+7. **exe 打包验证**：`web_backend` 已进 `hiddenimports`，但没跑过 PyInstaller 验证；
+   且 `image_viewer.py` **没有** `--serve` 命令行入口（`web_backend.py` 文档里那句
+   `python image_viewer.py --serve` 是错的），`启动网页版.bat` 依赖 PATH 里有 python。
+   要做：加 `--serve/--serve-lan` → bat 回退到 exe → 跑一次 PyInstaller。约 40 分钟。
+8. 小尾巴：上传目录 `%TEMP%\iv-uploads` 只增不删；拖拽开 rar 的路径没有 e2e 覆盖（只测了 `#zipInput`）；
+   网页版没有「最近打开」。
 
 ---
 
@@ -214,3 +226,43 @@ python web_backend.py                            # 浏览器自动打开
 
 验证：`163 + 7 + 14 + 125 + 22 + 52 = 383 项全绿`；实测 `--lan` 下从 `192.168.1.75:18999`
 能打开页面、`/api/ping` 报 `lan=true`、`/api/m3u` 里每条 URL 都是该 IP 且能取到图。
+
+---
+
+## 11. 交接（下次从这里开始）
+
+**仓库状态**
+
+```bash
+分支 feature/rar-cbr-support @ 8b22bb7，工作区干净，与 origin 同步
+PR #7 open / mergeable=clean → https://github.com/garyliu-seismic/ImageViewer/pull/7
+```
+
+**跑测试**（Node ≥ 21，Chrome/Edge 自动找；缺样本先跑两个 make_ 脚本）
+
+```bash
+python tests/make_web_fixtures.py && python tests/make_web_demo.py
+python -m unittest discover -s tests -q          # 163 OK
+python tests/smoke_test.py                       #   7 OK（需图形环境）
+node --test tests/web_core.test.mjs              #  14 pass
+node tests/web_e2e.mjs                           # 125 pass（file://）
+node tests/web_demo_check.mjs                    #  22 pass（真实样本）
+node tests/web_backend_e2e.mjs                   #  52 pass（后端模式，含上传 / m3u）
+# 合计 383
+```
+
+**常用启动**
+
+```bash
+python web_backend.py                 # 仅本机（127.0.0.1，随机端口）
+python web_backend.py --lan           # 局域网：手机/VLC 可访问，终端出二维码
+双击 启动网页版.bat / 启动网页版(局域网).bat
+桌面版菜单：文件 → 网页版（本地服务…）/ 网页版（局域网，手机可访问）…
+```
+
+**已经踩过的坑（别再踩）**
+
+- Windows 控制台是 GBK：`print` 里不能有 emoji / `█`，否则 `UnicodeEncodeError` 直接把后端打挂 → 用 `_safe_print()`
+- `core.autocrlf=true` + 无 `.gitattributes` 会把 `tests/fixtures/sample.pdf` 的 xref 偏移换行改坏
+- 本机多网卡（WSL `172.24.x`、WireGuard `10.0.0.2`、WLAN `192.168.1.x`）：`lan_ip()` 一般取对，但开全隧道 VPN 后要手动拼 URL
+- `tests/fixtures/` 已入库（18KB），但 `网页版测试样本/`、`网页版预览*.png`、`web_backend.log/.pid` 都在 gitignore 里
