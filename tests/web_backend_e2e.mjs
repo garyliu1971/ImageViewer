@@ -121,6 +121,7 @@ class CDP {
     await cdp.send('Runtime.enable');
     await cdp.send('Page.enable');
     await cdp.send('Network.enable');
+    await cdp.send('DOM.enable');
     await cdp.send('Page.navigate', { url: 'http://127.0.0.1:' + be.port + '/' });
     await sleep(1800);
     await cdp.eval(`
@@ -142,6 +143,14 @@ class CDP {
     const slash = (x) => x.split(path.sep).join('/');
 
     log('\n[1] 后端握手 / 能力');
+    /* detectBackend() 是异步的（ping -> progress），机器慢时 1.8s 还没握手完
+       —— 先等 has-backend，否则 [1] 会偶发假阴性 */
+    await cdp.eval(`
+      for (let i = 0; i < 60; i++) {
+        if (window.__IV.backend().on) break;
+        await __wait(100);
+      }
+      return true;`);
     const be0 = await cdp.eval(`return window.__IV.backend();`);
     check('BE.on = true（页面由后端供）', be0.on === true, be0);
     check('token 已注入页面', await cdp.eval(`return typeof window.__IV_TOKEN === 'string' && window.__IV_TOKEN.length > 8`));
@@ -313,7 +322,28 @@ class CDP {
       check('打开后路径弹窗自动收起', dbl.modalClosed === true, dbl);
     }
 
-    log('\n[8] 错误处理');
+    log('\n[8] 📦 压缩包按钮直接选 rar（浏览器拿不到路径 → 上传到后端再解析）');
+    if (!caps0.rar) {
+      check('压缩包按钮选 .cbr', 'skip', '本机没有 rarfile 或 7-Zip/WinRAR');
+    } else {
+      const d = await cdp.send('DOM.getDocument');
+      const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: d.root.nodeId, selector: '#zipInput' });
+      await cdp.send('DOM.setFileInputFiles', { nodeId, files: [F('sample.cbr')] });
+      await sleep(2500);
+      const picked = await cdp.eval(`const s = window.__IV.state();
+        const im = document.querySelector('#pageBox .page img');
+        return { total: s.total, chapters: (s.chapters || []).map(c => c.title), key: s.bookKey,
+                 title: s.bookTitle, img: !!im && im.complete && im.naturalWidth > 0,
+                 accept: document.querySelector('#zipInput').getAttribute('accept') || '' };`);
+      check('选中的 cbr 上传后打开（4 页）', picked.total === 4, picked);
+      check('章节照旧（根目录/第1话/第2话）',
+        JSON.stringify(picked.chapters) === JSON.stringify(['根目录', '第1话', '第2话']), picked.chapters);
+      check('落到后端临时目录（iv-uploads）并可续读', /iv-uploads/.test(picked.key || ''), picked.key);
+      check('页面真的渲染出图', picked.img === true, picked.img);
+      check('accept 已放宽到 .rar/.cbr（仅后端模式）', /\.rar/.test(picked.accept), picked.accept);
+    }
+
+    log('\n[9] 错误处理');
     const err = await cdp.eval(`
       const clear = () => { const t = document.querySelector('#toast'); t.classList.remove('show'); t.textContent=''; };
       clear();
@@ -329,7 +359,7 @@ class CDP {
     check('不存在的路径给出可读错误', err.a === false && /打开失败|没有|不允许|No such/i.test(err.t1), err);
     check('GBK zip 走后端也能开（章节名不乱码）', err.b === true && err.total === 1, err);
 
-    log('\n[9] 无未捕获异常');
+    log('\n[10] 无未捕获异常');
     const errs = await cdp.eval(`return (window.__errs || []).slice(0, 8)`);
     check('页面没有未捕获异常', !errs || !errs.length, errs);
 

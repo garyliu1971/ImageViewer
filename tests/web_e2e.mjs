@@ -859,6 +859,22 @@ function check(name, ok, detail) {
       const b = JSON.parse(localStorage.getItem('iv.books.v1'))[st.bookKey];
       return !!(b && b.index === 1 && b.chapter === 1);`));
 
+    log('\n[21b] 压缩包选择器里选 .rar（file:// 没后端 → 明确提示，而不是默默失败）');
+    const cbrSample = path.join(HERE, 'fixtures', 'sample.cbr');
+    if (!fs.existsSync(cbrSample)) {
+      check('file:// 下选 .cbr 给出提示', 'skip', '没有 tests/fixtures/sample.cbr');
+    } else {
+      await setInputFiles('#zipInput', [cbrSample]);
+      const rarHint = await cdp.eval(`
+        const t = document.querySelector('#toast');
+        return { toast: t.textContent, show: t.classList.contains('show'),
+                 total: window.__IV.state().total, title: window.__IV.state().bookTitle,
+                 can: window.__IV.canServeFile('a.cbr'), on: window.__IV.backend().on };`);
+      check('file:// 下 .cbr 提示「需要本地后端」', /需要本地后端/.test(rarHint.toast), rarHint);
+      check('不会把 rar 当 zip 硬解（还是上一本书）', rarHint.total === 4 && /comic\.cbz/.test(rarHint.title), rarHint);
+      check('canServeFile 在无后端时恒 false', rarHint.can === false && rarHint.on === false, rarHint);
+    }
+
     log('\n[22] 多选图片（真实文件）/ 拖放');
     await setInputFiles('#fileInput', [path.join(book, '00_cover.png'), path.join(book, '第1话', '1.png'),
       path.join(book, '第1话', '2.png')]);

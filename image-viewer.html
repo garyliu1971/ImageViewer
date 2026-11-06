@@ -332,7 +332,7 @@
   <div class="toolbar-group">
     <button class="btn primary" id="btnFolder" title="打开文件夹（子目录自动识别为章节）">📂 文件夹</button>
     <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 图片</button>
-    <button class="btn" id="btnZip" title="打开压缩包 zip / cbz">📦 压缩包</button>
+    <button class="btn" id="btnZip" title="打开压缩包 zip / cbz（连上本地后端后也支持 rar / cbr）">📦 压缩包</button>
     <button class="btn" id="btnDisk" title="按磁盘路径打开（目录 / rar·cbr / PDF，需本地后端）">🖧 磁盘路径</button>
   </div>
   <div class="sep"></div>
@@ -415,8 +415,9 @@
     </p>
     <p class="start-note">
       纯本地单文件，不联网、不上传。<br>
-      视频播放 / 实时字幕 / PDF / rar·cbr / tif / 网盘 / 投屏 请用桌面版
-      <code>图片漫画浏览器.exe</code>（或 <code>python image_viewer.py</code>）。
+      rar·cbr / PDF 需连本地后端（<code>python web_backend.py</code> 或双击
+      <code>启动网页版.bat</code>）；视频播放 / 实时字幕 / tif / 网盘 / 投屏
+      仍需桌面版 <code>图片漫画浏览器.exe</code>（或 <code>python image_viewer.py</code>）。
     </p>
   </div>
 </div>
@@ -447,10 +448,12 @@
       <tr><td>🖧 磁盘路径（需本地后端）</td><td>直接指 <code>C:\漫画</code>、<code>书.cbr</code>、<code>书.pdf</code>；
         后端由 <code>python web_backend.py</code> 提供，rar/cbr 走桌面版同款 rarfile + 7-Zip，
         PDF 走 PyMuPDF 按页渲染，进度与桌面版共用 <code>image_viewer.json</code>。</td></tr>
+      <tr><td>📦 压缩包 / 拖拽（需本地后端）</td><td>选或拖 <code>.rar</code> <code>.cbr</code> <code>.pdf</code>
+        也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>仍不支持</td><td>tif / heic（浏览器不解码）、视频与实时字幕、网盘、投屏 → 用桌面版；
-        rar / cbr / PDF 在<b>后端模式</b>下可用</td></tr>
+        rar / cbr / PDF 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）</td></tr>
     </table>
   </div>
 </div>
@@ -881,6 +884,40 @@
       });
     });
   }
+
+  /* 浏览器选中的 File 对象没有真实路径。后端模式下先 POST 到 /api/upload 落成临时
+     文件，再按路径打开 —— 这样 📦 压缩包按钮和拖拽进来的 rar/cbr/pdf 也能走后端解析。
+     file:// 模式 BE.on=false，canServeFile() 恒 false，行为与以前完全一致。 */
+  var UPLOAD_MAX = 512 * 1024 * 1024;
+  function uploadFile(file) {
+    var q = apiPath('/api/upload', { name: file.name, mtime: file.lastModified || 0 });
+    return fetch(q, { method: 'POST', body: file }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+        return j.path;
+      });
+    });
+  }
+  function canServeFile(name) {
+    if (!BE.on) return false;
+    if (/\.(rar|cbr)$/i.test(name)) return !!BE.caps.rar;
+    if (/\.pdf$/i.test(name)) return !!BE.caps.pdf;
+    return false;
+  }
+  function openViaBackend(file) {
+    var name = (file && file.name) || '文件';
+    if ((file.size || 0) > UPLOAD_MAX) {
+      toast(name + ' 超过 512MB，网页版传不动，请用桌面版打开');
+      return Promise.resolve(false);
+    }
+    toast('正在交给本地后端：' + name + '…');
+    return uploadFile(file).then(function (p) {
+      return openServerPath(p);
+    })['catch'](function (e) {
+      toast(name + ' 打开失败：' + ((e && e.message) || e));
+      return false;
+    });
+  }
   function detectBackend() {
     if (!window.__IV_BACKEND || !window.__IV_TOKEN) return Promise.resolve(false);
     BE.token = String(window.__IV_TOKEN);
@@ -910,6 +947,13 @@
     $('#backendTag').textContent = ' · 后端已连接 ' + tags.join(' · ');
     $('#backendTag').style.display = 'inline';
     $('#statusNote').textContent = '本地后端已连接：rar/cbr、PDF、磁盘路径、与桌面版共享进度可用';
+    if (caps.rar) {
+      $('#zipInput').setAttribute('accept', '.zip,.cbz,.rar,.cbr,application/zip');
+      $('#btnZip').title = '打开压缩包 zip / cbz / rar / cbr';
+    } else if (caps.pdf) {
+      $('#zipInput').setAttribute('accept', '.zip,.cbz,.pdf,application/zip');
+      $('#btnZip').title = '打开压缩包 zip / cbz / pdf';
+    }
   }
 
   /* ================= 本地配置 / 断点续读 ================= */
@@ -2063,6 +2107,17 @@
     }
     Promise.all(jobs).then(function () {
       entries.forEach(function (e) { if (e.file && !e.size) e.size = e.file.size; });
+      /* 后端模式下 rar/cbr/pdf 先落到后端再按路径打开（浏览器拿不到绝对路径） */
+      var served = entries.filter(function (e) { return e.file && canServeFile(e.name); });
+      if (served.length) {
+        if (served.length < entries.length) {
+          toast('rar / cbr / pdf 请单独拖进来（不能和图片混选），已打开第一个');
+        } else if (served.length > 1) {
+          toast('一次只开一个，已打开第一个');
+        }
+        openViaBackend(served[0].file);
+        return;
+      }
       var zips = entries.filter(function (e) { return C.ARCHIVE_EXTS.test(e.name) && e.file; });
       var imgs = entries.filter(function (e) { return !C.ARCHIVE_EXTS.test(e.name); });
       if (zips.length && !imgs.length) {
@@ -2192,13 +2247,23 @@
     var list = filesFromInput(e.target);
     e.target.value = '';
     if (!list.length) return;
+    if (list.length === 1 && list[0].file && canServeFile(list[0].name)) {
+      openViaBackend(list[0].file); return;
+    }
     if (list.length === 1) openItems(list, { kind: 'files', title: list[0].name });
     else openItems(list, { kind: 'files', title: list.length + ' 张图片' });
   });
   $('#zipInput').addEventListener('change', function (e) {
     var f = (e.target.files || [])[0];
     e.target.value = '';
-    if (f) openZipFile(f);
+    if (!f) return;
+    if (canServeFile(f.name)) { openViaBackend(f); return; }
+    if (/\.(rar|cbr)$/i.test(f.name)) {
+      toast(BE.on ? '后端没装 rarfile 或 7-Zip/WinRAR，读不了 rar/cbr'
+                  : 'rar/cbr 需要本地后端：先跑 python web_backend.py（或双击 启动网页版.bat）');
+      return;
+    }
+    openZipFile(f);
   });
   window.addEventListener('resize', function () { updateChrome(); reflow(); });
   document.addEventListener('fullscreenchange', function () {
@@ -2257,7 +2322,8 @@
   /* 测试钩子（不影响正常使用） */
   window.__IV = {
     openItems: openItems, openZipFile: openZipFile, scanDir: scanDir,
-    openServerPath: openServerPath, browseTo: browseTo, backend: function () { return BE; },
+    openServerPath: openServerPath, openViaBackend: openViaBackend,
+    uploadFile: uploadFile, canServeFile: canServeFile, browseTo: browseTo, backend: function () { return BE; },
     state: function () {
       return {
         pages: pages.length, total: allPages ? allPages.length : pages.length,
