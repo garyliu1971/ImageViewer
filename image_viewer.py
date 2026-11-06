@@ -739,6 +739,8 @@ class ComicViewer(tk.Tk):
         file_menu.add_command(label="详细信息", command=self.show_details)
         file_menu.add_command(label="网页版（本地服务，支持 rar/cbr・PDF）...",
                               command=self.open_web_server)
+        file_menu.add_command(label="网页版（局域网，手机可访问）...",
+                              command=self.open_web_server_lan)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self._on_close)
 
@@ -1041,6 +1043,40 @@ class ComicViewer(tk.Tk):
         messagebox.showinfo("网页版",
                             "已在默认浏览器打开：\n%s\n\n关掉本提示窗不影响桌面版；退出本程序时后端会停。%s"
                             % (url, extra))
+
+    def open_web_server_lan(self):
+        """局域网模式：手机/平板/VLC 在同一 Wi-Fi 下直接访问本机网页版。
+
+        和本机模式共用一套后端（只绑 0.0.0.0 + 同一个随机 token），
+        token 由后端注入页面，所以手机上只需要输 IP:端口。
+        """
+        try:
+            import web_backend
+        except Exception as error:
+            messagebox.showerror("错误", "启动网页版失败（缺少 web_backend）：%s" % error)
+            return
+        try:
+            url = web_backend.start_server(open_browser=True, lan=True)
+        except Exception as error:
+            messagebox.showerror("错误", "启动局域网网页版失败：%s" % error)
+            return
+        self._web_backend = web_backend
+        qr = None
+        try:
+            qr = web_backend.print_qr(url)
+        except Exception:
+            pass
+        if qr and os.name == "nt":
+            try:
+                os.startfile(qr)      # 弹图片窗口，手机直接扫码
+            except Exception:
+                pass
+        self.status.configure(text="网页版（局域网）：%s" % url)
+        messagebox.showinfo(
+            "网页版 · 局域网",
+            "手机/平板连同一个 Wi-Fi，浏览器打开：\n%s\n\n"
+            "看视频：手机装 VLC → 网络串流 → 在网页版里按 I 复制「手机 / VLC 播放列表」链接。\n\n"
+            "只给可信网络开这个；公网访问请用 VPN / Tunnel，别直接映射端口。" % url)
 
     def open_history_playlist(self):
         if not os.path.isfile(HISTORY_PLAYLIST_PATH):

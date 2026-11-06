@@ -343,7 +343,47 @@ class CDP {
       check('accept 已放宽到 .rar/.cbr（仅后端模式）', /\.rar/.test(picked.accept), picked.accept);
     }
 
-    log('\n[9] 错误处理');
+    log('\n[9] 手机 / VLC 播放列表（/api/m3u）');
+    const m3u = await cdp.eval(`
+      const t = window.__IV_TOKEN;
+      const p = ${JSON.stringify(F('sample.cbr'))};
+      const r = await fetch('/api/m3u?path=' + encodeURIComponent(p) + '&t=' + encodeURIComponent(t));
+      const txt = await r.text();
+      const first = txt.split('\\n').filter(l => l.startsWith('http'))[0] || '';
+      let status = 0, ctype = '', bytes = 0;
+      if (first) {
+        const r2 = await fetch(first);
+        status = r2.status; ctype = r2.headers.get('content-type') || '';
+        bytes = (await r2.arrayBuffer()).byteLength;
+      }
+      return { ok: r.ok, ctype: r.headers.get('content-type'), n: r.headers.get('x-item-count'),
+               head: txt.slice(0, 24), first, status, firstCtype: ctype, bytes };`);
+    if (!caps0.rar) check('m3u of cbr', 'skip', '本机没有 rar 后端');
+    else {
+      check('m3u 返回播放列表类型', m3u.ok && /mpegurl/.test(m3u.ctype || ''), m3u.ctype);
+      check('m3u 以 #EXTM3U 开头', m3u.head.indexOf('#EXTM3U') === 0, m3u.head);
+      check('cbr 里 4 个可播条目（txt 排除）', m3u.n === '4', m3u.n);
+      check('每条是绝对 URL 且带 token',
+        /^http:\/\/127\.0\.0\.1:\d+\/api\/data\?/.test(m3u.first) && /[?&]t=/.test(m3u.first), m3u.first);
+      check('播放列表第一条真能取到图片',
+        m3u.status === 200 && /image\/png/.test(m3u.firstCtype) && m3u.bytes > 0,
+        { s: m3u.status, c: m3u.firstCtype, b: m3u.bytes });
+    }
+    const detail = await cdp.eval(`
+      const iv = window.__IV;
+      await iv.openServerPath(${JSON.stringify(F('sample.cbr'))});
+      await __tick();
+      iv.showDetails();
+      await __wait(60);
+      const rows = [...document.querySelectorAll('#detailTable tr')].map(tr => tr.textContent);
+      const row = rows.find(r => /m3u/.test(r)) || '';
+      document.querySelector('#detail').classList.add('hidden');
+      return { row, url: iv.m3uUrl() };`);
+    check('详情里有手机 / VLC 播放列表', /\/api\/m3u\?/.test(detail.row), detail.row.slice(0, 120));
+    check('m3uUrl 是绝对地址且带 token',
+      /^http:\/\/[^/]+\/api\/m3u\?path=[^&]+&t=/.test(detail.url), detail.url.slice(0, 90));
+
+    log('\n[10] 错误处理');
     const err = await cdp.eval(`
       const clear = () => { const t = document.querySelector('#toast'); t.classList.remove('show'); t.textContent=''; };
       clear();
@@ -359,7 +399,7 @@ class CDP {
     check('不存在的路径给出可读错误', err.a === false && /打开失败|没有|不允许|No such/i.test(err.t1), err);
     check('GBK zip 走后端也能开（章节名不乱码）', err.b === true && err.total === 1, err);
 
-    log('\n[10] 无未捕获异常');
+    log('\n[11] 无未捕获异常');
     const errs = await cdp.eval(`return (window.__errs || []).slice(0, 8)`);
     check('页面没有未捕获异常', !errs || !errs.length, errs);
 

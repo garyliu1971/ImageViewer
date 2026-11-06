@@ -170,6 +170,23 @@ python web_backend.py            # 起服务并自动在默认浏览器打开
 （不是任意文件读取器）。缺依赖时自动降级，页面会写明 `rar/cbr ✗` / `PDF ✗`。
 注意 `file://` 双击打开时没有后端，`rar/cbr/pdf` 会直接提示「需要本地后端」，不会静默失败。
 
+### 手机 / 平板 / VLC（同一 Wi-Fi）
+
+后端默认只绑 `127.0.0.1`。要让手机能访问，显式开局域网模式：
+
+```bash
+python web_backend.py --lan      # 或双击 启动网页版(局域网).bat
+# 桌面版菜单：文件 → 网页版（局域网，手机可访问）...
+```
+
+- 终端会打印 `http://192.168.x.x:PORT/`、token 和**二维码**（装 `pip install qrcode` 后自动出）
+- **手机浏览器**直接开那个地址 → rar/cbz/pdf、双页、去边、手势全能用（token 由后端注入页面，不用手输）
+- **视频用手机 VLC**（应用商店搜 VLC）：网页版按 <kbd>I</kbd> → 详情里有「手机 / VLC 播放列表」链接，
+  一键复制后粘到 VLC 的「网络串流」；后端 `/api/m3u` 生成的就是标准 `#EXTM3U`，
+  整个目录 / 整本压缩包一次连播。VLC 解 ac3/avi/wmv/hevc 这些浏览器永远解不了的格式，倍速也不受 16× 限制
+- 安全：`--lan` 等于对本网段开放一个能读媒体文件的 HTTP 服务（有随机 token + 扩展名白名单）。
+  **只给可信局域网开**；外网访问请走 VPN / Tunnel（WireGuard、Tailscale、Cloudflare Tunnel），别直接映射端口
+
 仍然不支持（请用桌面版）：`tif` / `heic`（浏览器与后端都不解）、视频与实时字幕、
 网盘（WebDAV / Jellyfin / AList）、DLNA 投屏、文件关联与 exe 打包。
 不挂后端直接双击 HTML 时，进度按「书名 + 相对路径 + 页数」匹配，

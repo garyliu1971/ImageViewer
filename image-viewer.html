@@ -452,6 +452,10 @@
         也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
+      <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
+        <code>python web_backend.py --lan</code>；手机浏览器直接开终端里给的地址
+        （rar/cbz/pdf 都能用）。视频用手机 VLC 的「网络串流」：在网页版按 <kbd>I</kbd>
+        详情里有可一键复制的播放列表链接（<code>/api/m3u</code>）。</td></tr>
       <tr><td>仍不支持</td><td>tif / heic（浏览器不解码）、视频与实时字幕、网盘、投屏 → 用桌面版；
         rar / cbr / PDF 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）</td></tr>
     </table>
@@ -947,6 +951,9 @@
     $('#backendTag').textContent = ' · 后端已连接 ' + tags.join(' · ');
     $('#backendTag').style.display = 'inline';
     $('#statusNote').textContent = '本地后端已连接：rar/cbr、PDF、磁盘路径、与桌面版共享进度可用';
+    if (caps.lan && caps.lan_url) {
+      $('#statusNote').textContent += ' · 局域网 ' + String(caps.lan_url).replace(/^http:\/\//, '').replace(/\/$/, '');
+    }
     if (caps.rar) {
       $('#zipInput').setAttribute('accept', '.zip,.cbz,.rar,.cbr,application/zip');
       $('#btnZip').title = '打开压缩包 zip / cbz / rar / cbr';
@@ -1550,6 +1557,31 @@
     document.title = (p ? p.name + ' · ' : '') + '图片 / 漫画浏览器';
   }
 
+  /* 当前这本书的 m3u（手机 VLC 用）。file:// 模式或纯前端 zip 没有可指的后端路径 -> 返回空 */
+  function m3uUrl() {
+    if (!BE.on || !bookKey) return '';
+    var p = String(bookKey);
+    var abs = p.charAt(0) === '/' || /^[A-Za-z]:[\\/]/.test(p);
+    if (!abs) return '';
+    return location.origin + '/api/m3u?path=' + encodeURIComponent(p) +
+      '&t=' + encodeURIComponent(BE.token);
+  }
+  function copyText(text) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        toast(ok ? '已复制播放列表链接' : '复制失败，请手动选中');
+      } catch (e) { toast('复制失败，请手动选中'); }
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(function () { toast('已复制播放列表链接'); }, fallback);
+    } else { fallback(); }
+  }
+
   function showDetails() {
     var p = pages[index];
     var kindLabel = { dir: '本地文件夹', zip: '压缩包 (zip/cbz)', files: '多选文件' }[bookKind] || bookKind;
@@ -1577,6 +1609,8 @@
       ['已记住的书', Object.keys(books).length + ' 本（localStorage）'],
       ['提示', '浏览器拿不到磁盘绝对路径：换文件夹重选时需选中同一本才会续读']
     ];
+    var mu = m3uUrl();
+    if (mu) rows.push(['手机 / VLC 播放列表', mu + '（点一下复制，VLC 用「网络串流」打开）']);
     $('#detailTable').innerHTML = rows.map(function (r) {
       return '<tr><td>' + esc(r[0]) + '</td><td>' + esc(r[1]) + '</td></tr>';
     }).join('');
@@ -2274,6 +2308,12 @@
   window.addEventListener('beforeunload', saveProgress);
   document.addEventListener('dragstart', function (e) { e.preventDefault(); });
 
+  $('#detailTable').addEventListener('click', function (e) {
+    var td = e.target.closest ? e.target.closest('td') : null;
+    if (!td) return;
+    var t = td.textContent || '';
+    if (/\/api\/m3u\?/.test(t)) copyText(t.replace(/（点一下复制[^）]*）$/, '').trim());
+  });
   $('#btnDisk').addEventListener('click', openBrowse);
   $('#browseGo').addEventListener('click', function () { browseTo($('#browsePath').value); });
   $('#browsePath').addEventListener('keydown', function (e) {
@@ -2324,6 +2364,7 @@
     openItems: openItems, openZipFile: openZipFile, scanDir: scanDir,
     openServerPath: openServerPath, openViaBackend: openViaBackend,
     uploadFile: uploadFile, canServeFile: canServeFile, browseTo: browseTo, backend: function () { return BE; },
+    showDetails: showDetails, m3uUrl: m3uUrl, copyText: copyText,
     state: function () {
       return {
         pages: pages.length, total: allPages ? allPages.length : pages.length,

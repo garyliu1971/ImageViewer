@@ -194,3 +194,23 @@ python web_backend.py                            # 浏览器自动打开
 - 测试里 URL 已含 `%E6` 这类转义，再拿 `%` 拼 `size=` 会报 `not enough arguments`
 
 全量：**159 + 7 + 14 + 125 + 22 + 45 = 372 项，全绿**。
+
+---
+
+## 10. 补丁 C · 手机访问 + VLC（局域网）
+
+目标：手机/平板同 Wi-Fi 能用网页版；视频交给 VLC（绕开浏览器 codec 与 16× 倍速上限）。
+
+- `web_backend.serve(..., lan=True)` 绑 `0.0.0.0`，新增 `lan_ip()`；`capabilities()` 多返回 `lan / lan_url`
+- CLI `--lan` + `启动网页版(局域网).bat`；桌面版菜单新增「网页版（局域网，手机可访问）...」
+- 启动时打印局域网 URL + token + 二维码（`pip install qrcode`；终端用 ASCII `##` 画，
+  PNG 另存 `%TEMP%\iv-web-qr.png` 并自动弹出，避免 GBK 控制台把 █ 打成崩）
+- 新接口 `GET /api/m3u?path=<目录|单文件|压缩包>&t=<token>` → 标准 `#EXTM3U`，
+  条目 URL 用请求的 `Host` 拼绝对地址（手机访问时就是局域网 IP），压缩包条目走 `entry=` 参数；
+  只收 image/video/audio（PDF 页是给浏览器的，不进 VLC）
+- 前端：`I` 详情多一行「手机 / VLC 播放列表」（点一下复制，含 `execCommand` 兜底 —— 局域网 http 不是 secure context）；
+  状态栏显示「局域网 192.168.x.x:PORT」
+- 修一个真 bug：`print("⚠ …")` 在 GBK 控制台上 `UnicodeEncodeError` 直接让后端退出 → 统一走 `_safe_print()`
+
+验证：`163 + 7 + 14 + 125 + 22 + 52 = 383 项全绿`；实测 `--lan` 下从 `192.168.1.75:18999`
+能打开页面、`/api/ping` 报 `lan=true`、`/api/m3u` 里每条 URL 都是该 IP 且能取到图。

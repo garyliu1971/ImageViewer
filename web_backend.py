@@ -25,6 +25,7 @@ import os
 import re
 import secrets
 import mimetypes
+import socket
 import sys
 import tempfile
 import threading
@@ -178,6 +179,48 @@ def _entry(path, root=None):
             "size": size, "mtime": _mtime(path), "kind": kind}
 
 
+# ----------------------------- 手机 / VLC 播放列表 -----------------------------
+# 只在 m3u 里放 VLC 真能播的：图片 / 视频 / 音频（PDF 页是给浏览器的，不放）。
+PLAY_EXTS = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS
+
+
+def _quote_all(**kw):
+    return "&".join("%s=%s" % (k, urllib.parse.quote(str(v))) for k, v in kw.items())
+
+
+def media_items(path, base, token):
+    """把 path（目录 / 单文件 / 压缩包）展开成 [(显示名, 绝对 URL)]。"""
+    tq = urllib.parse.quote(token)
+
+    def url_for(p, entry=None):
+        qs = _quote_all(path=p, entry=entry) if entry else _quote_all(path=p)
+        return "%s/api/data?%s&t=%s" % (base, qs, tq)
+
+    out = []
+    ext = os.path.splitext(path)[1].lower()
+    if os.path.isdir(path):
+        for p in media_files_in(path):
+            if os.path.splitext(p)[1].lower() in PLAY_EXTS:
+                out.append((os.path.relpath(p, path).replace("\\", "/"), url_for(p)))
+    elif ext in ARCHIVE_EXTS:
+        for e in archive_entries(path):
+            if os.path.splitext(e["name"])[1].lower() in PLAY_EXTS:
+                out.append((e["name"], url_for(path, entry=e["name"])))
+    elif os.path.isfile(path) and ext in PLAY_EXTS:
+        out.append((os.path.basename(path), url_for(path)))
+    return out
+
+
+def build_m3u(path, base, token):
+    """返回 (m3u 文本, 条目列表)。空结果也合法（VLC 会显示空列表）。"""
+    items = media_items(path, base, token)
+    lines = ["#EXTM3U"]
+    for name, url in items:
+        lines.append("#EXTINF:-1,%s" % name)
+        lines.append(url)
+    return "\n".join(lines) + "\n", items
+
+
 def open_archive(path):
     """zip/cbz 用内置，rar/cbr 用 rarfile（需要 7-Zip 或 WinRAR）。"""
     import zipfile
@@ -311,6 +354,8 @@ def capabilities():
         "pdf": fitz is not None,
         "pillow": Image is not None,
         "webdav": True,
+        "lan": bool(getattr(Handler, "lan", False)),
+        "lan_url": getattr(Handler, "lan_url", "") or "",
         "extensions": sorted(SERVABLE),
     }
 
@@ -516,6 +561,14 @@ class Handler(BaseHTTPRequestHandler):
         self._bytes(html, "text/html; charset=utf-8",
                     extra={"Cache-Control": "no-store"})
 
+    def _abs_base(self):
+        """绝对 URL 前缀：优先用请求里的 Host（手机访问时就是局域网 IP）。"""
+        host = (self.headers.get("Host") or "").strip()
+        if host:
+            return "http://" + host
+        return Handler.lan_url.rstrip("/") if getattr(Handler, "lan_url", "") else \
+            _instance.get("url", "").rstrip("/")
+
     def _api(self, route, q):
         path = (q.get("path") or [""])[0]
         # 防越权：凡拿本机磁盘路径的接口都先过媒体扩展名白名单（目录列表、网盘转发除外）
@@ -524,6 +577,13 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/ls":
             rec = (q.get("recursive", ["1"])[0] != "0")
             return self._json({"ok": True, **list_dir(path, recursive=rec)})
+        if route == "/api/m3u":
+            text, items = build_m3u(path, self._abs_base(), Handler.token)
+            return self._bytes(text.encode("utf-8"),
+                               "audio/x-mpegurl; charset=utf-8",
+                               extra={"Cache-Control": "no-store",
+                                      "X-Item-Count": str(len(items)),
+                                      "Content-Disposition": 'inline; filename="playlist.m3u"'})
         if route == "/api/archive":
             ents = archive_entries(path)
             return self._json({"ok": True, "path": path.replace("\\", "/"),
@@ -671,13 +731,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._err("%s: %s" % (type(e).__name__, e))
 
 
-def serve(port=0, open_browser=True, token=None):
-    """起服务，返回 (server, thread, url)。port=0 时随机端口。"""
+def serve(port=0, open_browser=True, token=None, host="127.0.0.1", lan=False):
+    """起服务，返回 (server, thread, url)。port=0 时随机端口。
+
+    host="127.0.0.1" 只本机可访问；lan=True 时绑 0.0.0.0，手机/电视/VLC 同 Wi-Fi 可连。
+    """
+    if lan:
+        host = "0.0.0.0"
     Handler.token = token or secrets.token_urlsafe(12)
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd = ThreadingHTTPServer((host, port), Handler)
     t = threading.Thread(target=httpd.serve_forever, daemon=True, name="iv-backend")
     t.start()
-    url = "http://127.0.0.1:%d/" % httpd.server_address[1]
+    real_port = httpd.server_address[1]
+    ip = "127.0.0.1"
+    if host not in ("127.0.0.1", "localhost"):
+        ip = lan_ip() or "127.0.0.1"
+    url = "http://%s:%d/" % (ip, real_port)
+    Handler.lan = bool(host not in ("127.0.0.1", "localhost"))
+    Handler.lan_url = url if Handler.lan else ""
     if open_browser:
         try:
             webbrowser.open(url)
@@ -689,7 +760,61 @@ def serve(port=0, open_browser=True, token=None):
 _instance = {}
 
 
-def start_server(port=0, open_browser=True):
+def lan_ip():
+    """本机局域网 IPv4（只用来拼 URL，不真发包）。"""
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.168.255.255", 1))       # 不实际发送，只为让系统选出网卡
+        return s.getsockname()[0]
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return ""
+    finally:
+        try:
+            if s is not None:
+                s.close()
+        except Exception:
+            pass
+
+
+def _safe_print(msg):
+    """Windows 控制台经常是 GBK：遇到 emoji/方块字不能直接 print，否则整个进程崩。"""
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(str(msg).encode(enc, "replace").decode(enc, "replace"), flush=True)
+
+
+def print_qr(url):
+    """终端 + PNG 二维码。没装 qrcode 就只打 URL（不报错、不联网）。
+
+    终端只用 ASCII（##/空格）画，避开 GBK 控制台拦方块的炕；PNG 用于弹窗扫码。
+    """
+    try:
+        import qrcode
+    except Exception:
+        _safe_print("（没装 qrcode，只给地址：pip install qrcode 可生成二维码）")
+        return False
+    try:
+        q = qrcode.QRCode(border=1)
+        q.add_data(url)
+        q.make(fit=True)
+        for row in q.get_matrix():
+            _safe_print("".join("##" if v else "  " for v in row))
+        png = os.path.join(tempfile.gettempdir(), "iv-web-qr.png")
+        q.make_image().save(png)
+        _safe_print("二维码图片：%s" % png)
+        return png
+    except Exception as e:
+        _safe_print("二维码生成失败：%s" % e)
+        return False
+
+
+def start_server(port=0, open_browser=True, lan=False):
     """给桌面版用：起后端（已起则直接复用），返回 URL。"""
     if _instance.get("httpd"):
         url = _instance["url"]
@@ -699,8 +824,8 @@ def start_server(port=0, open_browser=True):
             except Exception:
                 pass
         return url
-    httpd, t, url = serve(port, open_browser=open_browser)
-    _instance.update(httpd=httpd, thread=t, url=url)
+    httpd, t, url = serve(port, open_browser=open_browser, lan=lan)
+    _instance.update(httpd=httpd, thread=t, url=url, lan=lan)
     return url
 
 
@@ -722,9 +847,23 @@ def main(argv=None):
     ap.add_argument("--port", type=int, default=0, help="端口，默认随机")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     ap.add_argument("--token", default=None, help="固定 token（默认随机）")
+    ap.add_argument("--lan", action="store_true",
+                    help="绑 0.0.0.0，手机/VLC/电视同 Wi-Fi 可访问（默认只本机）")
     args = ap.parse_args(argv)
-    httpd, t, url = serve(args.port, open_browser=not args.no_browser, token=args.token)
+    httpd, t, url = serve(args.port, open_browser=not args.no_browser,
+                          token=args.token, lan=args.lan)
     print("网页版后端已启动：%s" % url, flush=True)
+    if args.lan:
+        print("手机/平板（同 Wi-Fi）直接输上面这个地址；VLC 用「网络串流」输", flush=True)
+        print("    %sapi/m3u?path=<目录或压缩包绝对路径>&t=<token>" % url, flush=True)
+        print("token（页面会自动带上，VLC 需手动拼）：%s" % Handler.token, flush=True)
+        _safe_print("注意：只在可信局域网开 --lan；公网请走 VPN/Tunnel")
+        png = print_qr(url)
+        if png and not args.no_browser:
+            try:
+                os.startfile(png)          # Windows：弹图片查看器，手机扫屏幕
+            except Exception:
+                pass
     print("能力：%s" % json.dumps(capabilities(), ensure_ascii=False), flush=True)
     print("Ctrl+C 停止", flush=True)
     try:

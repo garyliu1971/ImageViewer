@@ -415,6 +415,70 @@ class TestServerLifecycle(unittest.TestCase):
         self.assertIn("def open_web_server(self)", src)
 
 
+class TestM3uAndLan(FixtureCase):
+    """手机 / VLC：m3u 播放列表 + --lan 绑定。"""
+
+    def test_m3u_for_dir_archive_and_file(self):
+        base = "http://192.168.1.75:1899"
+        text, items = wb.build_m3u(self.book, base, "TOK")
+        self.assertTrue(text.startswith("#EXTM3U"))
+        names = [n for n, _ in items]
+        self.assertEqual(names, ["00_cover.png", "第1话/01.png", "第2话/01.png"])   # 说明.txt 不进来
+        self.assertTrue(all(u.startswith(base + "/api/data?") for _, u in items))
+        self.assertTrue(all("t=TOK" in u for _, u in items))
+        self.assertNotIn("entry=", text)       # 目录：直接指文件路径
+        text2, items2 = wb.build_m3u(self.cbr, base, "TOK")
+        self.assertIn("entry=", text2)         # 压缩包：条目走 entry 参数
+        self.assertEqual([n for n, _ in items2], ["00_cover.png", "第1话/01.png",
+                                                 "第1话/02.png", "第2话/01.png"])
+        text3, items3 = wb.build_m3u(os.path.join(self.book, "00_cover.png"), base, "TOK")
+        self.assertEqual(len(items3), 1)
+        self.assertNotIn("entry=", text3)
+
+    def test_m3u_over_http(self):
+        httpd, t, url = wb.serve(0, open_browser=False)
+        try:
+            tok = wb.Handler.token
+            q = "/api/m3u?path=" + urllib.parse.quote(self.book) + "&t=" + tok
+            st, hdr, body = http_get(url.rstrip("/") + q)
+            self.assertEqual(st, 200)
+            self.assertIn("mpegurl", hdr.get("Content-Type", ""))
+            self.assertEqual(hdr.get("X-Item-Count"), "3")
+            txt = body.decode("utf-8")
+            self.assertTrue(txt.startswith("#EXTM3U"))
+            self.assertIn("127.0.0.1:%d/api/data?" % httpd.server_address[1], txt)
+            st2, _, _ = http_get(url.rstrip("/") + "/api/m3u?path=" + urllib.parse.quote(self.book))
+            self.assertEqual(st2, 403)          # 没 token
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+    def test_lan_binding_and_caps(self):
+        httpd, t, url = wb.serve(0, open_browser=False, lan=True)
+        try:
+            host, port = httpd.server_address[0], httpd.server_address[1]
+            self.assertEqual(host, "0.0.0.0")            # 手机能连
+            self.assertNotIn("127.0.0.1", url) if wb.lan_ip() else None
+            st, _, body = http_get("http://127.0.0.1:%d/api/ping" % port)
+            caps = json.loads(body)
+            self.assertTrue(caps["lan"])
+            self.assertIn(":%d/" % port, caps["lan_url"])
+            self.assertTrue(caps["lan_url"].startswith("http://"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            wb.Handler.lan = False
+            wb.Handler.lan_url = ""
+
+    def test_lan_menu_wired(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with io.open(os.path.join(root, "image_viewer.py"), encoding="utf-8") as f:
+            src = f.read()
+        self.assertIn("def open_web_server_lan(self)", src)
+        self.assertIn("command=self.open_web_server_lan", src)
+        self.assertIn("lan=True", src)
+
+
 class TestArchivePathDetection(unittest.TestCase):
     """后端要能认出 rar/cbr（前端靠 caps + /api/archive）。"""
 
