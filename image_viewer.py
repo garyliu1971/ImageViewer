@@ -737,6 +737,8 @@ class ComicViewer(tk.Tk):
         file_menu.add_command(label="打开播放列表 (m3u/m3u8)", command=self.open_playlist)
         file_menu.add_command(label="打开历史播放", command=self.open_history_playlist)
         file_menu.add_command(label="详细信息", command=self.show_details)
+        file_menu.add_command(label="网页版（本地服务，支持 rar/cbr・PDF）...",
+                              command=self.open_web_server)
         file_menu.add_separator()
         file_menu.add_command(label="退出", command=self._on_close)
 
@@ -939,6 +941,12 @@ class ComicViewer(tk.Tk):
         self._stop_video()
         self._stop_remote_proxy()
         alist_manager.stop_alist(self._alist_proc)
+        wb = getattr(self, "_web_backend", None)
+        if wb is not None:
+            try:
+                wb.stop_server()
+            except Exception:
+                pass
         self._save_progress()
         self._close_zip()
         try:
@@ -1003,6 +1011,36 @@ class ComicViewer(tk.Tk):
         if not path:
             return
         self._load_playlist_path(path)
+
+    def open_web_server(self):
+        """启动本地后端并在默认浏览器里打开网页版。
+
+        网页版本身只能读浏览器能解的格式；挂上这个后端后，rar/cbr（走桌面版
+        同款 rarfile + 7-Zip）、PDF（PyMuPDF 按页渲染）、磁盘路径浏览、
+        服务端缩略图、以及与桌面版共用 image_viewer.json 进度，都能用。
+        """
+        try:
+            import web_backend
+        except Exception as error:
+            messagebox.showerror("错误", "启动网页版失败（缺少 web_backend）：%s" % error)
+            return
+        try:
+            url = web_backend.start_server(open_browser=True)
+        except Exception as error:
+            messagebox.showerror("错误", "启动网页版后端失败：%s" % error)
+            return
+        self._web_backend = web_backend
+        caps = web_backend.capabilities()
+        miss = []
+        if not caps.get("rar"):
+            miss.append("rar/cbr（需 pip install rarfile 且本机有 7-Zip 或 WinRAR）")
+        if not caps.get("pdf"):
+            miss.append("PDF（需 pip install pymupdf）")
+        extra = "\n\n当前不支持：\n・" + "\n・".join(miss) if miss else ""
+        self.status.configure(text="网页版已启动：%s（进度与桌面版互通）" % url)
+        messagebox.showinfo("网页版",
+                            "已在默认浏览器打开：\n%s\n\n关掉本提示窗不影响桌面版；退出本程序时后端会停。%s"
+                            % (url, extra))
 
     def open_history_playlist(self):
         if not os.path.isfile(HISTORY_PLAYLIST_PATH):
