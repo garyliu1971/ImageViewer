@@ -140,6 +140,47 @@ def main():
         fh.write(lh + cd + eocd)
     print("wrote", pgbk, os.path.getsize(pgbk), "bytes")
 
+    # 3b) 漫画 epub：页序只能靠 OPF spine（文件名自然排序是错的），含 rtl、svg 包图、
+    #     ../ 相对路径、%20 编码路径、spine 之外的缩略图（应被丢弃）。
+    #     图片宽度 101..105 = 正确页序，测试靠宽度判断顺序。
+    pepub = os.path.join(OUT, "sample_comic.epub")
+    page = lambda body: ('<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml">'
+                         '<body>%s</body></html>' % body)
+    with zipfile.ZipFile(pepub, "w") as z:
+        z.writestr(zipfile.ZipInfo("mimetype", (1980, 1, 1, 0, 0, 0)),
+                   b"application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        z.writestr("META-INF/container.xml",
+                   '<?xml version="1.0"?><container version="1.0" '
+                   'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                   '<rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+                   '</rootfiles></container>')
+        z.writestr("OEBPS/content.opf",
+                   '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+                   '<manifest>'
+                   '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+                   '<item id="c" href="text/cover.xhtml" media-type="application/xhtml+xml"/>'
+                   '<item id="p2" href="text/p2.xhtml" media-type="application/xhtml+xml"/>'
+                   '<item id="p3" href="text/p3.xhtml" media-type="application/xhtml+xml"/>'
+                   '<item id="p10" href="text/p10.xhtml" media-type="application/xhtml+xml"/>'
+                   '<item id="last" href="text/last.xhtml" media-type="application/xhtml+xml"/>'
+                   '<item id="i1" href="image/zz_cover.png" media-type="image/png"/>'
+                   '</manifest>'
+                   '<spine page-progression-direction="rtl">'
+                   '<itemref idref="c"/><itemref idref="p2"/><itemref idref="p3"/>'
+                   '<itemref idref="p10"/><itemref idref="last"/></spine></package>')
+        z.writestr("OEBPS/nav.xhtml", page("<nav>toc</nav>"))
+        z.writestr("OEBPS/text/cover.xhtml", page('<img src="../image/zz_cover.png" alt=""/>'))
+        z.writestr("OEBPS/text/p2.xhtml", page(
+            '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">'
+            '<image width="102" height="150" xlink:href="../image/p%202.png"/></svg>'))
+        z.writestr("OEBPS/text/p3.xhtml", page('<div><img class="x" src="../image/p3.png#frag"/></div>'))
+        z.writestr("OEBPS/text/p10.xhtml", page("<img src='../image/p10.png'>"))
+        z.writestr("OEBPS/text/last.xhtml", page('<img src="../image/a_last.png"/>'))
+        for name, w in (("zz_cover.png", 101), ("p 2.png", 102), ("p3.png", 103),
+                        ("p10.png", 104), ("a_last.png", 105), ("thumb.png", 20)):
+            z.writestr("OEBPS/image/" + name, png(w, 150, (w, 60, 90)), compress_type=zipfile.ZIP_DEFLATED)
+    print("wrote", pepub, os.path.getsize(pepub), "bytes")
+
     # 4) 真 .cbr（RAR3 stored，含中文章节目录）—— 网页版后端 rar 路径用
     pcbr = os.path.join(OUT, "sample.cbr")
     with open(pcbr, "wb") as fh:

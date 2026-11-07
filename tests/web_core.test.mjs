@@ -230,3 +230,45 @@ test('压缩包非图片条目也进 skipped（与文件夹路径一致）', asy
   assert.ok(names.some(n => /scan\.pdf$/.test(n)), '样本里有 pdf 条目');
   assert.ok(!names.some(n => /^__MACOSX\//.test(n) || n === '.DS_Store') || true);
 });
+
+test('epub：路径解析（../、%编码、#片段、外链）', () => {
+  assert.equal(C.epubResolve('OEBPS/text', '../image/a.png'), 'OEBPS/image/a.png');
+  assert.equal(C.epubResolve('OEBPS/text', '../image/p%202.png#x'), 'OEBPS/image/p 2.png');
+  assert.equal(C.epubResolve('OEBPS', './a/./b.png?v=1'), 'OEBPS/a/b.png');
+  assert.equal(C.epubResolve('OEBPS/text', '/img/a.png'), 'img/a.png');
+  assert.equal(C.epubResolve('OEBPS', 'http://x/a.png'), null);
+  assert.equal(C.epubResolve('OEBPS', 'data:image/png;base64,AAAA'), null);
+  assert.equal(C.dirOf('OEBPS/content.opf'), 'OEBPS');
+  assert.equal(C.dirOf('content.opf'), '');
+});
+
+test('epub：container / OPF / 图片引用', () => {
+  assert.equal(C.epubOpfPath('<container><rootfiles><rootfile full-path="OPS/book.opf" media-type="x"/></rootfiles></container>'), 'OPS/book.opf');
+  assert.equal(C.epubOpfPath('<nope/>'), null);
+  const opf = C.epubParseOpf(`<package><manifest>
+    <item id="a" href="t/a.xhtml" media-type="application/xhtml+xml"/>
+    <item id="b" href='t/b.xhtml' media-type="application/xhtml+xml"/>
+    <item id="im" href="i/x.png" media-type="image/png"/></manifest>
+    <spine page-progression-direction="rtl"><itemref idref="b"/><itemref idref="a"/><itemref idref="missing"/></spine></package>`);
+  assert.deepEqual(opf.spine, ['b', 'a', 'missing']);   // itemref 不会被当成 item
+  assert.equal(opf.manifest.a.href, 't/a.xhtml');
+  assert.equal(opf.manifest.im.type, 'image/png');
+  assert.equal(opf.dir, 'rtl');
+  assert.equal(C.epubParseOpf('<spine/>').dir, null);
+  assert.deepEqual(C.epubSpineItems('OEBPS/c.opf', opf).map((s) => s.path), ['OEBPS/t/b.xhtml', 'OEBPS/t/a.xhtml']);
+  assert.deepEqual(C.epubImageRefs(
+    '<img data-src="no.png" src="a.png"/><svg><image xlink:href="b.png"/><image href="c.png"/></svg><imgx src="z"/>'),
+    ['a.png', 'b.png', 'c.png']);
+});
+
+test('epub：页序按 spine、去重、丢弃 spine 外图片', () => {
+  const opf = C.epubParseOpf(`<manifest>
+    <item id="p1" href="p1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="p2" href="p2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="im" href="img/direct.png" media-type="image/png"/></manifest>
+    <spine><itemref idref="p2"/><itemref idref="im"/><itemref idref="p1"/></spine>`);
+  const texts = { 'p1.xhtml': '<img src="img/b.png"/><img src="img/a.png"/>', 'p2.xhtml': '<img src="img/a.png"/>' };
+  const have = new Set(['img/a.png', 'img/b.png', 'img/direct.png', 'img/unused.png']);
+  const order = C.epubPageOrder('content.opf', opf, (p) => (p in texts ? texts[p] : null), (p) => (have.has(p) ? p : null));
+  assert.deepEqual(order, ['img/a.png', 'img/direct.png', 'img/b.png']);
+});

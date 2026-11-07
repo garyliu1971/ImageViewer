@@ -2,7 +2,11 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>图片 / 漫画浏览器</title>
 <style>
   :root {
@@ -108,6 +112,7 @@
     transition: transform .25s ease, opacity .25s ease;
   }
   #toolbar::-webkit-scrollbar { display: none; }
+  button, .btn, .thumb { touch-action: manipulation; }   /* 去掉触屏双击缩放的 300ms 等待，不影响 #viewport 的自定义手势 */
   body.ui-hidden #toolbar, body.ui-hidden #chapterBar { transform: translateY(-200%); opacity: 0; }
   .toolbar-group { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
   .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; flex: 0 0 auto; }
@@ -510,7 +515,7 @@
 <input type="file" id="folderInput" webkitdirectory multiple hidden>
 <input type="file" id="fileInput" multiple
        accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.jfif,.apng,.svg" hidden>
-<input type="file" id="zipInput" accept=".zip,.cbz,application/zip" hidden>
+<input type="file" id="zipInput" accept=".zip,.cbz,.epub,application/zip,application/epub+zip" hidden>
 
 <script id="iv-core">
 /* ============================================================================
@@ -527,7 +532,7 @@
   var WEB_IMAGE_EXTS = /\.(png|jpe?g|gif|webp|bmp|jfif|apng|avif|svg)$/i;
   var DESKTOP_EXTS = /\.(rar|cbr|7z|tar|gz|zip|cbz|pdf|epub|tif|tiff)$/i;
   var MEDIA_EXTS = /\.(mp4|mkv|avi|webm|mov|wmv|flv|m4v|ts|mpg|mpeg|3gp|mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i;
-  var ARCHIVE_EXTS = /\.(zip|cbz)$/i;
+  var ARCHIVE_EXTS = /\.(zip|cbz|epub)$/i;
 
   function clamp(v, a, b) { return Math.min(Math.max(v, a), b); }
 
@@ -817,7 +822,80 @@
     });
   };
 
+  /* ---------------- epub 漫画：按 OPF spine 取页序（纯逻辑，正则解析，Node 里也能跑） ---------------- */
+  function dirOf(p) { return String(p || '').replace(/[^\/]*$/, '').replace(/\/$/, ''); }
+  function xmlAttr(tag, name) {
+    var m = new RegExp('(?:^|\\s)' + name + '\\s*=\\s*(["\'])(.*?)\\1', 'i').exec(tag);
+    return m ? m[2] : null;
+  }
+  /** href（相对 baseDir，可含 ../ 、#片段、%编码）-> zip 内规范路径；外链（http:/data:）返回 null */
+  function epubResolve(baseDir, href) {
+    var h = String(href || '').split('#')[0].split('?')[0];
+    try { h = decodeURIComponent(h); } catch (e) { /* 保持原样 */ }
+    if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return null;
+    var parts = (h.charAt(0) === '/' ? [] : String(baseDir || '').split('/')).filter(Boolean);
+    h.split('/').forEach(function (seg) {
+      if (!seg || seg === '.') return;
+      if (seg === '..') parts.pop(); else parts.push(seg);
+    });
+    return parts.join('/');
+  }
+  function epubOpfPath(containerXml) {
+    var m = /<rootfile\b[^>]*>/i.exec(containerXml || '');
+    return m ? xmlAttr(m[0], 'full-path') : null;
+  }
+  function epubParseOpf(opfXml) {
+    var manifest = {}, spine = [], m, re = /<item\b[^>]*>/gi;
+    opfXml = opfXml || '';
+    while ((m = re.exec(opfXml))) {
+      var id = xmlAttr(m[0], 'id'), href = xmlAttr(m[0], 'href');
+      if (id && href) manifest[id] = { href: href, type: xmlAttr(m[0], 'media-type') || '' };
+    }
+    re = /<itemref\b[^>]*>/gi;
+    while ((m = re.exec(opfXml))) { var r = xmlAttr(m[0], 'idref'); if (r) spine.push(r); }
+    var sp = /<spine\b[^>]*>/i.exec(opfXml);
+    var dir = sp ? xmlAttr(sp[0], 'page-progression-direction') : null;
+    return { manifest: manifest, spine: spine, dir: dir === 'rtl' ? 'rtl' : (dir === 'ltr' ? 'ltr' : null) };
+  }
+  function epubSpineItems(opfPath, opf) {
+    var base = dirOf(opfPath), out = [];
+    opf.spine.forEach(function (id) {
+      var it = opf.manifest[id];
+      var p = it ? epubResolve(base, it.href) : null;
+      if (p) out.push({ path: p, type: it.type });
+    });
+    return out;
+  }
+  /** 一页 xhtml 里的图片引用：<img src>、svg 的 <image xlink:href / href> */
+  function epubImageRefs(xhtml) {
+    var out = [], re = /<(img|image)\b[^>]*>/gi, m;
+    while ((m = re.exec(xhtml || ''))) {
+      var v = m[1].toLowerCase() === 'img' ? xmlAttr(m[0], 'src')
+        : (xmlAttr(m[0], 'xlink:href') || xmlAttr(m[0], 'href'));
+      if (v) out.push(v);
+    }
+    return out;
+  }
+  /**
+   * 页序 = spine 顺序里每页 xhtml 引用的图片（去重）。
+   * textOf(path) -> 该 xhtml 文本或 null；entryFor(path) -> 存在且是图片的条目名或 null。
+   */
+  function epubPageOrder(opfPath, opf, textOf, entryFor) {
+    var seen = {}, out = [];
+    function add(p) { var e = p ? entryFor(p) : null; if (e && !seen[e]) { seen[e] = 1; out.push(e); } }
+    epubSpineItems(opfPath, opf).forEach(function (it) {
+      if (/^image\//i.test(it.type)) { add(it.path); return; }
+      var t = textOf(it.path);
+      if (t == null) return;
+      var base = dirOf(it.path);
+      epubImageRefs(t).forEach(function (h) { add(epubResolve(base, h)); });
+    });
+    return out;
+  }
+
   global.IVCore = {
+    dirOf: dirOf, epubResolve: epubResolve, epubOpfPath: epubOpfPath, epubParseOpf: epubParseOpf,
+    epubSpineItems: epubSpineItems, epubImageRefs: epubImageRefs, epubPageOrder: epubPageOrder,
     MIN_ZOOM: MIN_ZOOM, MAX_ZOOM: MAX_ZOOM, MIN_VISIBLE: MIN_VISIBLE,
     WEB_IMAGE_EXTS: WEB_IMAGE_EXTS, DESKTOP_EXTS: DESKTOP_EXTS, MEDIA_EXTS: MEDIA_EXTS,
     ARCHIVE_EXTS: ARCHIVE_EXTS,
@@ -861,8 +939,12 @@
   var MAX_URLS = 8;
   var MAX_DIM = 4000;        // 显示位图最长边上限（超大图按比例缩，避免解码爆掉）
 
+  /* 触屏/窄屏默认不显示缩略图条（否则横屏手机只剩约一半高度给画面） */
+  var SMALL_SCREEN = (function () {
+    try { return window.matchMedia('(pointer: coarse)').matches || window.innerWidth < 900; } catch (e) { return false; }
+  })();
   var S = { spread: true, direction: 'ltr', trim: false, book: false,
-            compare: false, autoInterval: 3.0, thumbs: true };
+            compare: false, autoInterval: 3.0, thumbs: !SMALL_SCREEN };
   var autoOn = false;
 
   /* ================= 本地后端（web_backend.py）=================
@@ -954,12 +1036,18 @@
     if (caps.lan && caps.lan_url) {
       $('#statusNote').textContent += ' · 局域网 ' + String(caps.lan_url).replace(/^http:\/\//, '').replace(/\/$/, '');
     }
+    /* 手机选择器按 accept 过滤：rar 和 pdf 要同时放开，并补上系统常给的 MIME */
+    var acc = ['.zip', '.cbz', '.epub', 'application/zip', 'application/epub+zip',
+      'application/vnd.comicbook+zip', 'application/x-cbz'];
+    var kinds = ['zip', 'cbz', 'epub'];
     if (caps.rar) {
-      $('#zipInput').setAttribute('accept', '.zip,.cbz,.rar,.cbr,application/zip');
-      $('#btnZip').title = '打开压缩包 zip / cbz / rar / cbr';
-    } else if (caps.pdf) {
-      $('#zipInput').setAttribute('accept', '.zip,.cbz,.pdf,application/zip');
-      $('#btnZip').title = '打开压缩包 zip / cbz / pdf';
+      acc.push('.rar', '.cbr', 'application/vnd.rar', 'application/x-rar-compressed', 'application/vnd.comicbook-rar');
+      kinds.push('rar', 'cbr');
+    }
+    if (caps.pdf) { acc.push('.pdf', 'application/pdf'); kinds.push('pdf'); }
+    if (kinds.length > 3) {
+      $('#zipInput').setAttribute('accept', acc.join(','));
+      $('#btnZip').title = '打开压缩包 ' + kinds.join(' / ');
     }
   }
 
@@ -1152,6 +1240,9 @@
     bookKey = opts.key || C.bookKey(bookKind, bookTitle, keep.length,
       C.entriesSig(keep.map(function (k) { return k.path; })));
 
+    /* epub 的 OPF 声明了翻页方向（日漫 rtl）：没有该书自己的记录时采用 */
+    if (opts.dir && !(books[bookKey] && books[bookKey].direction)) S.direction = opts.dir;
+
     var built = keep.map(function (k) { return makePage(k); });
     var chs = C.groupChapters(keep);
     var multi = chs.length > 1;
@@ -1323,11 +1414,14 @@
 
   /** 双页判定（对齐 _make_spread：当前页与下一页都为竖图才并排；对比模式无条件并排）。
       注意：任何分支都要先把当前页解码出来，否则拿不到真实像素尺寸。 */
+  /* 窗口够“横”才并排两页：竖屏手机/竖放 iPad 上两页各只剩半宽，字看不清。S.spread 仍是用户意愿，这里只做显示门槛 */
+  function spreadFits() { return window.innerWidth / Math.max(1, window.innerHeight) >= 1.1; }
+  var lastSpreadFit = spreadFits();
   function decidePair() {
     var cur = pages[index], nxt = pages[index + 1];
     if (!cur) return Promise.resolve([]);
     return ensureDecoded(cur).then(function () {
-      if (!S.compare && !S.spread) return [cur];
+      if (!S.compare && (!S.spread || !spreadFits())) return [cur];
       if (!nxt) return [cur];
       if (S.compare) return ensureDecoded(nxt).then(function () { return [cur, nxt]; }, function () { return [cur]; });
       if (!isPortrait(cur)) return [cur];
@@ -1510,7 +1604,8 @@
     applyModeClasses(); saveUI(); saveProgress();
     rerender();
     updateInfo();
-    toast(label + (S[key] ? ' 开' : ' 关'));
+    toast(label + (S[key] ? ' 开' : ' 关') +
+      (key === 'spread' && S.spread && !spreadFits() ? '（当前屏幕偏竖，横过来才会并排）' : ''));
   }
   function toggleDirection() {
     S.direction = S.direction === 'ltr' ? 'rtl' : 'ltr';
@@ -1809,6 +1904,8 @@
 
   /* ================= 键盘 ================= */
   document.addEventListener('keydown', function (e) {
+    /* Ctrl/Cmd/Alt 组合键留给浏览器（Ctrl+D 收藏、Ctrl+C 复制、Ctrl++ 缩放…），不能同时触发看图操作 */
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     var tag = e.target && e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
       if (e.key === 'Enter' && !$('#jump').classList.contains('hidden')) { e.preventDefault(); doJump(); }
@@ -1836,7 +1933,8 @@
       case 't': case 'T': toggleThumbs(); break;
       case '[': adjustAuto(-0.5); break;
       case ']': adjustAuto(0.5); break;
-      case 'f': case 'F': case 'Enter': toggleFullscreen(); break;
+      case 'Enter': if (tag === 'BUTTON') break; toggleFullscreen(); break;   /* 焦点在按钮上时 Enter 只负责点按钮 */
+      case 'f': case 'F': toggleFullscreen(); break;
       case 'F11': e.preventDefault(); toggleFullscreen(); break;
       case 'Home': if (pages.length) showPage(0); break;
       case 'End': if (pages.length) showPage(pages.length - 1); break;
@@ -1920,10 +2018,69 @@
         if (/^__MACOSX\//.test(clean) || /(^|\/)\.[^\/]+$/.test(clean) || /(^|\/)thumbs\.db$/i.test(clean)) return;
         items.push({ kind: 'zip', name: C.baseName(clean), path: clean, zf: zf, entry: en, size: en.size });
       });
-      if (!items.length) { toast('压缩包里没有找到图片（支持 zip/cbz 内的 png/jpg/webp/gif/bmp/avif）'); return; }
-      // 非图片条目（pdf / rar / 视频…）交给 classify 统一归到 skipped，行为跟文件夹一致
-      openItems(items, { kind: 'zip', title: file.name });
+      if (!items.length) { toast('压缩包里没有找到图片（支持 zip/cbz/epub 内的 png/jpg/webp/gif/bmp/avif）'); return; }
+      /* epub 漫画：页序以 OPF spine 为准；解析失败就退回按文件名自然排序（等同 zip） */
+      var ordered = /\.epub$/i.test(file.name)
+        ? epubReorder(zf, items)['catch'](function () { return null; })
+        : Promise.resolve(null);
+      return ordered.then(function (r) {
+        // 非图片条目（pdf / rar / 视频…）交给 classify 统一归到 skipped，行为跟文件夹一致
+        openItems(r ? r.items : items, { kind: 'zip', title: file.name, dir: r ? r.dir : null });
+      });
     })['catch'](function (e) { toast('压缩包打开失败：' + ((e && e.message) || e)); });
+  }
+
+  /** 读 META-INF/container.xml -> OPF -> spine 各页 xhtml，返回按页序排好的图片条目；
+      条目的 path 改成 0001.jpg 这类顺序名（spine 顺序 = 自然排序，且不会被图片目录拆成多章）。 */
+  function epubReorder(zf, items) {
+    var ent = {}, entLower = {}, byPath = {}, byLower = {};
+    zf.entries.forEach(function (en) {
+      if (en.dir) return;
+      var n = String(en.name).replace(/\\/g, '/');
+      ent[n] = en; entLower[n.toLowerCase()] = en;
+    });
+    items.forEach(function (it) { byPath[it.path] = it; byLower[it.path.toLowerCase()] = it; });
+    var dec = new TextDecoder('utf-8');
+    function readText(name) {
+      var en = ent[name] || entLower[String(name).toLowerCase()];
+      return en ? zf.extract(en).then(function (b) { return dec.decode(b); }) : Promise.resolve(null);
+    }
+    return readText('META-INF/container.xml').then(function (cx) {
+      var opfPath = C.epubOpfPath(cx);
+      if (!opfPath) return null;
+      return readText(opfPath).then(function (ox) {
+        if (!ox) return null;
+        var opf = C.epubParseOpf(ox);
+        var todo = C.epubSpineItems(opfPath, opf).filter(function (s) { return !/^image\//i.test(s.type); });
+        var texts = {};
+        function batch(i) {   /* 小批并发读 xhtml，几百页也不会一次性起几百个读 */
+          if (i >= todo.length) return Promise.resolve();
+          return Promise.all(todo.slice(i, i + 8).map(function (s) {
+            return readText(s.path).then(function (t) { texts[s.path] = t; }, function () {});
+          })).then(function () { return batch(i + 8); });
+        }
+        return batch(0).then(function () {
+          var order = C.epubPageOrder(opfPath, opf,
+            function (p) { return texts[p] == null ? null : texts[p]; },
+            function (p) {
+              var it = byPath[p] || byLower[p.toLowerCase()];
+              return it && C.WEB_IMAGE_EXTS.test(it.path) ? it.path : null;
+            });
+          var imgCount = items.filter(function (it) { return C.WEB_IMAGE_EXTS.test(it.path); }).length;
+          if (!order.length || order.length < imgCount * 0.5) return null;   /* 引用关系读不出来：别丢页，退回自然排序 */
+          var width = Math.max(4, String(order.length).length);
+          return {
+            dir: opf.dir,
+            items: order.map(function (p, i) {
+              var src = byPath[p], ext = (/\.[^.\/]+$/.exec(p) || [''])[0];
+              var seq = String(i + 1);
+              while (seq.length < width) seq = '0' + seq;
+              return Object.assign({}, src, { path: seq + ext });
+            })
+          };
+        });
+      });
+    });
   }
 
   function filesFromInput(el) {
@@ -2299,7 +2456,12 @@
     }
     openZipFile(f);
   });
-  window.addEventListener('resize', function () { updateChrome(); reflow(); });
+  window.addEventListener('resize', function () {
+    updateChrome(); reflow();
+    /* 旋转手机/平板后单双页门槛可能翻转，需要重新配对 */
+    var f = spreadFits();
+    if (f !== lastSpreadFit) { lastSpreadFit = f; if (pages.length && S.spread && !S.compare) showPage(index); }
+  });
   document.addEventListener('fullscreenchange', function () {
     // Esc 退出全屏时浏览器不会走我们的按钮，这里补上菜单/布局
     setUiHidden(!!document.fullscreenElement);
