@@ -13,14 +13,27 @@
 #   - 附带 image-viewer.html 网页版到程序目录，方便用户顺带使用。
 
 from PyInstaller.utils.hooks import collect_dynamic_libs
+import os
 
 # PyMuPDF 的 mupdfcpp64.dll 由 _mupdf.pyd 动态加载，需显式收集
 pymupdf_binaries = collect_dynamic_libs('pymupdf')
 
+# rar/cbr 支持：rarfile 解压需要外部解压工具，把 7-Zip 随程序一起分发，
+# 目标机即使没装 7-Zip / WinRAR 也能直接读 rar 漫画。没装 7-Zip 时优雅跳过。
+sevenzip_binaries = []
+for _f in ("7z.exe", "7z.dll"):
+    _p = os.path.join(r"C:\Program Files\7-Zip", _f)
+    if os.path.isfile(_p):
+        sevenzip_binaries.append((_p, "."))
+    else:
+        _p86 = os.path.join(r"C:\Program Files (x86)\7-Zip", _f)
+        if os.path.isfile(_p86):
+            sevenzip_binaries.append((_p86, "."))
+
 a = Analysis(
     ['image_viewer.py'],
     pathex=[],
-    binaries=pymupdf_binaries,
+    binaries=pymupdf_binaries + sevenzip_binaries,
     datas=[
         ('image-viewer.html', '.'),
     ],
@@ -33,6 +46,8 @@ a = Analysis(
         'pymupdf',
         'pymupdf.mupdf',
         'pymupdf.extra',
+        # rar/cbr 压缩包支持
+        'rarfile',
     ],
     hookspath=[],
     hooksconfig={},

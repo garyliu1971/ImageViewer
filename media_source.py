@@ -16,6 +16,8 @@ from viewer_core import natural_key
 # 支持的扩展名（与 image_viewer.py 保持一致）
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif", ".jfif"}
 ZIP_EXTS = {".zip", ".cbz"}
+RAR_EXTS = {".rar", ".cbr"}
+ARCHIVE_EXTS = ZIP_EXTS | RAR_EXTS
 PDF_EXTS = {".pdf"}
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".ape"}
@@ -23,13 +25,32 @@ AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", 
 MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS | PDF_EXTS
 
 
+def is_junk(name):
+    """打包工具留下的元数据 / 隐藏文件，不该当成一页。
+
+    macOS 的 __MACOSX/._xxx.png 以前会被当成一个「章节」，桌面版和网页版都有这问题。
+    """
+    s = str(name or "").replace("\\", "/")
+    parts = [p for p in s.split("/") if p]
+    if not parts:
+        return True
+    if parts[0].upper() in ("__MACOSX", ".DS_STORE"):
+        return True
+    base = parts[-1]
+    if base.startswith(".") and not base.startswith(".."):
+        return True                                   # .DS_Store / ._x.png / .gitignore
+    if base.lower() in ("thumbs.db", "desktop.ini"):
+        return True
+    return False
+
+
 def media_files_in(directory, exts=MEDIA_EXTS):
-    """递归收集目录下的媒体文件，按相对路径自然排序。"""
+    """递归收集目录下的媒体文件，按相对路径自然排序（跳过打包垃圾）。"""
     out = []
     for root, dirs, files in os.walk(directory):
-        dirs.sort(key=natural_key)
+        dirs[:] = [d for d in sorted(dirs, key=natural_key) if not is_junk(d)]
         for f in sorted(files, key=natural_key):
-            if os.path.splitext(f)[1].lower() in exts:
+            if os.path.splitext(f)[1].lower() in exts and not is_junk(f):
                 out.append(os.path.join(root, f))
     out.sort(key=lambda p: natural_key(os.path.relpath(p, directory)))
     return out
@@ -42,7 +63,9 @@ def build_zip_chapters(zip_path, namelist, exts=IMAGE_EXTS | VIDEO_EXTS):
     无子目录的条目归入「根目录」章节。
     """
     names = [n for n in namelist
-             if not n.endswith("/") and os.path.splitext(n)[1].lower() in exts]
+             if not n.endswith("/")
+             and os.path.splitext(n)[1].lower() in exts
+             and not is_junk(n)]
 
     groups = {}
     flat = []

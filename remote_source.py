@@ -28,7 +28,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from media_source import IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS
+from media_source import IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS, ARCHIVE_EXTS, PDF_EXTS
 from remote_types import RemoteSource  # noqa: F401  (re-export，保持 remote_source.RemoteSource 可用)
 
 
@@ -123,8 +123,13 @@ class WebDavProvider(RemoteProvider):
         except Exception:
             return []
 
-    def list_dir_strict(self, path):
-        """同 list_dir，但网络/认证/解析错误直接抛出，供界面显示真实原因。"""
+    def list_dir_strict(self, path, media_only=True):
+        """同 list_dir，但网络/认证/解析错误直接抛出，供界面显示真实原因。
+
+        media_only=True（桌面版默认）：只回图片/视频/音频。
+        media_only=False（网页版后端用）：cbz/zip/pdf 也回（kind=archive/pdf），
+        这样网页版能直接打开网盘里的漫画包；非媒体的 txt/exe 之类一律不列。
+        """
         path = self._encode_path(path or self.root_path)
         data = self._propfind(path)
         root = ET.fromstring(data)
@@ -153,7 +158,15 @@ class WebDavProvider(RemoteProvider):
                     kind = "video"
                 elif ext in AUDIO_EXTS:
                     kind = "audio"
+                elif ext in ARCHIVE_EXTS:
+                    kind = "archive"
+                elif ext in PDF_EXTS:
+                    kind = "pdf"
                 else:
+                    kind = "other"
+                keep = (("image", "video", "audio") if media_only
+                        else ("image", "video", "audio", "archive", "pdf"))
+                if kind not in keep:
                     continue
                 entries.append(RemoteSource(
                     self.name, href, name=name,

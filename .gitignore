@@ -33,3 +33,14 @@ alist
 alist_data/
 data/
 nul
+
+# 网页版排版自检截图（SHOT=1 node tests/web_e2e.mjs / web_backend_e2e.mjs 生成）
+网页版预览*.png
+
+# 网页版手动测试样本（python tests/make_web_demo.py 生成）
+网页版测试样本/
+
+# 手动跑后端时重定向产生的日志 / pid（不是程序生成的）
+web_backend.log
+web_backend.err.log
+web_backend.pid
