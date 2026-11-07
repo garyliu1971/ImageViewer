@@ -353,6 +353,17 @@
   }
   #davMsg { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff9d5c; }
 
+  /* ---------- 读书时换书（云端书库里的书才出现）---------- */
+  #btnVolPrev, #btnVolNext { display: none; }
+  body.has-vol #btnVolPrev, body.has-vol #btnVolNext { display: inline-flex; }
+  #volNext {
+    position: fixed; left: 50%; bottom: 132px; transform: translateX(-50%); z-index: 45;
+    display: none; max-width: 86vw; overflow: hidden; text-overflow: ellipsis;
+    padding: 12px 18px; min-height: 44px; border-radius: 22px; font-size: 14px;
+    background: rgba(76,141,255,.92); color: #fff; box-shadow: 0 4px 18px rgba(0,0,0,.5);
+  }
+  #volNext.show { display: inline-flex; }
+
   /* ---------- 提示 ---------- */
   #toast {
     position: fixed; left: 50%; bottom: 134px; transform: translateX(-50%);
@@ -409,9 +420,11 @@
   </div>
   <div class="sep"></div>
   <div class="toolbar-group">
+    <button class="btn" id="btnVolPrev" title="同一文件夹里的上一本 (P)">« 上一本</button>
     <button class="btn icon" id="btnPrev" title="上一页 (←)">⏮</button>
     <span id="pageInfo" title="点击跳到指定页 (G)">0 / 0</span>
     <button class="btn icon" id="btnNext" title="下一页 (→)">⏭</button>
+    <button class="btn" id="btnVolNext" title="同一文件夹里的下一本 (N)">下一本 »</button>
   </div>
   <div class="sep"></div>
   <div class="toolbar-group">
@@ -527,7 +540,8 @@
       <tr><td>☁ 云端书库（部署在 <code>/iv/</code> 时）</td><td>打开 <code>/iv/#open=书的相对路径</code>，第一次填一个<b>只读</b> WebDAV 账号；
         zip / cbz / epub 只按需取用到的页（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。
         账号框里的「跨设备续读」可把读到哪页写到 WebDAV 的进度文件夹，换设备打开同一本书自动接上。
-        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip 就读。</td></tr>
+        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip 就读；读书时
+        <kbd>N</kbd> / <kbd>P</kbd> 或「上一本 / 下一本」切到同一文件夹里相邻的书。rar / cbr 要先转成 cbz，pdf 暂未支持。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
@@ -559,6 +573,8 @@
     <table id="detailTable"></table>
   </div>
 </div>
+
+<button id="volNext" class="btn"></button>
 
 <div id="dav" class="modal hidden">
   <div class="modal-card" style="max-width:460px">
@@ -1386,10 +1402,44 @@
     return out;
   }
 
+  /* ---------------- 读书时「上一本 / 下一本」：同一文件夹里相邻的书（纯函数，Node 可测）---------------- */
+  var LIB_BOOK_KINDS = ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr'];
+  /** 扩展名 -> 'zip'|'cbz'|'epub'|'pdf'|'rar'|'cbr'|'other' */
+  function libClassify(ext) {
+    var e = String(ext == null ? '' : ext).replace(/^\./, '').toLowerCase();
+    return LIB_BOOK_KINDS.indexOf(e) >= 0 ? e : 'other';
+  }
+  /** 浏览器现在能直接读的（Range 读 zip 系）；pdf / rar 另说 */
+  function libOpenable(kind) { return kind === 'zip' || kind === 'cbz' || kind === 'epub'; }
+  /** 书（非文件夹、受支持的类型），保持传入顺序 */
+  function libBooks(entries) {
+    return entries.filter(function (e) { return !e.isDir && libClassify(e.ext) !== 'other'; });
+  }
+  /** 书架的书（shelfSplit().books：{name, size}）-> 换书用的列表：补上 rel（相对书库根）和小写扩展名；保持顺序 */
+  function volEntries(dirRel, books) {
+    return (books || []).map(function (b) {
+      var dot = b.name.lastIndexOf('.');
+      return { name: b.name, rel: relJoin(dirRel, b.name), isDir: false, size: b.size == null ? null : b.size, ext: dot > 0 ? b.name.slice(dot + 1).toLowerCase() : '' };
+    });
+  }
+  function libParentRel(rel) { return String(rel || '').replace(/\/+$/, '').replace(/\/?[^\/]*$/, ''); }
+  /** 同一个文件夹里相邻的书：list 是该文件夹排好序的条目（要有 rel / ext）；canOpen(entry) 为假的（rar / 没接上的 pdf）跳过。找不到当前书返回 null */
+  function libAdjacent(list, rel, step, canOpen) {
+    var books = libBooks(list), i = -1, k;
+    for (k = 0; k < books.length; k++) if (books[k].rel === rel) { i = k; break; }
+    if (i < 0) return null;
+    canOpen = canOpen || function (e) { return libOpenable(libClassify(e.ext)); };
+    for (k = i + step; k >= 0 && k < books.length; k += step) if (canOpen(books[k])) return books[k];
+    return null;
+  }
+  function nextBook(list, rel, canOpen) { return libAdjacent(list, rel, 1, canOpen); }
+  function prevBook(list, rel, canOpen) { return libAdjacent(list, rel, -1, canOpen); }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
     toRemoteProgress: toRemoteProgress, remoteIsNewer: remoteIsNewer,
+    libClassify: libClassify, libOpenable: libOpenable, libBooks: libBooks, libParentRel: libParentRel, volEntries: volEntries, nextBook: nextBook, prevBook: prevBook,
     basicAuth: basicAuth, UrlRangeSource: UrlRangeSource, parseLaunchHash: parseLaunchHash,
     relError: relError, backOk: backOk, normalizeDavBase: normalizeDavBase, davBookUrl: davBookUrl,
     dirOf: dirOf, epubResolve: epubResolve, epubOpfPath: epubOpfPath, epubParseOpf: epubParseOpf,
@@ -1584,11 +1634,11 @@
   function saveProgressSoon() { clearTimeout(saveTimer); saveTimer = setTimeout(saveProgress, 400); }
 
   /* ================= 小工具 ================= */
-  function toast(msg) {
+  function toast(msg, ms) {
     var t = $('#toast');
     t.textContent = msg; t.classList.add('show');
     clearTimeout(toast._t);
-    toast._t = setTimeout(function () { t.classList.remove('show'); }, 2200);
+    toast._t = setTimeout(function () { t.classList.remove('show'); }, ms || 2200);
   }
   /** 打开一本书的进度条：p.set(文字, 比例 0~1；null = 不定长)；p.end() 关掉（可重复调用）。
       只显示最新的一次；开得很快（<0.35 秒）就根本不出现，免得闪一下 */
@@ -2079,7 +2129,12 @@
 
   /* ================= 翻页 ================= */
   function pairStep() { return lastPair.length > 1 ? 2 : 1; }
-  function next() { if (pages.length) showPage(Math.min(index + pairStep(), pages.length - 1)); }
+  function next() {
+    if (!pages.length) return;
+    var before = index;
+    showPage(Math.min(index + pairStep(), pages.length - 1));
+    if (index === before && atBookEnd()) volEndHint();      // 云端书库里读到最后一页：轻轻提示还有下一本
+  }
   function prev() { if (pages.length) showPage(Math.max(index - pairStep(), 0)); }
 
   /* ================= 自动翻页 ================= */
@@ -2179,6 +2234,7 @@
     if (S.direction === 'rtl') parts.push('右→左');
     if (autoOn) parts.push('自动 ' + S.autoInterval + 's');
     if (S.book) parts.push('纸质');
+    volRefresh();
     $('#statusText').textContent =
       (bookTitle ? bookTitle + ' · ' : '') + (p ? p.name : '未打开') + (parts.length ? '   ·   ' + parts.join('   ·   ') : '');
     document.title = (p ? p.name + ' · ' : '') + '图片 / 漫画浏览器';
@@ -2466,6 +2522,8 @@
       case 'b': case 'B': toggleMode('book', '纸质书质感'); break;
       case 'a': case 'A': setAuto(!autoOn); break;
       case 'g': case 'G': openJump(); break;
+      case 'n': case 'N': if (!anyModal()) volStep(1); break;
+      case 'p': case 'P': if (!anyModal()) volStep(-1); break;
       case 'l': case 'L': if (document.body.classList.contains('has-dav')) openShelf(); break;
       case 'i': case 'I': showDetails(); break;
       case 't': case 'T': toggleThumbs(); break;
@@ -3257,8 +3315,25 @@
   }
   var launchSeq = 0;      // 每次有效的启动链接 +1：慢的旧链接打开完成时发现自己过期了，就丢掉结果（最新的链接说了算）
   /** 从 WebDAV 书库打开 p.rel；401 -> 弹账号框重输后再试。token = 发起时的 launchSeq，不等于当前值就是过期的 */
+  var openDavPdfHook = null;       // pdf 阅读器挂在这里：function (p, ctx) -> Promise<boolean>；没挂时点 pdf 只提示「暂不支持 PDF」
   function openDavBook(p, token) {
     function stale() { return token !== launchSeq; }
+    /* 按扩展名分流：rar / cbr 浏览器没法随机读取（发布时转成 cbz）；pdf 走钩子；其余 zip 系走 Range 源 */
+    var kind = C.libClassify((/\.([^.\/]+)$/.exec(p.rel) || [])[1]);
+    if (kind === 'rar' || kind === 'cbr') {
+      toast('这是 ' + kind + '：浏览器不能随机读取，请先用发布工具转成 cbz 再上传', 5000);
+      return Promise.resolve(false);
+    }
+    if (kind === 'pdf') {
+      if (!openDavPdfHook) { toast('暂不支持 PDF'); return Promise.resolve(false); }
+      return davEnsure().then(function (cfg) {
+        return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
+      }).then(function (cfg) {
+        if (stale() || !cfg) return false;
+        return openDavPdfHook(p, { url: C.davBookUrl(cfg.base, cfg.library, p.rel), key: 'dav:' + p.rel, stale: stale,
+          authHeader: davAuthHeader, askDav: askDav });
+      });
+    }
     return davEnsure().then(function (cfg) {
       return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
     }).then(function (cfg) {
@@ -3326,7 +3401,7 @@
   /* ---- 云端进度（users/gary/iv-progress/<hash>.json）：目录里有哪些文件 = 哪些书读过；只读读过的那几本 ---- */
   var cloudProg = {}, cloudIdx = null;
   /** 云端进度缓存 + 「继续阅读」清空：开书架 / 刷新 / 换账号 / 忘记此设备时用，免得看到上一个账号或过期的进度 */
-  function resetCloudState() { cloudProg = {}; cloudIdx = null; shelfRecentDone = false; var el = $('#shelfRecent'); if (el) el.innerHTML = ''; }
+  function resetCloudState() { cloudProg = {}; cloudIdx = null; shelfRecentDone = false; var el = $('#shelfRecent'); if (el) el.innerHTML = ''; volReset(); }
   function progOf(key) {
     var c = cloudProg[key], l = books[key];
     return c && (!l || c.at > (l.at || 0)) ? c : (l || null);
@@ -3440,6 +3515,7 @@
       return propfind(cfg, rel).then(function (entries) {
         if (seq !== shelfSeq) return;
         shelfData = C.shelfSplit(entries);
+        cacheDir(rel, shelfData);                         /* 读书时「上一本 / 下一本」直接用这份列表，不用再请求 */
         try { localStorage.setItem(LS_SHELF, rel); } catch (e) { /* 忽略 */ }
         renderShelf();
         loadFolderProgress(seq);
@@ -3518,6 +3594,115 @@
     return openDavBook(p, token).then(function (ok) { if (ok && token === launchSeq) stripLaunchHash(); return ok; });
   }
 
+  /* ================= 读书时换书：目录列表缓存（和书架用同一套 PROPFIND）=================
+     书架每列一个文件夹就顺手把它的书缓存在这里；读书时「上一本 / 下一本」直接用它，缓存里没有（#open= 直接打开的书）才去列一次。 */
+  var dirCache = Object.create(null);     // 文件夹 rel -> {at, entries: [{name, rel, ext, size, isDir:false}]（只含书，已按自然顺序排好）}
+  var sibFlight = null, sibFail = Object.create(null);
+  function davAvailable() { return /^https?:$/.test(location.protocol) && !BE.on; }
+  function staleErr() { var e = new Error('stale'); e.stale = true; return e; }
+  function noAccountErr() { var e = new Error('没有有效的书库账号'); e.noAccount = true; return e; }
+  /** 书架 / 换书共用：把一个文件夹的 PROPFIND 结果登记进缓存（最多留 6 个文件夹），返回缓存的书列表 */
+  function cacheDir(dirRel, split) {
+    var list = C.volEntries(dirRel, split.books);
+    dirCache[dirRel] = { at: Date.now(), entries: list };
+    var ks = Object.keys(dirCache);
+    if (ks.length > 6) ks.sort(function (a, b) { return dirCache[a].at - dirCache[b].at; }).slice(0, ks.length - 6)
+      .forEach(function (k) { delete dirCache[k]; });
+    return list;
+  }
+  /** 作废所有「换书」缓存：换账号 / 忘记账号 / 点刷新时和 resetCloudState 一起调（旧账号看到的目录不能再用） */
+  function volReset() {
+    Object.keys(dirCache).forEach(function (k) { delete dirCache[k]; });
+    sibFlight = null; sibFail = Object.create(null);
+    volRefresh();
+  }
+  /** 列 dirRel 这一层（PROPFIND Depth:1）-> 书列表。401 -> 弹账号框重输再试；quiet=true（后台预取）时不弹框直接失败 */
+  function listDirBooks(dirRel, quiet) {
+    return davEnsure().then(function (cfg) {
+      if (cfg || quiet) return cfg;
+      return askDav('第一次使用书库：请填 WebDAV 账号（建议只读账号）');
+    }).then(function (cfg) {
+      if (!cfg) throw noAccountErr();
+      return propfind(cfg, dirRel).then(null, function (e) {
+        if (!e || e.status !== 401 || quiet) throw e;
+        return askDav('账号或密码不对（HTTP 401），请重新输入').then(function (c) {
+          if (!c) throw noAccountErr();
+          return listDirBooks(dirRel, quiet);
+        });
+      });
+    }).then(function (entries) { return cacheDir(dirRel, C.shelfSplit(entries)); });
+  }
+  /** 换书：打开同一个文件夹里的另一本。不动「返回」链接，也不碰书架（书架没开着） */
+  function openVolBook(rel) {
+    var token = ++launchSeq;
+    return openDavBook({ rel: rel, title: C.baseName(rel), dir: null }, token).then(function (ok) {
+      if (ok && token === launchSeq) stripLaunchHash();
+      return ok;
+    });
+  }
+
+  /* ---- 读书时换书：同一个文件夹里相邻的书 ---- */
+  function curDavRel() { return bookKey && pages.length && /^dav:/.test(bookKey) ? String(bookKey).slice(4) : null; }
+  function canOpenEntry(e) { return C.libOpenable(C.libClassify(e.ext)); }
+  /** 这本书所在文件夹的排序列表；缓存 5 分钟。#open= 打开的书第一次用到时才去列（quiet 时不弹账号框、失败 1 分钟内不重试） */
+  function siblingsFor(rel, quiet) {
+    var dir = C.libParentRel(rel), c = dirCache[dir];
+    if (c && Date.now() - c.at < 300000) return Promise.resolve(c.entries);
+    if (quiet && sibFail[dir] && Date.now() - sibFail[dir] < 60000) return Promise.reject(new Error('recently failed'));
+    if (sibFlight && sibFlight.dir === dir) return sibFlight.promise;
+    var pr = listDirBooks(dir, !!quiet);
+    var fl = sibFlight = { dir: dir, promise: pr };
+    function done() { if (sibFlight === fl) sibFlight = null; }
+    pr.then(done, function () { done(); sibFail[dir] = Date.now(); });
+    return pr;
+  }
+  function volState() {
+    var rel = curDavRel();
+    if (!rel) return null;
+    var c = dirCache[C.libParentRel(rel)];
+    if (!c) return { rel: rel, known: false };
+    return { rel: rel, known: true, next: C.nextBook(c.entries, rel, canOpenEntry), prev: C.prevBook(c.entries, rel, canOpenEntry) };
+  }
+  /** 读到最后一页了吗（多章节的书要在最后一章） */
+  function atBookEnd() {
+    if (!pages.length || index < 0) return false;
+    var last = pages.length - 1;
+    var seen = index >= last || (lastPair.length > 1 && lastPair.indexOf(pages[last]) >= 0);
+    return seen && (!chapters || chapterIndex >= chapters.length - 1);
+  }
+  function volRefresh() {
+    var st = volState(), chip = $('#volNext'), show = false;
+    document.body.classList.toggle('has-vol', !!st && davAvailable());
+    $('#btnVolPrev').disabled = !!(st && st.known && !st.prev);
+    $('#btnVolNext').disabled = !!(st && st.known && !st.next);
+    if (st && atBookEnd()) {
+      if (!st.known) siblingsFor(st.rel, true).then(volRefresh, function () { /* 列不出来就不提示，按钮仍可手动点 */ });
+      else if (st.next) { chip.textContent = '下一本：' + st.next.name + '  »'; show = true; }
+    }
+    chip.classList.toggle('show', show);
+  }
+  function volEndHint() {
+    var st = volState();
+    if (st && st.known && st.next) toast('已经是最后一页。按 N 或点「下一本」继续：' + st.next.name, 3500);
+  }
+  function volStep(step) {
+    var rel = curDavRel();
+    if (!rel) { toast('这本书不是从云端书库打开的，没有「上一本 / 下一本」'); return Promise.resolve(false); }
+    return siblingsFor(rel, false).then(function (list) {
+      if (curDavRel() !== rel) return false;                  // 等列表的时候已经换了书
+      volRefresh();
+      if (!list.some(function (e) { return e.rel === rel; })) { toast('文件夹里找不到当前这本书了（可能被改名 / 删除）'); return false; }
+      var t = step > 0 ? C.nextBook(list, rel, canOpenEntry) : C.prevBook(list, rel, canOpenEntry);
+      if (!t) { toast(step > 0 ? '已经是这个文件夹的最后一本' : '已经是这个文件夹的第一本'); return false; }
+      saveProgress();                                          // 当前这本的页码 / 方向先存好，回来能续上
+      toast((step > 0 ? '下一本：' : '上一本：') + t.name);
+      return openVolBook(t.rel);
+    }, function (e) {
+      if (e && e.stale) return false;
+      toast('读不了文件夹列表：' + ((e && e.message) || e)); return false;
+    });
+  }
+
   /* ================= 启动 ================= */
   applyModeClasses();
   syncZoomUI();
@@ -3545,6 +3730,9 @@
     location.assign(launchBack);
   });
   $('#startDav').addEventListener('click', function () { askDav(); });
+  $('#btnVolPrev').addEventListener('click', function () { volStep(-1); });
+  $('#btnVolNext').addEventListener('click', function () { volStep(1); });
+  $('#volNext').addEventListener('click', function () { volStep(1); });
   $('#startShelf').addEventListener('click', openShelf);
   $('#btnShelf').addEventListener('click', openShelf);
   $('#shelfReload').addEventListener('click', function () { resetCloudState(); loadShelf(shelfRel); });
@@ -3598,6 +3786,9 @@
     openShelf: openShelf, loadShelf: loadShelf, shelfState: function () { return { rel: shelfRel, data: shelfData }; },
     syncPush: syncPush, pullProgress: pullProgress, syncState: function () { return { off: syncOff, sent: syncSent }; },
     applyLaunchHash: applyLaunchHash, askDav: askDav, davEnsure: davEnsure, davStore: davStore, davForget: davForget,
+    volStep: volStep, openDavBook: openDavBook,
+    setDavPdfHook: function (fn) { openDavPdfHook = typeof fn === 'function' ? fn : null; volRefresh(); },
+    volCache: function () { return Object.keys(dirCache); },
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
       dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },
     openServerPath: openServerPath, openViaBackend: openViaBackend, openProg: openProgBegin,
