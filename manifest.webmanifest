@@ -1,0 +1,19 @@
+{
+  "name": "图片 / 漫画浏览器",
+  "short_name": "漫画浏览器",
+  "description": "从云端书库按需读取 zip / cbz / epub 漫画，支持双页、日漫右→左、断点续读",
+  "lang": "zh-CN",
+  "id": "/iv/",
+  "start_url": "/iv/",
+  "scope": "/iv/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "categories": ["entertainment", "books"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
