@@ -674,3 +674,15 @@ test('书架：parsePropfind / shelfSplit / 面包屑', () => {
   assert.deepEqual(C.shelfCrumbs('a/b'), [{ name: 'a', rel: 'a' }, { name: 'b', rel: 'a/b' }]);
   assert.deepEqual(C.shelfCrumbs(''), []);
 });
+
+test('relError：书架来的路径（trusted）允许「Re:Zero/…」，外来链接仍拒绝协议', () => {
+  assert.equal(C.relError('Re:Zero/v1.cbz', true), null);
+  assert.equal(C.relError('Vol1: Title.cbz', true), null);
+  assert.ok(C.relError('Re:Zero/v1.cbz'));
+  assert.ok(C.relError('javascript:alert(1)'));
+  assert.ok(C.relError('javascript:alert(1)', false));
+  assert.ok(C.relError('/abs', true));            // trusted 只放过协议检查，其余照旧
+  assert.ok(C.relError('a/../b.cbz', true));
+  assert.ok(C.relError('a\b.cbz', true));
+  assert.equal(C.davBookUrl('https://h', 'library', 'Re:Zero/v1.cbz'), 'https://h/library/Re%3AZero/v1.cbz');
+});

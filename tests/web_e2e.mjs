@@ -1126,6 +1126,7 @@ function check(name, ok, detail) {
           data: Buffer.concat([pngBytes(400, 600, ((i * 12) % 256).toString(16).padStart(2, '0') + '4488'), Buffer.alloc(200000)]) });
       }
       bookBufs['big/lazy.cbz'] = buildZip(bigFiles);
+      bookBufs['Re:Zero/v1.cbz'] = bookBufs['big/lazy.cbz'];   // 名字带冒号：书架要能列出并打开
       const iv = await startIvServer(bookBufs);
       const IVURL = iv.origin + '/iv/';
       const enc = encodeURIComponent;
@@ -1441,7 +1442,7 @@ function check(name, ok, detail) {
       await cdp.eval(`localStorage.removeItem('iv.shelf.dir.v1'); document.querySelector('#startShelf').click(); return 1;`);
       await waitFor(`${shelfOpenExpr} && document.querySelectorAll('#shelfList .shelf-row').length > 0`, 8000);
       const root = await rowsOf();
-      check('书库根：先文件夹后书，只列 epub / cbz / zip', root.length >= 4 && root[0].dir && root.filter((r) => r.dir).map((r) => r.t).join() === 'big,slow,小说' &&
+      check('书库根：先文件夹后书，只列 epub / cbz / zip', root.length >= 4 && root[0].dir && root.filter((r) => r.dir).map((r) => r.t).join() === 'big,Re:Zero,slow,小说' &&
         root.filter((r) => !r.dir).every((r) => /\.(epub|cbz|zip)$/i.test(r.t)), root.map((r) => (r.dir ? '[D]' : '') + r.t));
       const pf = iv.log.filter((e) => e.method === 'PROPFIND');
       check('PROPFIND：Depth 1、带 Authorization、只发 1 次', pf.length === 1 && pf[0].depth === '1' && pf[0].auth && pf[0].status === 207, pf);
@@ -1462,6 +1463,22 @@ function check(name, ok, detail) {
       await waitFor(`${shelfOpenExpr} && document.querySelector('#shelfList .shelf-row[data-book]')`, 8000);
       const shelfAgain = await rowsOf();
       check('再开书架：停在上次的目录，读过的书标出「读到第 N 页」', shelfAgain.length >= 1 && /读到第 3 页/.test(shelfAgain[0].meta), shelfAgain);
+      /* 名字带冒号的文件夹 / 书：书架能进、能打开 */
+      await cdp.eval(`document.querySelector('#shelfCrumbs button[data-rel=""]').click(); return 1;`);
+      await waitFor(`document.querySelector('#shelfList .shelf-row[data-dir="Re:Zero"]')`, 8000);
+      await cdp.eval(`document.querySelector('#shelfList .shelf-row[data-dir="Re:Zero"]').click(); return 1;`);
+      await waitFor(`document.querySelector('#shelfList .shelf-row[data-book="Re:Zero/v1.cbz"]')`, 8000);
+      await cdp.eval(`document.querySelector('#shelfList .shelf-row[data-book]').click(); return 1;`);
+      await waitFor(`window.__IV.state().total === 20 && window.__IV.state().bookKey === 'dav:Re:Zero/v1.cbz'`, 10000);
+      check('名字带冒号的书（Re:Zero/v1.cbz）能从书架打开', (await stateOf()).bookKey === 'dav:Re:Zero/v1.cbz', (await stateOf()).bookKey);
+      await cdp.eval(`document.querySelector('#btnShelf').click(); return 1;`);
+      await waitFor(`${shelfOpenExpr} && document.querySelector('#shelfCrumbs button')`, 8000);
+      const lastDir = await cdp.eval(`return localStorage.getItem('iv.shelf.dir.v1');`);
+      check('带冒号的目录也能被记住并在下次恢复（不会被打回根）', lastDir === 'Re:Zero' && (await cdp.eval(`return document.querySelectorAll('#shelfCrumbs button').length;`)) === 2, lastDir);
+      /* 书架开着时，空格 / 方向键不能翻后面的书；账号框要盖在书架上面 */
+      const idx0 = (await stateOf()).index;
+      await cdp.eval(`document.body.focus(); for (const k of [' ', 'ArrowRight', 'l']) document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true })); return 1;`);
+      check('书架开着时全局快捷键不生效（不翻页）', (await stateOf()).index === idx0, { idx0, now: (await stateOf()).index });
       await cdp.eval(`document.querySelector('#shelfCrumbs button[data-rel=""]').click(); return 1;`);
       await waitFor(`document.querySelector('#shelfList .shelf-row[data-dir="big"]')`, 8000);
       check('点面包屑「书库」回到根', (await rowsOf()).some((r) => r.dir && r.t === 'big'));
@@ -1469,6 +1486,8 @@ function check(name, ok, detail) {
       await cdp.eval(`document.querySelector('#shelfReload').click(); return 1;`);
       const sh401 = await waitFor(`${dlgOpen} && /401/.test(document.querySelector('#davMsg').textContent)`, 8000);
       check('书架读目录遇到 401 → 弹出账号框', !!sh401);
+      const onTop = await cdp.eval(`const r = document.querySelector('#davUser').getBoundingClientRect(); const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(el && el.closest('#dav'));`);
+      check('账号框盖在书架上面（用户看得到、点得到输入框）', onTop === true, onTop);
       iv.pass = 'pä ss';
       await cdp.eval(`document.querySelector('#davCancel').click(); return 1;`);
       const shMsg = await waitFor(`/401|没有有效/.test(document.querySelector('#shelfList').textContent) && document.querySelector('#shelfList').textContent`, 4000);

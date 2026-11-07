@@ -261,6 +261,7 @@
     backdrop-filter: blur(4px);
   }
   .modal.hidden { display: none; }
+  #dav { z-index: 75; }   /* 书架（同为 .modal，DOM 在后）读目录时要账号框：必须盖在书架上面，toast 是 80 */
   .modal-card {
     background: #1a1d24; border: 1px solid var(--border); border-radius: 14px;
     max-width: 640px; width: calc(100% - 40px); max-height: 82vh; overflow: auto;
@@ -1130,12 +1131,14 @@
   /* ---------------- 启动链接 #open=<相对路径>&src=dav&bid=…&dir=rtl|ltr&back=/reader/ ----------------
      来自别的页面（PyReader 网页版）的链接，一律当不可信输入：严格校验，不合格就拒绝。 */
   var CTRL_RE = /[\u0000-\u001f\u007f]/;
-  function relError(rel) {
+  /** trusted = 路径来自书架（服务器目录列表，逐段 encodeURIComponent 拼 URL）：「Re:Zero/…」这类名字合法；
+      启动链接（#open=）这种外来输入不传，仍然拒绝带协议的路径 */
+  function relError(rel, trusted) {
     if (!rel) return '缺少书的路径';
     if (rel.length > 1024) return '路径太长';
     if (CTRL_RE.test(rel) || rel.indexOf('\\') >= 0) return '路径含非法字符';
     if (rel.charAt(0) === '/') return '路径必须是相对路径';
-    if (/^[a-z][a-z0-9+.-]*:/i.test(rel)) return '路径不能带协议（如 http: / javascript:）';
+    if (!trusted && /^[a-z][a-z0-9+.-]*:/i.test(rel)) return '路径不能带协议（如 http: / javascript:）';
     var segs = rel.split('/');
     for (var i = 0; i < segs.length; i++) {
       if (segs[i] === '' || segs[i] === '.' || segs[i] === '..') return '路径含空段或 ./ ../';
@@ -2323,6 +2326,8 @@
       if (e.key === 'Escape') closeModals();
       return;
     }
+    /* 书架开着时，空格 / 方向键 / L 等不要去翻后面的书（Esc 照常关弹窗） */
+    if (e.key !== 'Escape' && !$('#shelf').classList.contains('hidden')) return;
     switch (e.key) {
       case 'ArrowRight': case 'PageDown': case ' ': e.preventDefault(); next(); break;
       case 'ArrowLeft': case 'PageUp': e.preventDefault(); prev(); break;
@@ -2362,12 +2367,13 @@
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
-  function closeModals() { MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
+  function closeModals() { shelfSeq++; MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
   function toggleModal(id, force) {
     var m = $('#' + id);
     var show = force === undefined ? m.classList.contains('hidden') : force;
     m.classList.toggle('hidden', !show);
     if (id === 'dav' && !show && davPending) davFinish(null);
+    if (id === 'shelf' && !show) shelfSeq++;            /* 关掉书架 = 作废还在飞的读目录，别再弹账号框 */
     if (id === 'jump' && show) setTimeout(function () { try { $('#jumpInput').focus(); $('#jumpInput').select(); } catch (e) {} }, 30);
   }
 
@@ -3163,21 +3169,24 @@
     return fetch(url, { method: 'PROPFIND', headers: h, credentials: 'omit', cache: 'no-store', signal: ctl ? ctl.signal : undefined,
       body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>' })
       .then(function (r) {
-        clearTimeout(t);
         if (r.status !== 207 && r.status !== 200) {
           var e = new Error(r.status === 404 ? '这个文件夹不存在（404）' : 'HTTP ' + r.status);
           e.status = r.status; throw e;
         }
-        return r.text();
-      }, function (e) { clearTimeout(t); throw (e && e.name === 'AbortError') ? new Error('连接超时') : e; })
-      .then(function (xml) { return C.parsePropfind(xml, new URL(url).pathname); });
+        return r.text();                               /* 超时计时器要一直跑到正文读完（signal 也管着读 body） */
+      })
+      .then(function (xml) {
+        clearTimeout(t);
+        if (!/<(?:[\w.-]+:)?multistatus\b/i.test(xml)) throw new Error('服务器返回的不是 WebDAV 目录（请检查 WebDAV 地址 / 书库文件夹）');
+        return C.parsePropfind(xml, new URL(url).pathname);
+      }, function (e) { clearTimeout(t); throw (e && e.name === 'AbortError') ? new Error('连接超时') : e; });
   }
   function openShelf() {
     if (BE.on || !/^https?:$/.test(location.protocol)) { toast('云端书架只在 /iv/ 页面（没连本地后端）可用'); return; }
     var last = ''; try { last = localStorage.getItem(LS_SHELF) || ''; } catch (e) { last = ''; }
     toggleModal('shelf', true);
     $('#shelfFilter').value = '';
-    loadShelf(C.relError(last) ? '' : last);
+    loadShelf(C.relError(last, true) ? '' : last);
   }
   function shelfMsg(html) { $('#shelfList').innerHTML = '<div class="shelf-empty">' + html + '</div>'; $('#shelfInfo').textContent = ''; }
   function loadShelf(rel) {
@@ -3186,6 +3195,7 @@
     renderCrumbs();
     shelfMsg('读取中…');
     return davEnsure().then(function (cfg) {
+      if (seq !== shelfSeq) return null;                /* 书架已经关了：不要再弹账号框 */
       return cfg || askDav('第一次使用云端书架：请填 WebDAV 账号（建议只读账号）');
     }).then(function (cfg) {
       if (seq !== shelfSeq) return;
@@ -3234,7 +3244,8 @@
       (shelfData.other ? ' · 另有 ' + shelfData.other + ' 个暂不支持的文件（rar / pdf 等）' : '');
   }
   function openShelfBook(rel) {
-    if (C.relError(rel)) { toast('路径不合法：' + C.relError(rel)); return; }
+    var bad = C.relError(rel, true);
+    if (bad) { toast('路径不合法：' + bad); return; }
     toggleModal('shelf', false);
     var token = ++launchSeq;
     setBack(null);
