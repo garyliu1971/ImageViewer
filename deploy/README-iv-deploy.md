@@ -161,6 +161,22 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
   - 页面连着本地后端（`web_backend.py`）时不处理 `#open=`（那里没有书库账号入口），只弹一条提示。
   - 链接里**绝不放账号密码**。
 
+## 7b. 跨设备续读（进度同步）
+
+每本云端书一个 JSON：`users/gary/iv-progress/<bookKey 的 14 位哈希>.json`（只含读到哪页 / 章节 / 方向 / 设备 / 毫秒时间戳 `at`，
+双页、去边等跟屏幕有关的设置不同步）。文件夹和 PyReader 的 `users/gary/progress/` 并列、**文件格式不同、互不读写**（PyReader 存的是文本百分比位置）。
+打开书时先 GET，云端 `at` 比本地新才采用；翻页 3 秒后 PUT，切走 / 关页时补写；目录不存在时逐层 MKCOL。
+**以时间戳为准，两台设备时钟差几分钟以上会判错新旧**（手机和电脑都开自动校时即可）。
+
+`iv-viewer` 是只读的，**写不了进度**，所以进度要用 PyReader 同步的那个 WebDAV 账号（gary，`/: *`），不用新建用户，Caddy 也不用改。
+代价：这个全权限账号会存进 /iv/ 所在浏览器的 IndexedDB（PyReader 网页版本来就存了同一个账号）；书库账号仍然是只读的 `iv-viewer`。
+
+- 手机 / 电脑上：「☁ 书库账号」→「跨设备续读」：进度文件夹默认就是 `users/gary/iv-progress`，进度账号填 gary 的用户名 / 密码。
+  进度文件夹留空 = 关闭同步；进度账号留空 = 用书库账号（只读 → 403，页面提示一次并记住，不再反复弹）。
+- 想收紧权限：给 SFTPGo 另建一个只对 `users/gary/iv-progress` 有写权限的账号，在这里填它即可。
+- 验证：`curl -u gary:… -X MKCOL $HOST/users/gary/iv-progress/` → 201（已存在是 405）；
+  `curl -u gary:… -X PUT --data '{}' $HOST/users/gary/iv-progress/x.json` → 201；再 DELETE 掉 `x.json`；`iv-viewer` 同样 PUT → 403/404。
+
 ## 8. 回滚 / 下线
 
 - 只回滚页面：见第 2 步。

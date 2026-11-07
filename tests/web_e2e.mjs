@@ -152,7 +152,7 @@ function startIvServer(books) {
   const html = fs.readFileSync(PAGE);
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').replace('__BUILD__', 'e2e');
   const manifest = fs.readFileSync(path.join(ROOT, 'manifest.webmanifest'));
-  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [], slow: {} };   // slow: 相对路径 -> 每个请求的延迟 ms（默认 15）
+  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [], slow: {}, prog: {}, progLog: [], progDir: false };   // slow: 相对路径 -> 每个请求的延迟 ms（默认 15）
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     const p = decodeURIComponent(u.pathname);
@@ -200,6 +200,27 @@ function startIvServer(books) {
           'Content-Type': 'application/octet-stream', 'Accept-Ranges': 'bytes' });
         res.end(body);
       }, S.slow[rel] || 15);
+      return;
+    }
+    /* /users/gary/iv-progress/：进度文件夹（和 PyReader 同一个同步用户目录）。writer 能写；viewer（只读账号）→ 403；其它 → 401。文件夹要先 MKCOL，否则 PUT 回 409（和 SFTPGo 一样） */
+    if (p === '/users' || p === '/users/gary' || p.startsWith('/users/gary/iv-progress')) {
+      const chunks = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        const ent = { method: req.method, path: u.pathname, auth: req.headers.authorization || '', status: 0, body: Buffer.concat(chunks).toString('utf8') };
+        S.progLog.push(ent);
+        const basic = (n, pw) => 'Basic ' + Buffer.from(n + ':' + pw, 'utf8').toString('base64');
+        const a = req.headers.authorization;
+        let code = 200, body = '';
+        if (a !== basic('writer', 'w pass') && a !== basic(S.user, S.pass)) code = 401;
+        else if (a === basic(S.user, S.pass) && req.method !== 'GET') code = 403;
+        else if (req.method === 'MKCOL') { if (p === '/users/gary/iv-progress') S.progDir = true; code = 201; }
+        else if (req.method === 'PUT') { if (!S.progDir) code = 409; else { S.prog[p] = ent.body; code = 201; } }
+        else if (req.method === 'GET') { if (S.prog[p] === undefined) code = 404; else body = S.prog[p]; }
+        else code = 405;
+        ent.status = code;
+        send(code, 'application/json', body);
+      });
       return;
     }
     send(404, 'text/plain', 'nf');
@@ -1317,6 +1338,78 @@ function check(name, ok, detail) {
       await cdp.eval(`document.querySelector('#davCancel').click(); return 1;`);
       check('取消 → 框收起、等待中的 Promise 结束', await cdp.eval(`return ${dlgOpen} === false && window.__IV.launchInfo().pending === false;`));
       iv.pass = 'pä ss';
+
+      /* ---- 8b) 跨设备续读：进度文件夹（MKCOL → PUT / GET）、新旧判断、没写权限、坏数据 ---- */
+      const SYNCKEY = 'dav:big/lazy.cbz';
+      /* 模拟「另一台设备」：账号还在（IndexedDB），本地进度清空，然后真的重新加载页面（只改 hash 不会重载） */
+      async function newDeviceOpen(rel) {
+        await fresh(IVURL);
+        await cdp.eval(`localStorage.removeItem('iv.books.v1'); return 1;`);
+        await fresh(IVURL + hashFor(rel));
+        await waitFor(`window.__IV.state().total === 20`, 10000);
+      }
+      iv.progLog.length = 0;
+      const cfgJs = (extra) => `await window.__IV.davStore(Object.assign({ base: '${iv.origin}', library: 'library', user: 'viewer', pass: 'pä ss' }, ${extra})); return 1;`;
+      await fresh(IVURL);
+      await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress', syncUser: 'writer', syncPass: 'w pass' }`));
+      await newDeviceOpen('big/lazy.cbz');
+      iv.progLog.length = 0;
+      await cdp.eval(`window.__IV.showPage(5); window.__IV.saveProgress(); return window.__IV.syncPush(false);`);
+      await waitFor(`window.__IV.syncState().sent[${JSON.stringify(SYNCKEY)}]`, 6000);
+      const pIdx = (await stateOf()).index;
+      const puts = iv.progLog.filter((e) => e.method === 'PUT' || e.method === 'MKCOL');
+      check('进度文件夹不存在 → 逐层 MKCOL（users / users/gary / users/gary/iv-progress）再 PUT', puts[0] && puts[0].status === 409 && puts.slice(1, 4).every((e) => e.method === 'MKCOL' && e.status === 201) && puts[3].path === '/users/gary/iv-progress' && puts[4] && puts[4].method === 'PUT' && puts[4].status === 201, puts.map((e) => e.method + e.status));
+      const wrote = Object.values(iv.prog).map((b) => JSON.parse(b))[0] || {};
+      check('写出去的 JSON：key / 页码 / 方向 / 设备，且不含双页 / 适应方式', wrote.key === SYNCKEY && wrote.index === pIdx && pIdx >= 1 && /^(rtl|ltr)$/.test(wrote.direction) && wrote.at > 1.7e12 && !('spread' in wrote) && !('fit' in wrote), wrote);
+      check('用的是进度账号（writer），不是只读的书库账号', puts[4].auth === 'Basic ' + Buffer.from('writer:w pass').toString('base64'), puts[4].auth);
+
+      // 另一台设备（本地没有记录）打开同一本书 → 接上云端的页码
+      await newDeviceOpen('big/lazy.cbz');
+      const pulled = await stateOf();
+      check('别的设备打开同一本书 → 从云端页码续读', pulled.index === pIdx, { want: pIdx, got: pulled.index });
+      const note = await waitFor(`/已接上/.test(document.querySelector('#toast').textContent) && document.querySelector('#toast').textContent`, 3000);
+      check('提示「已接上……的进度」', !!note, note);
+
+      // 云端比本地旧 → 不动本地
+      const key0 = Object.keys(iv.prog)[0];
+      iv.prog[key0] = JSON.stringify({ v: 1, key: SYNCKEY, at: 1000, index: 11, chapter: 0, total: 20, direction: 'ltr', title: 'old', dev: 'x' });
+      await cdp.eval(`window.__IV.showPage(3); window.__IV.saveProgress(); return 1;`);
+      await fresh(IVURL + hashFor('big/lazy.cbz'));
+      await waitFor(`window.__IV.state().total === 20`, 10000);
+      check('云端旧于本地 → 保持本地页码', (await stateOf()).index === 3, (await stateOf()).index);
+
+      // 坏数据（key 对不上 / 不是 JSON）→ 当没有，照常打开
+      for (const junk of [JSON.stringify({ v: 1, key: 'dav:other', at: 9e12, index: 15 }), 'not json {']) {
+        await fresh(IVURL);                  // 先离开上一本书（它离开时会补写进度），再放坏数据
+        iv.prog[key0] = junk;
+        await newDeviceOpen('big/lazy.cbz');
+        check('云端进度文件是坏的 / key 对不上 → 忽略，从第 1 页打开', (await stateOf()).index === 0, junk.slice(0, 20));
+      }
+
+      // 只有只读账号（没填进度账号）→ 403 → 提示一次并停用，不反复重试
+      await fresh(IVURL);
+      await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress' }`));
+      await fresh(IVURL + hashFor('big/lazy.cbz'));
+      await waitFor(`window.__IV.state().total === 20`, 10000);
+      const n0 = iv.progLog.length;
+      await cdp.eval(`window.__IV.showPage(7); window.__IV.saveProgress(); window.__IV.syncPush(false); return 1;`);
+      const denied = await waitFor(`window.__IV.syncState().off && document.querySelector('#toast').textContent`, 6000);
+      check('只读账号写进度 → 403 → 提示没有写权限并停用', /没有写权限/.test(denied || ''), denied);
+      await cdp.eval(`window.__IV.showPage(8); window.__IV.saveProgress(); window.__IV.syncPush(false); return 1;`);
+      await sleep(400);
+      check('停用之后不再发请求', iv.progLog.length - n0 === 1, iv.progLog.slice(n0).map((e) => e.method + e.status));
+
+      // 进度文件夹留空 = 关闭同步：不发任何请求
+      await fresh(IVURL);
+      await cdp.eval(cfgJs(`{ syncDir: '' }`));
+      await fresh(IVURL + hashFor('big/lazy.cbz'));
+      await waitFor(`window.__IV.state().total === 20`, 10000);
+      const n1 = iv.progLog.length;
+      await cdp.eval(`window.__IV.showPage(9); window.__IV.saveProgress(); window.__IV.syncPush(false); return 1;`);
+      await sleep(400);
+      check('进度文件夹留空 → 不同步（零请求）', iv.progLog.length === n1, iv.progLog.slice(n1));
+      await fresh(IVURL);
+      await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress' }`));
 
       /* ---- 9) 忘记此设备；返回键 ---- */
       await fresh(IVURL);

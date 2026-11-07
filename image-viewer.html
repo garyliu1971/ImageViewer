@@ -311,6 +311,8 @@
   body.has-back #btnBack { display: inline-flex; }
   body.has-dav #startDav { display: inline-flex; }
   #dav .dav-note { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 4px; }
+  #dav .dav-sync { margin-top: 12px; }
+  #dav .dav-sync summary { cursor: pointer; font-size: 13px; color: var(--muted); }
   #dav label { display: block; margin-top: 10px; font-size: 12px; color: var(--muted); }
   #dav input[type=text], #dav input[type=password] {
     display: block; width: 100%; margin-top: 4px; font: inherit; color: var(--text); background: #12151b;
@@ -473,7 +475,8 @@
       <tr><td>📦 压缩包 / 拖拽（需本地后端）</td><td>选或拖 <code>.rar</code> <code>.cbr</code> <code>.pdf</code>
         也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
       <tr><td>☁ 云端书库（部署在 <code>/iv/</code> 时）</td><td>打开 <code>/iv/#open=书的相对路径</code>，第一次填一个<b>只读</b> WebDAV 账号；
-        zip / cbz / epub 只按需取用到的页（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。</td></tr>
+        zip / cbz / epub 只按需取用到的页（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。
+        账号框里的「跨设备续读」可把读到哪页写到 WebDAV 的进度文件夹，换设备打开同一本书自动接上。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
@@ -516,6 +519,14 @@
     <label>书库文件夹<input type="text" id="davLib" autocomplete="off" spellcheck="false"></label>
     <label>用户名<input type="text" id="davUser" autocomplete="username" spellcheck="false"></label>
     <label>密码<input type="password" id="davPass" autocomplete="current-password"></label>
+    <details class="dav-sync">
+      <summary>跨设备续读（进度同步）</summary>
+      <p class="dav-note">读到哪一页会写到 WebDAV 上的进度文件夹，换一台设备打开同一本书自动接上。书库账号是只读的，
+        写进度要<b>另一个只能写进度文件夹的账号</b>（留空 = 用上面的账号，没有写权限就同步不了）。进度文件夹留空 = 关闭同步。</p>
+      <label>进度文件夹<input type="text" id="davSyncDir" autocomplete="off" spellcheck="false" placeholder="users/gary/iv-progress"></label>
+      <label>进度账号（可选）<input type="text" id="davSyncUser" autocomplete="off" spellcheck="false"></label>
+      <label>进度密码<input type="password" id="davSyncPass" autocomplete="off"></label>
+    </details>
     <p id="davMsg"></p>
     <div class="modal-actions">
       <button class="btn" id="davForget" title="删除这台设备上保存的账号" style="margin-right:auto">忘记此设备</button>
@@ -1138,7 +1149,53 @@
     return String(base).replace(/\/+$/, '') + '/' + segs.map(encodeURIComponent).join('/');
   }
 
+  /* ---------------- 云端进度同步：每本书一个 JSON，放在 WebDAV 的进度文件夹里，按 at（毫秒时间戳）取新的 ---------------- */
+  /** 53 位字符串哈希（cyrb53），同一个 bookKey 在所有设备上得到同一个文件名 */
+  function hash53(str) {
+    var h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (var i = 0; i < str.length; i++) {
+      var ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    var s = (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+    return ('00000000000000' + s).slice(-14);
+  }
+  function progressDirUrl(base, dir) { return davBookUrl(base, dir, '').replace(/\/+$/, ''); }
+  /** 进度文件夹每一层的 URL（users → users/gary → users/gary/iv-progress），逐层 MKCOL 用 */
+  function progressDirChain(base, dir) {
+    var segs = String(dir).split('/').filter(Boolean), out = [];
+    for (var i = 1; i <= segs.length; i++) out.push(progressDirUrl(base, segs.slice(0, i).join('/')));
+    return out;
+  }
+  function progressUrl(base, dir, key) { return progressDirUrl(base, dir) + '/' + hash53(String(key)) + '.json'; }
+  /** 云端进度 JSON 是外来输入：只认字段齐全、key 对得上的，数值一律夹紧；不合格返回 null */
+  function normalizeProgress(raw, key) {
+    if (!raw || typeof raw !== 'object' || raw.key !== key) return null;
+    function num(v, max) { return typeof v === 'number' && isFinite(v) && v >= 0 ? Math.min(Math.floor(v), max) : null; }
+    var at = num(raw.at, 8.64e15), index = num(raw.index, 1e6);
+    if (!at || index === null) return null;
+    return {
+      key: key, at: at, index: index, chapter: num(raw.chapter, 1e6) || 0, total: num(raw.total, 1e6) || 0,
+      direction: raw.direction === 'rtl' || raw.direction === 'ltr' ? raw.direction : null,
+      title: typeof raw.title === 'string' ? raw.title.slice(0, 200) : '',
+      dev: typeof raw.dev === 'string' ? raw.dev.slice(0, 20) : ''
+    };
+  }
+  /** 只同步「读到哪」和方向；双页 / 去边 / 适应方式跟设备屏幕有关，各设备自己记 */
+  function toRemoteProgress(rec, key, dev) {
+    return { v: 1, key: key, at: Math.floor(rec.at), index: rec.index | 0, chapter: rec.chapter | 0,
+      total: rec.total | 0, direction: rec.direction === 'rtl' ? 'rtl' : 'ltr', title: String(rec.title || '').slice(0, 200),
+      dev: String(dev || '').slice(0, 20) };
+  }
+  /** 云端比本地新才采用（相等 = 自己刚写的，不算） */
+  function remoteIsNewer(remote, local) { return !!remote && remote.at > ((local && local.at) || 0); }
+
   global.IVCore = {
+    hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
+    toRemoteProgress: toRemoteProgress, remoteIsNewer: remoteIsNewer,
     basicAuth: basicAuth, UrlRangeSource: UrlRangeSource, parseLaunchHash: parseLaunchHash,
     relError: relError, backOk: backOk, normalizeDavBase: normalizeDavBase, davBookUrl: davBookUrl,
     dirOf: dirOf, epubResolve: epubResolve, epubOpfPath: epubOpfPath, epubParseOpf: epubParseOpf,
@@ -1321,6 +1378,7 @@
     var keys = Object.keys(books);
     if (keys.length > 200) keys.slice(0, keys.length - 200).forEach(function (k) { delete books[k]; });
     lsSet(LS_BOOKS, books);                       /* 本地先留一份，后端挂了也不丢 */
+    if (/^dav:/.test(bookKey)) syncPushSoon();
     if (BE.on) {
       apiJson('/api/progress', null, 'PUT', { key: bookKey, record: rec })['catch'](function (e) {
         toast('进度写回后端失败：' + ((e && e.message) || e));
@@ -2827,6 +2885,81 @@
   }
   function davAuthHeader() { return davCfg && davCfg.user ? C.basicAuth(davCfg.user, davCfg.pass || '') : null; }
 
+  /* ================= 云端进度同步（云端的书：dav:<相对路径>） =================
+     每本书一个 <进度文件夹>/<hash>.json。打开时拉一次（云端更新才采用），翻页后 3 秒无动作就写上去，切走 / 关页时补写。
+     书库账号是只读的，所以写进度可以另填一个有写权限、只管进度文件夹的账号（不填就用书库账号，没写权限会提示一次后停用）。
+     同步只是锦上添花：任何失败都不挡开书、不挡翻页。 */
+  /* 放在 PyReader 同一个同步用户目录下，和它的 progress/ 并列（文件格式不同，不互相读写） */
+  var DEFAULT_SYNC_DIR = 'users/gary/iv-progress';
+  var syncOff = false, syncTimer = null, syncSent = {}, LS_SYNC_DENIED = 'iv.sync.denied.v1';
+  /** 同一个账号 + 文件夹被拒过写权限就记住，别每次打开页面都弹一遍；换了账号 / 文件夹自然不再匹配 */
+  function syncId(cfg) { return (cfg.syncUser || cfg.user || '') + '@' + syncDir(cfg); }
+  function syncDenied(cfg) { return syncOff || lsGet(LS_SYNC_DENIED, '') === syncId(cfg); }
+  function syncDir(cfg) { return !cfg || cfg.syncDir === '' ? null : (cfg.syncDir == null ? DEFAULT_SYNC_DIR : cfg.syncDir); }
+  function syncAuth(cfg) {
+    if (cfg.syncUser) return C.basicAuth(cfg.syncUser, cfg.syncPass || '');
+    return cfg.user ? C.basicAuth(cfg.user, cfg.pass || '') : null;
+  }
+  function syncDevice() { try { return matchMedia('(pointer: coarse)').matches ? '手机/平板' : '电脑'; } catch (e) { return ''; } }
+  function syncReq(cfg, method, url, body, keepalive) {
+    var h = {}, a = syncAuth(cfg), ctl = null, t = 0;
+    if (a) h['Authorization'] = a;
+    if (body != null) h['Content-Type'] = 'application/json';
+    if (!keepalive && typeof AbortController !== 'undefined') { ctl = new AbortController(); t = setTimeout(function () { ctl.abort(); }, 4000); }
+    return fetch(url, { method: method, headers: h, body: body == null ? undefined : body, cache: 'no-store', credentials: 'omit',
+      signal: ctl ? ctl.signal : undefined, keepalive: !!keepalive }).then(function (r) { clearTimeout(t); return r; },
+      function (e) { clearTimeout(t); throw e; });
+  }
+  function pullProgress(key) {
+    return davEnsure().then(function (cfg) {
+      if (!cfg || syncDir(cfg) === null) return null;
+      return syncReq(cfg, 'GET', C.progressUrl(cfg.base, syncDir(cfg), key)).then(function (r) {
+        if (!r.ok) return null;                         /* 404 = 这本书还没有云端进度 */
+        return r.json().then(function (raw) { return C.normalizeProgress(raw, key); });
+      });
+    }).then(null, function () { return null; });
+  }
+  /** 云端更新 → 写进本地记录（只动读到哪 + 方向），随后 openZipUrl/loadList 照常从 books[key] 续读 */
+  function applyRemoteProgress(key, remote) {
+    var rec = books[key] || {};
+    rec.index = remote.index; rec.chapter = remote.chapter; rec.total = remote.total || rec.total;
+    if (remote.direction) rec.direction = remote.direction;
+    if (remote.title) rec.title = remote.title;
+    rec.at = remote.at;
+    books[key] = rec;
+    lsSet(LS_BOOKS, books);
+    syncSent[key] = remote.at;                          /* 刚拉下来的，不用再写回去 */
+  }
+  function syncPushSoon() {
+    if (syncOff || !davCfg || syncDir(davCfg) === null || syncDenied(davCfg)) return;
+    clearTimeout(syncTimer); syncTimer = setTimeout(function () { syncPush(false); }, 3000);
+  }
+  function syncPush(keepalive) {
+    clearTimeout(syncTimer); syncTimer = null;
+    var cfg = davCfg, key = bookKey, rec = key ? books[key] : null;
+    if (!cfg || syncDir(cfg) === null || syncDenied(cfg) || !rec || !rec.at || !/^dav:/.test(key) || syncSent[key] === rec.at) return;
+    var at = rec.at, url = C.progressUrl(cfg.base, syncDir(cfg), key);
+    var body = JSON.stringify(C.toRemoteProgress(rec, key, syncDevice()));
+    function put() { return syncReq(cfg, 'PUT', url, body, keepalive); }
+    put().then(function (r) {
+      /* 进度文件夹还不存在 → 建一次再写（SFTPGo 对缺父目录的 PUT 回 409 / 404） */
+      if ((r.status === 409 || r.status === 404) && !keepalive) {
+        var chain = C.progressDirChain(cfg.base, syncDir(cfg));
+        return chain.reduce(function (p, u) { return p.then(function () { return syncReq(cfg, 'MKCOL', u); }); }, Promise.resolve()).then(put);
+      }
+      return r;
+    }).then(function (r) {
+      if (r.ok) { syncSent[key] = at; return; }
+      if (r.status === 401 || r.status === 403) {
+        syncOff = true; lsSet(LS_SYNC_DENIED, syncId(cfg));
+        toast('进度没能同步到云端：这个账号没有写权限。请在「☁ 书库账号」里填一个能写进度文件夹的账号');
+      }
+    }).then(null, function () { /* 网络问题：下次翻页再试 */ });
+  }
+  function syncFlush(force) { if (force || document.visibilityState === 'hidden') { saveProgress(); syncPush(true); } }
+  document.addEventListener('visibilitychange', function () { syncFlush(false); });
+  window.addEventListener('pagehide', function () { syncFlush(true); });
+
   /** 弹出账号框。保存 -> resolve(cfg)；取消 / Esc / 点遮罩 -> resolve(null)。已经开着就复用同一个 Promise */
   function askDav(msg) {
     if (davPending) { if (msg) $('#davMsg').textContent = msg; return davPending.promise; }
@@ -2837,6 +2970,8 @@
       var cfg = c || { base: location.origin, library: 'library', user: '', pass: '' };
       $('#davBase').value = cfg.base; $('#davLib').value = cfg.library;
       $('#davUser').value = cfg.user || ''; $('#davPass').value = cfg.pass || '';
+      $('#davSyncDir').value = cfg.syncDir == null ? DEFAULT_SYNC_DIR : cfg.syncDir;
+      $('#davSyncUser').value = cfg.syncUser || ''; $('#davSyncPass').value = cfg.syncPass || '';
       $('#davMsg').textContent = msg || '';
       if (davPending === p) {
         toggleModal('dav', true);
@@ -2856,7 +2991,12 @@
     if (base === null) { $('#davMsg').textContent = 'WebDAV 地址只能填本站内的路径（例如 /），不能填别的网站'; return; }
     var lib = $('#davLib').value.trim().replace(/^\/+|\/+$/g, '');
     if (lib && C.relError(lib)) { $('#davMsg').textContent = '书库文件夹不合法：' + C.relError(lib); return; }
-    var cfg = { base: base, library: lib, user: $('#davUser').value.trim(), pass: $('#davPass').value };
+    var sdir = $('#davSyncDir').value.trim().replace(/^\/+|\/+$/g, '');
+    if (sdir && C.relError(sdir)) { $('#davMsg').textContent = '进度文件夹不合法：' + C.relError(sdir); return; }
+    var cfg = { base: base, library: lib, user: $('#davUser').value.trim(), pass: $('#davPass').value,
+      syncDir: sdir, syncUser: $('#davSyncUser').value.trim(), syncPass: $('#davSyncPass').value };
+    try { localStorage.removeItem(LS_SYNC_DENIED); } catch (e) {}
+    syncOff = false;                                    /* 改了账号 / 文件夹，再给同步一次机会 */
     davStore(cfg).then(function (saved) {
       if (!saved) toast('这个浏览器不让保存账号，只在本次打开期间有效');
       davFinish(cfg);
@@ -2882,12 +3022,23 @@
     }).then(function (cfg) {
       if (stale()) return false;
       if (!cfg) { toast('没有书库账号，无法打开云端的书'); return false; }
-      var opening = true;
-      return openZipUrl(C.davBookUrl(cfg.base, cfg.library, p.rel), {
-        title: p.title, key: 'dav:' + p.rel, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale,
-        /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
-        onAuthFail: function () { if (!opening && !stale()) askDav('账号或密码不对（HTTP 401），请重新输入'); }
-      }).then(function (ok) { opening = false; return ok; }, function (e) {
+      var opening = true, key = 'dav:' + p.rel, from = null;
+      /* 先问云端读到哪了：比本地新就改写本地记录，下面开书时照常续读（最多等 4 秒，失败当没有） */
+      return pullProgress(key).then(function (remote) {
+        if (remote && C.remoteIsNewer(remote, books[key])) { applyRemoteProgress(key, remote); from = remote; }
+        if (stale()) return false;
+        return openZipUrl(C.davBookUrl(cfg.base, cfg.library, p.rel), {
+          title: p.title, key: key, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale,
+          /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
+          onAuthFail: function () { if (!opening && !stale()) askDav('账号或密码不对（HTTP 401），请重新输入'); }
+        });
+      }).then(function (ok) {
+        opening = false;
+        if (ok && from && !stale()) setTimeout(function () {
+          toast('已接上' + (from.dev ? '「' + from.dev + '」' : '另一台设备') + '的进度：第 ' + (from.index + 1) + ' 页');
+        }, 700);
+        return ok;
+      }, function (e) {
         opening = false;
         if (stale()) return false;                 // 过期的链接：失败也不打扰用户
         if (e && e.status === 401) {
@@ -2969,6 +3120,7 @@
   /* 测试钩子（不影响正常使用） */
   window.__IV = {
     openItems: openItems, openZipFile: openZipFile, openZipSource: openZipSource, openZipUrl: openZipUrl, scanDir: scanDir,
+    syncPush: syncPush, pullProgress: pullProgress, syncState: function () { return { off: syncOff, sent: syncSent }; },
     applyLaunchHash: applyLaunchHash, askDav: askDav, davEnsure: davEnsure, davStore: davStore, davForget: davForget,
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
       dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },

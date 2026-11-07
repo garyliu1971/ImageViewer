@@ -601,3 +601,38 @@ test('normalizeDavBase / davBookUrl', () => {
   assert.equal(C.davBookUrl(o + '/dav', '/lib/sub/', 'x.cbz'), o + '/dav/lib/sub/x.cbz');
   assert.equal(C.davBookUrl(o, '', 'x.cbz'), o + '/x.cbz');
 });
+
+test('云端进度：文件名哈希 / URL / 校验 / 新旧判断', () => {
+  const o = 'https://h.example';
+  const h = C.hash53('dav:小说/a.epub');
+  assert.match(h, /^[0-9a-f]{14}$/);
+  assert.equal(C.hash53('dav:小说/a.epub'), h);                 // 各设备同一个 key → 同一个文件
+  assert.notEqual(C.hash53('dav:小说/b.epub'), h);
+  assert.equal(C.progressUrl(o, 'iv-progress', 'dav:x'), o + '/iv-progress/' + C.hash53('dav:x') + '.json');
+  assert.equal(C.progressDirUrl(o + '/dav', '/iv-progress/'), o + '/dav/iv-progress');
+
+  const key = 'dav:a.cbz';
+  const good = { v: 1, key, at: 1760000000000, index: 12, chapter: 2, total: 40, direction: 'rtl', title: 'T', dev: '手机/平板' };
+  assert.deepEqual(C.normalizeProgress(good, key), { key, at: good.at, index: 12, chapter: 2, total: 40, direction: 'rtl', title: 'T', dev: '手机/平板' });
+  assert.equal(C.normalizeProgress(good, 'dav:other'), null);     // key 对不上（哈希碰撞 / 被换文件）
+  for (const bad of [null, 'x', [], {}, { key }, { key, at: 1, index: -1 }, { key, at: 'a', index: 1 }, { key, at: 0, index: 1 }, { key, at: 1, index: NaN }]) {
+    assert.equal(C.normalizeProgress(bad, key), null, JSON.stringify(bad));
+  }
+  const odd = C.normalizeProgress({ key, at: 5, index: 1e12, chapter: 'x', direction: 'up', title: 9 }, key);
+  assert.equal(odd.index, 1e6); assert.equal(odd.chapter, 0); assert.equal(odd.direction, null); assert.equal(odd.title, '');
+
+  const rec = { index: 7, chapter: 1, total: 30, direction: 'ltr', title: 'T', at: 1760000000123, spread: true, fit: 'width' };
+  const out = C.toRemoteProgress(rec, key, '电脑');
+  assert.equal(out.at, 1760000000123);                           // 毫秒时间戳不能被截成 32 位
+  assert.deepEqual(Object.keys(out).sort(), ['at', 'chapter', 'dev', 'direction', 'index', 'key', 'title', 'total', 'v']);   // 双页 / 适应方式不同步
+  assert.equal(C.remoteIsNewer({ at: 10 }, { at: 9 }), true);
+  assert.equal(C.remoteIsNewer({ at: 10 }, { at: 10 }), false);
+  assert.equal(C.remoteIsNewer({ at: 10 }, null), true);
+  assert.equal(C.remoteIsNewer(null, { at: 1 }), false);
+});
+
+test('进度文件夹逐层 MKCOL 的 URL 链', () => {
+  const o = 'https://h.example';
+  assert.deepEqual(C.progressDirChain(o, 'users/gary/iv-progress'), [o + '/users', o + '/users/gary', o + '/users/gary/iv-progress']);
+  assert.deepEqual(C.progressDirChain(o, '/iv-progress/'), [o + '/iv-progress']);
+});
