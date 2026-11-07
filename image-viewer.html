@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>图片 / 漫画浏览器</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <style>
   :root {
     --bg: #0f1115;
@@ -303,6 +306,18 @@
   #backendTag { display: none; font-size: 11px; color: var(--muted); }
   body.has-backend #backendTag { display: inline; }
 
+  /* ---------- 云端书库账号 / 返回（只在 http(s) 且无本地后端时出现）---------- */
+  #btnBack, #startDav { display: none; }
+  body.has-back #btnBack { display: inline-flex; }
+  body.has-dav #startDav { display: inline-flex; }
+  #dav .dav-note { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 4px; }
+  #dav label { display: block; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  #dav input[type=text], #dav input[type=password] {
+    display: block; width: 100%; margin-top: 4px; font: inherit; color: var(--text); background: #12151b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; outline: none;
+  }
+  #davMsg { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff9d5c; }
+
   /* ---------- 提示 ---------- */
   #toast {
     position: fixed; left: 50%; bottom: 134px; transform: translateX(-50%);
@@ -335,6 +350,7 @@
 
 <div id="toolbar">
   <div class="toolbar-group">
+    <button class="btn" id="btnBack" title="回到打开这本书的页面">← 返回</button>
     <button class="btn primary" id="btnFolder" title="打开文件夹（子目录自动识别为章节）">📂 文件夹</button>
     <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 图片</button>
     <button class="btn" id="btnZip" title="打开压缩包 zip / cbz（连上本地后端后也支持 rar / cbr）">📦 压缩包</button>
@@ -411,6 +427,7 @@
       <button class="btn primary" id="startFolder">📂 打开文件夹</button>
       <button class="btn" id="startFiles">🖼 打开图片</button>
       <button class="btn" id="startZip">📦 打开压缩包</button>
+      <button class="btn" id="startDav" title="云端书库（WebDAV）账号">☁ 书库账号</button>
     </div>
     <p class="start-resume" id="resumeHint"></p>
     <p class="start-hint">
@@ -419,7 +436,7 @@
       <kbd>T</kbd> 缩略图 · <kbd>F</kbd> 全屏 · <kbd>I</kbd> 详情 · <kbd>?</kbd> 帮助
     </p>
     <p class="start-note">
-      纯本地单文件，不联网、不上传。<br>
+      纯本地单文件，不联网、不上传（只有部署成 /iv/ 页面、并填了「☁ 书库账号」时，才会向<b>你自己的</b> WebDAV 发只读的分段请求）。<br>
       rar·cbr / PDF 需连本地后端（<code>python web_backend.py</code> 或双击
       <code>启动网页版.bat</code>）；视频播放 / 实时字幕 / tif / 网盘 / 投屏
       仍需桌面版 <code>图片漫画浏览器.exe</code>（或 <code>python image_viewer.py</code>）。
@@ -455,6 +472,8 @@
         PDF 走 PyMuPDF 按页渲染，进度与桌面版共用 <code>image_viewer.json</code>。</td></tr>
       <tr><td>📦 压缩包 / 拖拽（需本地后端）</td><td>选或拖 <code>.rar</code> <code>.cbr</code> <code>.pdf</code>
         也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
+      <tr><td>☁ 云端书库（部署在 <code>/iv/</code> 时）</td><td>打开 <code>/iv/#open=书的相对路径</code>，第一次填一个<b>只读</b> WebDAV 账号；
+        zip / cbz / epub 只按需取用到的页（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
@@ -484,6 +503,25 @@
     <button class="modal-close" data-close="detail">✕</button>
     <h2>详细信息</h2>
     <table id="detailTable"></table>
+  </div>
+</div>
+
+<div id="dav" class="modal hidden">
+  <div class="modal-card" style="max-width:460px">
+    <button class="modal-close" id="davClose">✕</button>
+    <h2>云端书库账号</h2>
+    <p class="dav-note">用来从本站同源的 WebDAV 读取书库里的 zip / cbz / epub（只发 Range 分段请求，不整本下载）。
+      请填<b>只读</b>账号。账号只保存在这台设备的浏览器里，不会写进网址。</p>
+    <label>WebDAV 地址（本站内的路径）<input type="text" id="davBase" autocomplete="off" spellcheck="false"></label>
+    <label>书库文件夹<input type="text" id="davLib" autocomplete="off" spellcheck="false"></label>
+    <label>用户名<input type="text" id="davUser" autocomplete="username" spellcheck="false"></label>
+    <label>密码<input type="password" id="davPass" autocomplete="current-password"></label>
+    <p id="davMsg"></p>
+    <div class="modal-actions">
+      <button class="btn" id="davForget" title="删除这台设备上保存的账号" style="margin-right:auto">忘记此设备</button>
+      <button class="btn" id="davCancel">取消</button>
+      <button class="btn primary" id="davSave">保存</button>
+    </div>
   </div>
 </div>
 
@@ -893,7 +931,209 @@
     return out;
   }
 
+  /* ---------------- 远程 zip / epub：HTTP Range 分段读取（fetch，Node 18+ 也能跑，可单测）----------------
+     只实现 ZipReader 要的 {size, read(offset, len)}：每次读都是一次 Range 请求，必须拿到 206。
+     服务器回 200（忽略了 Range）就直接报错并中断响应 —— 绝不悄悄把整本几十 MB 下下来。 */
+  function httpError(msg, status, code) {
+    var e = new Error(msg); e.status = status; e.code = code; return e;
+  }
+  /** Authorization 头只放 fetch headers，绝不进 URL / hash。user 或 pass 含非 latin1 字符也行（按 UTF-8 编码）。 */
+  function basicAuth(user, pass) {
+    var bytes = new TextEncoder().encode(String(user) + ':' + String(pass)), s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return 'Basic ' + btoa(s);
+  }
+  /**
+   * opts: authHeader（字符串或返回字符串的函数，每次请求现取，所以重新输入密码后立刻生效）、
+   *       fetch（测试注入）、maxParallel（默认 4）、onAuthFail（遇 401 时回调，用于重新弹出账号框）
+   */
+  function UrlRangeSource(url, opts) {
+    opts = opts || {};
+    this.url = url;
+    this.authHeader = opts.authHeader || null;
+    this.fetchFn = opts.fetch || function (u, i) { return fetch(u, i); };
+    this.maxParallel = opts.maxParallel || 4;
+    this.onAuthFail = opts.onAuthFail || null;
+    this.size = 0;
+    this._active = 0; this._queue = [];
+    this._tail = null;       // 文件尾部那一块（ZipReader.open 先读它）：中央目录通常就在里面，不再单独请求
+    this.requests = 0;       // 统计：发出过多少个 HTTP 请求（测试 / 排错用）
+  }
+  UrlRangeSource.prototype._headers = function (range) {
+    var h = {}, a = typeof this.authHeader === 'function' ? this.authHeader() : this.authHeader;
+    if (a) h['Authorization'] = a;
+    if (range) h['Range'] = range;
+    return h;
+  };
+  UrlRangeSource.prototype._req = function (method, range) {
+    this.requests++;
+    return this.fetchFn(this.url, { method: method, headers: this._headers(range),
+      credentials: 'omit', cache: 'no-store' });
+  };
+  function dropBody(res) {
+    try { if (res.body && res.body.cancel) return Promise.resolve(res.body.cancel()).then(null, function () {}); } catch (e) { /* 忽略 */ }
+    return Promise.resolve();
+  }
+  /** 401 / 403 / 404 / 其它 4xx·5xx 统一成带 status 的错误；401 另外触发 onAuthFail */
+  UrlRangeSource.prototype._fail = function (res) {
+    var st = res.status;
+    var err = st === 401 ? httpError('账号或密码不对（HTTP 401）', 401, 'auth')
+      : st === 403 ? httpError('没有读取权限（HTTP 403）', 403, 'forbidden')
+      : st === 404 ? httpError('云端找不到这本书（HTTP 404）', 404, 'notfound')
+      : httpError('读取失败（HTTP ' + st + '）', st, 'http');
+    if (st === 401 && this.onAuthFail) { try { this.onAuthFail(err); } catch (e) { /* 回调出错不影响主流程 */ } }
+    return dropBody(res).then(function () { throw err; });
+  };
+  UrlRangeSource.prototype._noRange = function (res) {
+    return dropBody(res).then(function () {
+      throw httpError('server ignores Range（服务器忽略了 Range 头，返回了整个文件）：已中止，没有下载整个文件', res.status, 'norange');
+    });
+  };
+  /** 先用 Range: bytes=0-0 从 Content-Range 取总大小；取不到（没有 / 是 * ）再 HEAD 取 Content-Length */
+  UrlRangeSource.prototype.init = function () {
+    var self = this;
+    function head() {
+      return self._req('HEAD', null).then(function (res) {
+        if (res.status === 401 || res.status === 403 || res.status === 404) return self._fail(res);
+        var n = parseInt(res.headers.get('content-length') || '', 10);
+        if (!res.ok || !(n > 0)) throw httpError('取不到文件大小（HTTP ' + res.status + '）', res.status, 'size');
+        self.size = n;
+        return self;
+      });
+    }
+    return this._req('GET', 'bytes=0-0').then(function (res) {
+      if (res.status === 401 || res.status === 403 || res.status === 404) return self._fail(res);
+      if (res.status === 200) return self._noRange(res);
+      if (res.status === 206) {
+        var m = /bytes\s+\d+-\d+\/(\d+)/i.exec(res.headers.get('content-range') || '');
+        return res.arrayBuffer().then(function () {
+          if (!m) return head();
+          self.size = parseInt(m[1], 10);
+          return self;
+        });
+      }
+      return dropBody(res).then(head);          // 416 / 405 等：退回 HEAD
+    });
+  };
+  UrlRangeSource.prototype._run = function (task) {
+    var self = this;
+    return new Promise(function (resolve, reject) {
+      self._queue.push({ task: task, resolve: resolve, reject: reject });
+      self._pump();
+    });
+  };
+  UrlRangeSource.prototype._pump = function () {
+    var self = this;
+    while (this._active < this.maxParallel && this._queue.length) {
+      (function (job) {
+        self._active++;
+        Promise.resolve().then(job.task).then(job.resolve, job.reject).then(function () {
+          self._active--; self._pump();
+        });
+      })(this._queue.shift());
+    }
+  };
+  UrlRangeSource.prototype._readOnce = function (off, len) {
+    var self = this;
+    return this._req('GET', 'bytes=' + off + '-' + (off + len - 1)).then(function (res) {
+      if (res.status === 200) return self._noRange(res);
+      if (res.status !== 206) return self._fail(res);
+      var m = /bytes\s+(\d+)-(\d+)\//i.exec(res.headers.get('content-range') || '');
+      if (m && parseInt(m[1], 10) !== off) {
+        return dropBody(res).then(function () { throw httpError('服务器返回了错位的分段（Content-Range ' + m[1] + ' ≠ ' + off + '）', 206, 'range'); });
+      }
+      return res.arrayBuffer().then(function (ab) {
+        if (ab.byteLength !== len) throw httpError('分段长度不对：要 ' + len + ' 字节，收到 ' + ab.byteLength, 206, 'short');
+        return new Uint8Array(ab);
+      });
+    });
+  };
+  UrlRangeSource.prototype.read = function (off, len) {
+    var self = this;
+    if (off < 0) return Promise.reject(httpError('读取位置为负', 0, 'arg'));
+    len = Math.min(len, this.size - off);
+    if (!(len > 0)) return Promise.resolve(new Uint8Array(0));
+    var t = this._tail;
+    if (t && off >= t.off && off + len <= t.off + t.buf.length) {
+      return Promise.resolve(t.buf.subarray(off - t.off, off - t.off + len));
+    }
+    return this._run(function () {
+      function attempt(n) {          // 网络抖动 / 5xx 重试一次；鉴权、Range 被忽略这类确定性错误不重试
+        return self._readOnce(off, len).then(null, function (e) {
+          var transient = !e.code || (e.code === 'http' && e.status >= 500);
+          if (transient && n < 1) return attempt(n + 1);
+          throw e;
+        });
+      }
+      return attempt(0);
+    }).then(function (buf) {
+      if (off + len === self.size && len <= 131072) self._tail = { off: off, buf: buf };
+      return buf;
+    });
+  };
+
+  /* ---------------- 启动链接 #open=<相对路径>&src=dav&bid=…&dir=rtl|ltr&back=/reader/ ----------------
+     来自别的页面（PyReader 网页版）的链接，一律当不可信输入：严格校验，不合格就拒绝。 */
+  var CTRL_RE = /[\u0000-\u001f\u007f]/;
+  function relError(rel) {
+    if (!rel) return '缺少书的路径';
+    if (rel.length > 1024) return '路径太长';
+    if (CTRL_RE.test(rel) || rel.indexOf('\\') >= 0) return '路径含非法字符';
+    if (rel.charAt(0) === '/') return '路径必须是相对路径';
+    if (/^[a-z][a-z0-9+.-]*:/i.test(rel)) return '路径不能带协议（如 http: / javascript:）';
+    var segs = rel.split('/');
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i] === '' || segs[i] === '.' || segs[i] === '..') return '路径含空段或 ./ ../';
+    }
+    return null;
+  }
+  /** back 只接受同源路径："/xxx"，不能 "//host"（协议相对）或 "/\host" */
+  function backOk(b) {
+    return typeof b === 'string' && b.length > 0 && b.length <= 512 && b.charAt(0) === '/' &&
+      b.charAt(1) !== '/' && b.charAt(1) !== '\\' && !CTRL_RE.test(b) && b.indexOf('\\') < 0;
+  }
+  /** 返回 null（根本不是启动链接）/ {ok:false,error} / {ok:true, rel, src, title, bid, dir, back} */
+  function parseLaunchHash(hash) {
+    var h = String(hash || '').replace(/^#/, '');
+    if (!h) return null;
+    var kv = Object.create(null), openBad = false;
+    h.split('&').forEach(function (part) {
+      if (!part) return;
+      var i = part.indexOf('=');
+      var k = i < 0 ? part : part.slice(0, i), v = i < 0 ? '' : part.slice(i + 1);
+      try { k = decodeURIComponent(k); } catch (e) { return; }
+      try { v = decodeURIComponent(v); } catch (e) { if (k === 'open') openBad = true; return; }   // 不用 URLSearchParams：它会把 + 当空格
+      if (!(k in kv)) kv[k] = v;
+    });
+    if (!('open' in kv) && !openBad) return null;
+    if (openBad) return { ok: false, error: '链接里的路径编码不对' };
+    var src = 'src' in kv ? kv.src : 'dav';
+    if (src !== 'dav') return { ok: false, error: '不支持的来源 src=' + String(src).slice(0, 20) };
+    var err = relError(kv.open);
+    if (err) return { ok: false, error: err };
+    var bid = kv.bid && kv.bid.length <= 1024 && !CTRL_RE.test(kv.bid) ? kv.bid : null;
+    return { ok: true, rel: kv.open, src: 'dav', title: baseName(kv.open), bid: bid,
+      dir: kv.dir === 'rtl' || kv.dir === 'ltr' ? kv.dir : null, back: backOk(kv.back) ? kv.back : null };
+  }
+  /** 账号框里的 WebDAV 地址：只认同源（Authorization 头不能发给别的站点）。返回 '' 表示根，非法返回 null */
+  function normalizeDavBase(input, origin) {
+    var s = String(input == null ? '' : input).trim() || '/';
+    var u;
+    try { u = new URL(s, origin + '/'); } catch (e) { return null; }
+    if (u.origin !== origin || u.username || u.password) return null;
+    return u.origin + u.pathname.replace(/\/+$/, '');
+  }
+  /** <base>/<library>/<rel>，逐段 encodeURIComponent（和 PyReader 网页版 DavClient.url 同一写法） */
+  function davBookUrl(base, library, rel) {
+    var segs = [];
+    String(library || '').split('/').forEach(function (s) { if (s) segs.push(s); });
+    String(rel).split('/').forEach(function (s) { segs.push(s); });
+    return String(base).replace(/\/+$/, '') + '/' + segs.map(encodeURIComponent).join('/');
+  }
+
   global.IVCore = {
+    basicAuth: basicAuth, UrlRangeSource: UrlRangeSource, parseLaunchHash: parseLaunchHash,
+    relError: relError, backOk: backOk, normalizeDavBase: normalizeDavBase, davBookUrl: davBookUrl,
     dirOf: dirOf, epubResolve: epubResolve, epubOpfPath: epubOpfPath, epubParseOpf: epubParseOpf,
     epubSpineItems: epubSpineItems, epubImageRefs: epubImageRefs, epubPageOrder: epubPageOrder,
     MIN_ZOOM: MIN_ZOOM, MAX_ZOOM: MAX_ZOOM, MIN_VISIBLE: MIN_VISIBLE,
@@ -1733,15 +1973,17 @@
         ios.forEach(function (io) {
           if (!io.isIntersecting) return;
           var t = thumbNodes[+io.target.dataset.i];
+          if (t && !S.thumbs && isRemotePage(t.page)) return;   /* 缩略图条收起时，远程书不生成：每张缩略图都是一整页的下载 */
           if (t && !t.made) { t.made = true; enqueueThumb(t); }
         });
       }, { root: thumbsEl, rootMargin: '400px 0px' });
       thumbNodes.forEach(function (t) { thumbsIO.observe(t.el); });
     } else {
-      thumbNodes.forEach(function (t) { t.made = true; enqueueThumb(t); });
+      thumbNodes.forEach(function (t) { if (S.thumbs || !isRemotePage(t.page)) { t.made = true; enqueueThumb(t); } });
     }
     highlightThumb();
   }
+  function isRemotePage(p) { return !!(p && p.zf && p.zf.src instanceof C.UrlRangeSource); }
   var tQueue = [], tBusy = 0, T_CONC = 2;
   /* 后端模式下缩略图交给服务端出图（不用把整本大图都拉回浏览器） */
   function thumbUrlFor(p) {
@@ -1946,15 +2188,16 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse'];
+  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
-  function closeModals() { MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); }
+  function closeModals() { MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
   function toggleModal(id, force) {
     var m = $('#' + id);
     var show = force === undefined ? m.classList.contains('hidden') : force;
     m.classList.toggle('hidden', !show);
+    if (id === 'dav' && !show && davPending) davFinish(null);
     if (id === 'jump' && show) setTimeout(function () { try { $('#jumpInput').focus(); $('#jumpInput').select(); } catch (e) {} }, 30);
   }
 
@@ -2001,15 +2244,15 @@
     return loop().then(function () { return items; });
   }
 
-  function openZipFile(file) {
-    var zf = new C.ZipReader({
-      size: file.size,
-      read: function (offset, len) {
-        return file.slice(offset, offset + len).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
-      }
-    });
+  /** src = {size, read(offset, len) -> Promise<Uint8Array>}（本地 File 和远程 UrlRangeSource 共用同一条路）。
+      opts: key / dir（启动链接带来的）、rethrow（调用方自己处理错误，比如 401 要重新输入密码）。 */
+  function openZipSource(src, name, opts) {
+    opts = opts || {};
+    var zf = new C.ZipReader(src);
     toast('正在读取压缩包…');
-    zf.open().then(function () {
+    return Promise.resolve(src.init ? src.init() : src).then(function () {
+      return zf.open();
+    }).then(function () {
       var items = [];
       zf.entries.forEach(function (en) {
         if (en.dir) return;
@@ -2018,16 +2261,40 @@
         if (/^__MACOSX\//.test(clean) || /(^|\/)\.[^\/]+$/.test(clean) || /(^|\/)thumbs\.db$/i.test(clean)) return;
         items.push({ kind: 'zip', name: C.baseName(clean), path: clean, zf: zf, entry: en, size: en.size });
       });
-      if (!items.length) { toast('压缩包里没有找到图片（支持 zip/cbz/epub 内的 png/jpg/webp/gif/bmp/avif）'); return; }
+      if (!items.length) { toast('压缩包里没有找到图片（支持 zip/cbz/epub 内的 png/jpg/webp/gif/bmp/avif）'); return false; }
       /* epub 漫画：页序以 OPF spine 为准；解析失败就退回按文件名自然排序（等同 zip） */
-      var ordered = /\.epub$/i.test(file.name)
+      var ordered = /\.epub$/i.test(name)
         ? epubReorder(zf, items)['catch'](function () { return null; })
         : Promise.resolve(null);
       return ordered.then(function (r) {
         // 非图片条目（pdf / rar / 视频…）交给 classify 统一归到 skipped，行为跟文件夹一致
-        openItems(r ? r.items : items, { kind: 'zip', title: file.name, dir: r ? r.dir : null });
+        // 方向优先级：OPF 自己声明的 > 该书已保存的（openItems 里判断）> 启动链接的 dir 提示
+        var o = { kind: 'zip', title: name, dir: (r && r.dir) || opts.dir || null };
+        if (opts.key) o.key = opts.key;
+        openItems(r ? r.items : items, o);
+        return true;
       });
-    })['catch'](function (e) { toast('压缩包打开失败：' + ((e && e.message) || e)); });
+    })['catch'](function (e) {
+      if (opts.rethrow) throw e;
+      toast('压缩包打开失败：' + ((e && e.message) || e));
+      return false;
+    });
+  }
+
+  function openZipFile(file) {
+    return openZipSource({
+      size: file.size,
+      read: function (offset, len) {
+        return file.slice(offset, offset + len).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+      }
+    }, file.name);
+  }
+
+  /** 远程 zip / cbz / epub（同源 WebDAV）：只发 Range 请求，翻到哪页才取哪页 */
+  function openZipUrl(url, opts) {
+    opts = opts || {};
+    var src = new C.UrlRangeSource(url, { authHeader: opts.authHeader, fetch: opts.fetch, onAuthFail: opts.onAuthFail });
+    return openZipSource(src, opts.title || C.baseName(url.split('?')[0]), opts);
   }
 
   /** 读 META-INF/container.xml -> OPF -> spine 各页 xhtml，返回按页序排好的图片条目；
@@ -2425,7 +2692,7 @@
   document.querySelectorAll('[data-close]').forEach(function (b) {
     b.addEventListener('click', function () { toggleModal(b.dataset.close, false); });
   });
-  ['help', 'detail', 'jump', 'browse'].forEach(function (id) {
+  ['help', 'detail', 'jump', 'browse', 'dav'].forEach(function (id) {
     $('#' + id).addEventListener('click', function (e) { if (e.target === $('#' + id)) toggleModal(id, false); });
   });
   $('#folderInput').addEventListener('change', function (e) {
@@ -2501,11 +2768,157 @@
     browseOpenSel();
   });
 
+  /* ================= 云端书库（/iv/ 与 WebDAV 同源，没有 CORS）=================
+     账号（建议只读账号）只存在本站自己的 IndexedDB（库名 iv-settings）。不去读同源 /reader/ 的库
+     （PyReader 的 WebDAV 密码在那里）。Basic 认证只走 fetch 头，绝不拼进 URL / hash。 */
+  var DAV_DB = 'iv-settings', DAV_KEY = 'dav';
+  var davCfg = null, davLoaded = false, davPending = null;
+  function davDb() {
+    return new Promise(function (res, rej) {
+      var r = indexedDB.open(DAV_DB, 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore('kv'); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error || new Error('IndexedDB 打不开')); };
+    });
+  }
+  function davTx(mode, fn) {
+    return davDb().then(function (db) {
+      return new Promise(function (res, rej) {
+        var tx = db.transaction('kv', mode), out = fn(tx.objectStore('kv'));
+        tx.oncomplete = function () { db.close(); res(out && out.result); };
+        tx.onerror = tx.onabort = function () { db.close(); rej(tx.error || new Error('IndexedDB 出错')); };
+      });
+    });
+  }
+  /** 取已保存的账号；读不到（隐私模式 / 被禁用）就当没有 */
+  function davEnsure() {
+    if (davLoaded) return Promise.resolve(davCfg);
+    return davTx('readonly', function (st) { return st.get(DAV_KEY); }).then(function (c) { return c || null; },
+      function () { return null; }).then(function (c) { davCfg = c; davLoaded = true; return c; });
+  }
+  function davStore(cfg) {
+    davCfg = cfg; davLoaded = true;
+    return davTx('readwrite', function (st) { return st.put(cfg, DAV_KEY); }).then(function () { return true; },
+      function () { return false; });
+  }
+  function davForget() {
+    davCfg = null; davLoaded = true;
+    return davTx('readwrite', function (st) { return st['delete'](DAV_KEY); }).then(function () { return true; },
+      function () { return false; });
+  }
+  function davAuthHeader() { return davCfg && davCfg.user ? C.basicAuth(davCfg.user, davCfg.pass || '') : null; }
+
+  /** 弹出账号框。保存 -> resolve(cfg)；取消 / Esc / 点遮罩 -> resolve(null)。已经开着就复用同一个 Promise */
+  function askDav(msg) {
+    if (davPending) { if (msg) $('#davMsg').textContent = msg; return davPending.promise; }
+    var p = {};
+    p.promise = new Promise(function (res) { p.resolve = res; });
+    davPending = p;
+    davEnsure().then(function (c) {
+      var cfg = c || { base: location.origin, library: 'library', user: '', pass: '' };
+      $('#davBase').value = cfg.base; $('#davLib').value = cfg.library;
+      $('#davUser').value = cfg.user || ''; $('#davPass').value = cfg.pass || '';
+      $('#davMsg').textContent = msg || '';
+      if (davPending === p) {
+        toggleModal('dav', true);
+        setTimeout(function () { try { $(cfg.user ? '#davPass' : '#davUser').focus(); } catch (e) {} }, 30);
+      }
+    });
+    return p.promise;
+  }
+  function davFinish(cfg) {
+    var p = davPending;
+    davPending = null;
+    $('#dav').classList.add('hidden');
+    if (p) p.resolve(cfg);
+  }
+  function davSubmit() {
+    var base = C.normalizeDavBase($('#davBase').value, location.origin);
+    if (base === null) { $('#davMsg').textContent = 'WebDAV 地址只能填本站内的路径（例如 /），不能填别的网站'; return; }
+    var lib = $('#davLib').value.trim().replace(/^\/+|\/+$/g, '');
+    if (lib && C.relError(lib)) { $('#davMsg').textContent = '书库文件夹不合法：' + C.relError(lib); return; }
+    var cfg = { base: base, library: lib, user: $('#davUser').value.trim(), pass: $('#davPass').value };
+    davStore(cfg).then(function (saved) {
+      if (!saved) toast('这个浏览器不让保存账号，只在本次打开期间有效');
+      davFinish(cfg);
+    });
+  }
+
+  /* ================= 启动链接 #open=<相对路径>&src=dav&bid=…&dir=rtl|ltr&back=/reader/ ================= */
+  var launchBack = null;
+  function setBack(back) {
+    launchBack = null;
+    try { if (back && new URL(back, location.href).origin === location.origin) launchBack = back; } catch (e) { launchBack = null; }
+    document.body.classList.toggle('has-back', !!launchBack);
+  }
+  function stripLaunchHash() {
+    try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* file:// 等环境不允许 */ }
+  }
+  /** 从 WebDAV 书库打开 p.rel；401 -> 弹账号框重输后再试 */
+  function openDavBook(p) {
+    return davEnsure().then(function (cfg) {
+      return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
+    }).then(function (cfg) {
+      if (!cfg) { toast('没有书库账号，无法打开云端的书'); return false; }
+      var opening = true;
+      return openZipUrl(C.davBookUrl(cfg.base, cfg.library, p.rel), {
+        title: p.title, key: 'dav:' + p.rel, dir: p.dir, rethrow: true, authHeader: davAuthHeader,
+        /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
+        onAuthFail: function () { if (!opening) askDav('账号或密码不对（HTTP 401），请重新输入'); }
+      }).then(function (ok) { opening = false; return ok; }, function (e) {
+        opening = false;
+        if (e && e.status === 401) {
+          return askDav('账号或密码不对（HTTP 401），请重新输入').then(function (c) {
+            if (!c) { toast('没有有效的书库账号'); return false; }
+            return openDavBook(p);
+          });
+        }
+        toast('云端打开失败：' + ((e && e.message) || e));
+        return false;
+      });
+    });
+  }
+  function applyLaunchHash(hash) {
+    var p = C.parseLaunchHash(hash === undefined ? location.hash : hash);
+    if (!p) return Promise.resolve(false);
+    if (!p.ok) { toast('启动链接无效：' + p.error); stripLaunchHash(); return Promise.resolve(false); }
+    if (!/^https?:$/.test(location.protocol)) {
+      toast('云端书库要通过网址（http / https）打开，不能用本地文件'); stripLaunchHash(); return Promise.resolve(false);
+    }
+    setBack(p.back);
+    return openDavBook(p).then(function (ok) { if (ok) stripLaunchHash(); return ok; });
+  }
+
   /* ================= 启动 ================= */
   applyModeClasses();
   syncZoomUI();
   updateInfo();
-  detectBackend();
+  detectBackend().then(function () {
+    if (/^https?:$/.test(location.protocol) && !BE.on) document.body.classList.add('has-dav');
+    return applyLaunchHash();
+  })['catch'](function (e) { toast('启动链接处理失败：' + ((e && e.message) || e)); });
+  window.addEventListener('hashchange', function () {
+    applyLaunchHash()['catch'](function (e) { toast('启动链接处理失败：' + ((e && e.message) || e)); });
+  });
+  /* PWA 外壳：只在部署的 /iv/ 下注册（file:// 和 web_backend.py 下没有这个 sw.js，也就不碰） */
+  if ('serviceWorker' in navigator && /^\/iv\//.test(location.pathname)) {
+    try { navigator.serviceWorker.register('sw.js', { scope: './' })['catch'](function () {}); } catch (e) { /* 忽略 */ }
+  }
+  $('#btnBack').addEventListener('click', function () {
+    if (!launchBack) return;
+    saveProgress();
+    location.assign(launchBack);
+  });
+  $('#startDav').addEventListener('click', function () { askDav(); });
+  $('#davSave').addEventListener('click', davSubmit);
+  $('#davCancel').addEventListener('click', function () { davFinish(null); });
+  $('#davClose').addEventListener('click', function () { davFinish(null); });
+  $('#davForget').addEventListener('click', function () {
+    davForget().then(function () { toast('已忘记这台设备上保存的账号'); davFinish(null); });
+  });
+  ['#davBase', '#davLib', '#davUser', '#davPass'].forEach(function (sel) {
+    $(sel).addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); davSubmit(); } });
+  });
 
   function renderResumeHint() {
     var latest = null;
@@ -2523,7 +2936,10 @@
 
   /* 测试钩子（不影响正常使用） */
   window.__IV = {
-    openItems: openItems, openZipFile: openZipFile, scanDir: scanDir,
+    openItems: openItems, openZipFile: openZipFile, openZipSource: openZipSource, openZipUrl: openZipUrl, scanDir: scanDir,
+    applyLaunchHash: applyLaunchHash, askDav: askDav, davEnsure: davEnsure, davStore: davStore, davForget: davForget,
+    launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
+      dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },
     openServerPath: openServerPath, openViaBackend: openViaBackend,
     uploadFile: uploadFile, canServeFile: canServeFile, browseTo: browseTo, backend: function () { return BE; },
     showDetails: showDetails, m3uUrl: m3uUrl, copyText: copyText,

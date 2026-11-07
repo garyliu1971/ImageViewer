@@ -141,6 +141,75 @@ function pngBytes(w, h, hex) {
     chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 
+/* ------------------------- /iv/ 同源测试服务器（模拟 Caddy + SFTPGo WebDAV）-------------------------
+   /iv/…      页面 / manifest / sw.js / 图标，带 deploy/Caddyfile.iv.snippet 里同一条 CSP
+   /library/… 书库：Basic 认证 + 真 Range（206）；/library/ignore/… 故意忽略 Range 回 200
+   记录每个 /library 请求（方法 / 路径 / Range / 是否带 Authorization / 实际发出的字节），供断言。 */
+function startIvServer(books) {
+  const snippet = fs.readFileSync(path.join(ROOT, 'deploy', 'Caddyfile.iv.snippet'), 'utf8');
+  const CSP = (/header Content-Security-Policy "([^"]+)"/.exec(snippet) || [])[1];
+  if (!CSP) throw new Error('deploy/Caddyfile.iv.snippet 里没找到 CSP');
+  const html = fs.readFileSync(PAGE);
+  const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').replace('__BUILD__', 'e2e');
+  const manifest = fs.readFileSync(path.join(ROOT, 'manifest.webmanifest'));
+  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [] };
+  const srv = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x');
+    const p = decodeURIComponent(u.pathname);
+    S.hits.push(req.method + ' ' + u.pathname);
+    const send = (code, type, body, extra) => {
+      res.writeHead(code, Object.assign({ 'Content-Type': type, 'Content-Length': Buffer.byteLength(body) }, extra || {}));
+      res.end(body);
+    };
+    if (p === '/iv/' || p === '/iv/index.html') {
+      return send(200, 'text/html; charset=utf-8', html, { 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP,
+        'Referrer-Policy': 'no-referrer' });
+    }
+    if (p === '/iv/sw.js') return send(200, 'text/javascript', sw, { 'Cache-Control': 'no-cache' });
+    if (p === '/iv/manifest.webmanifest') return send(200, 'application/manifest+json', manifest);
+    if (p.startsWith('/iv/icons/')) {
+      const f = path.join(ROOT, 'icons', path.basename(p));
+      return fs.existsSync(f) ? send(200, 'image/png', fs.readFileSync(f)) : send(404, 'text/plain', 'no');
+    }
+    if (p === '/reader/') return send(200, 'text/html; charset=utf-8', '<title>reader</title>reader');
+    if (p.startsWith('/library/')) {
+      const ent = { method: req.method, path: u.pathname, range: req.headers.range || null,
+        auth: !!req.headers.authorization, status: 0, bytes: 0 };
+      S.log.push(ent);
+      const want = 'Basic ' + Buffer.from(S.user + ':' + S.pass, 'utf8').toString('base64');
+      if (req.headers.authorization !== want) {
+        ent.status = 401;
+        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="lib"' }); return res.end('no');
+      }
+      const ignore = p.startsWith('/library/ignore/');
+      const rel = ignore ? p.slice('/library/ignore/'.length) : p.slice('/library/'.length);
+      const data = books[rel];
+      if (!data) { ent.status = 404; return send(404, 'text/plain', 'nf'); }
+      S.inflight++; S.maxInflight = Math.max(S.maxInflight, S.inflight);
+      setTimeout(() => {
+        S.inflight--;
+        const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range || '');
+        if (req.method === 'HEAD') { ent.status = 200; res.writeHead(200, { 'Content-Length': data.length }); return res.end(); }
+        if (!m || ignore) {
+          ent.status = 200; ent.bytes = data.length;
+          res.writeHead(200, { 'Content-Length': data.length, 'Content-Type': 'application/octet-stream' }); return res.end(data);
+        }
+        const a = +m[1], b = Math.min(+m[2], data.length - 1), body = data.subarray(a, b + 1);
+        ent.status = 206; ent.bytes = body.length;
+        res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${data.length}`, 'Content-Length': body.length,
+          'Content-Type': 'application/octet-stream', 'Accept-Ranges': 'bytes' });
+        res.end(body);
+      }, 15);
+      return;
+    }
+    send(404, 'text/plain', 'nf');
+  });
+  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => {
+    const origin = 'http://127.0.0.1:' + srv.address().port;
+    resolve(Object.assign(S, { origin, close: () => srv.close() }));
+  }));
+}
+
 /* ------------------------- 断言 ------------------------- */
 let pass = 0, fail = 0;
 const log = (...a) => console.log(...a);
@@ -990,6 +1059,246 @@ function check(name, ok, detail) {
     check('重开同一批文件 key 一致', reopened.bookKey === before.key, { a: before.key, b: reopened.bookKey });
     check('刷新后续到第 3 页', reopened.index === 2, { want: before.index, got: reopened.index });
     check('续读后图片正常显示', reopened.decoded[2] && reopened.decoded[2].w === 100 && reopened.domPages >= 1, reopened);
+
+    log('\n[23b] /iv/ 同源页面：PWA 外壳、云端启动链接、Range 源（本机模拟 Caddy + SFTPGo WebDAV）');
+    const RELE = '小说/sample_comic.epub';
+    const bookBufs = {};
+    const epubBuf = fs.existsSync(epubSample) ? fs.readFileSync(epubSample) : null;
+    if (!epubBuf) {
+      check('云端启动链接', 'skip', '没有 tests/fixtures/sample_comic.epub（先跑 python tests/make_web_fixtures.py）');
+    } else {
+      bookBufs[RELE] = epubBuf;
+      // 同一本 epub 的两个变体：OPF 不声明方向 / 声明 ltr（把属性值就地改成等长的内容，zip 里 OPF 是 store 的）
+      const ppd = Buffer.from('page-progression-direction="rtl"');
+      const at = epubBuf.indexOf(ppd);
+      if (at >= 0) {
+        const noPpd = Buffer.from(epubBuf); Buffer.alloc(ppd.length, 0x20).copy(noPpd, at);
+        const ltr = Buffer.from(epubBuf); Buffer.from('page-progression-direction="ltr"').copy(ltr, at);
+        bookBufs['nodir.epub'] = noPpd; bookBufs['ltr.epub'] = ltr;
+      }
+      // 大 cbz：20 页，每页 PNG 后面补 200KB 零（store，不压缩）→ 约 4MB，用来证明只取用到的页
+      const bigFiles = [];
+      for (let i = 1; i <= 20; i++) {
+        bigFiles.push({ name: String(i).padStart(2, '0') + '.png', store: true,
+          data: Buffer.concat([pngBytes(400, 600, ((i * 12) % 256).toString(16).padStart(2, '0') + '4488'), Buffer.alloc(200000)]) });
+      }
+      bookBufs['big/lazy.cbz'] = buildZip(bigFiles);
+      const iv = await startIvServer(bookBufs);
+      const IVURL = iv.origin + '/iv/';
+      const enc = encodeURIComponent;
+      const hashFor = (rel, extra) => '#open=' + enc(rel) + '&src=dav&bid=' + enc('remote:' + rel) + (extra || '');
+      await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source:
+        "window.__csp=[];document.addEventListener('securitypolicyviolation',function(e){window.__csp.push(e.violatedDirective+' '+e.blockedURI)});" });
+      async function fresh(u) {
+        await cdp.send('Page.navigate', { url: 'about:blank' }); await sleep(250);
+        await cdp.send('Page.navigate', { url: u }); await sleep(1300);
+        await cdp.eval(HELPERS);
+      }
+      async function waitFor(expr, ms) {
+        const t0 = Date.now();
+        for (;;) {
+          const v = await cdp.eval(`return (${expr});`).catch(() => null);
+          if (v || Date.now() - t0 > (ms || 8000)) return v;
+          await sleep(120);
+        }
+      }
+      const stateOf = () => cdp.eval(`return window.__IV.state();`);
+      const dlgOpen = `!document.querySelector('#dav').classList.contains('hidden')`;
+
+      /* ---- 1) 外壳：manifest / SW / 缓存 / CSP ---- */
+      await fresh(IVURL);
+      const shell = await cdp.eval(`
+        const ready = await Promise.race([navigator.serviceWorker.ready.then(r => r.scope), new Promise(r => setTimeout(() => r(null), 8000))]);
+        const keys = await caches.keys();
+        let urls = [];
+        for (const k of keys) { const c = await caches.open(k); urls = urls.concat((await c.keys()).map(r => new URL(r.url).pathname)); }
+        return { scope: ready, keys, urls, manifest: !!document.querySelector('link[rel=manifest]'),
+          has: document.body.classList.contains('has-dav'), startDav: getComputedStyle(document.querySelector('#startDav')).display,
+          back: getComputedStyle(document.querySelector('#btnBack')).display, csp: window.__csp,
+          dbs: (await indexedDB.databases()).map(d => d.name) };`);
+      check('SW 注册在 /iv/ 作用域', shell.scope === IVURL, shell.scope);
+      check('缓存名都以 iv- 开头', shell.keys.length >= 1 && shell.keys.every((k) => /^iv-/.test(k)), shell.keys);
+      check('只缓存外壳（页面 / manifest / 图标），没有 /library', shell.urls.includes('/iv/') && shell.urls.includes('/iv/manifest.webmanifest') &&
+        shell.urls.every((u) => u.startsWith('/iv/')), shell.urls);
+      check('manifest 链接在，http 页面且无后端 → 显示「☁ 书库账号」，没有返回键', shell.manifest && shell.has && shell.startDav !== 'none' && shell.back === 'none', shell);
+      check('部署用的 CSP 下页面零违规', shell.csp.length === 0, shell.csp);
+      check('没有碰别的 IndexedDB（只允许 iv-* 或还没建）', shell.dbs.every((n) => /^iv-/.test(n)), shell.dbs);
+
+      /* ---- 2) 第一次打开：弹账号框 → 错误密码 401 再弹 → 正确 → 打开；方向 OPF 优先于链接提示 ---- */
+      await fresh(IVURL + hashFor(RELE, '&dir=ltr&back=%2Freader%2F'));
+      const dlg = await waitFor(dlgOpen, 6000);
+      const dlgInfo = await cdp.eval(`return { base: document.querySelector('#davBase').value, lib: document.querySelector('#davLib').value,
+        hash: location.hash, pass: document.querySelector('#davPass').type, pending: window.__IV.launchInfo().pending };`);
+      check('没有账号 → 弹出账号框，默认同源根 + library', dlg && dlgInfo.base === iv.origin && dlgInfo.lib === 'library' && dlgInfo.pass === 'password', dlgInfo);
+      check('弹框期间 hash 还在（刷新不丢）、还没发任何 /library 请求', /open=/.test(dlgInfo.hash) && iv.log.length === 0, { h: dlgInfo.hash, n: iv.log.length });
+      await cdp.eval(`document.querySelector('#davBase').value = 'https://evil.example/'; document.querySelector('#davSave').click(); return 1;`);
+      const rejected = await cdp.eval(`return { open: ${dlgOpen}, msg: document.querySelector('#davMsg').textContent };`);
+      check('WebDAV 地址填别的站点被拒（凭据不会发给别人）', rejected.open && /本站/.test(rejected.msg) && iv.log.length === 0, rejected);
+      await cdp.eval(`document.querySelector('#davBase').value = '${iv.origin}/';
+        document.querySelector('#davUser').value = 'viewer'; document.querySelector('#davPass').value = 'wrong';
+        document.querySelector('#davSave').click(); return 1;`);
+      const again = await waitFor(`${dlgOpen} && /401/.test(document.querySelector('#davMsg').textContent)`, 6000);
+      check('密码错 → 401 → 重新弹框并提示', !!again, await cdp.eval(`return document.querySelector('#davMsg').textContent;`));
+      check('401 时 hash 还在', await cdp.eval(`return /open=/.test(location.hash);`));
+      await cdp.eval(`document.querySelector('#davPass').value = 'pä ss'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`window.__IV.state().total === 5`, 8000);
+      const o1 = await stateOf();
+      const names1 = (o1.decoded || []).map((d) => d.name).join('|');
+      check('云端 epub 打开：5 页，页序 = spine', o1.total === 5 && names1 === 'zz_cover.png|p 2.png|p3.png|p10.png|a_last.png', { t: o1.total, names1 });
+      check('key = dav:<相对路径>，书名 = 文件名', o1.bookKey === 'dav:' + RELE && o1.bookTitle === 'sample_comic.epub', { k: o1.bookKey, t: o1.bookTitle });
+      check('方向：OPF 的 rtl 优先于链接 dir=ltr', o1.S.direction === 'rtl', o1.S.direction);
+      const after = await cdp.eval(`return { hash: location.hash, href: location.href, info: window.__IV.launchInfo(),
+        back: getComputedStyle(document.querySelector('#btnBack')).display, dlg: ${dlgOpen} };`);
+      check('打开后 replaceState 去掉 hash', after.hash === '' && !/#/.test(after.href), after);
+      check('back=/reader/ 有效 → 显示「← 返回」', after.info.back === '/reader/' && after.back !== 'none' && !after.dlg, after);
+      const reqs = iv.log.filter((e) => e.status !== 401);
+      const wantPath = '/library/' + RELE.split('/').map(enc).join('/');
+      check('每个书库请求：同一个编码后的路径、都带 Authorization、除 HEAD 外全是 Range', reqs.length >= 2 &&
+        reqs.every((e) => e.path === wantPath && e.auth && (e.method === 'HEAD' || /^bytes=\d+-\d+$/.test(e.range || ''))), reqs.slice(0, 4));
+      check('Range 请求全部得到 206', reqs.filter((e) => e.method === 'GET').every((e) => e.status === 206), reqs.map((e) => e.status));
+      check('账号不在任何 URL 里', iv.hits.every((h) => !/viewer|p%C3%A4|p%20ss|pä/.test(h)), iv.hits.slice(0, 5));
+      const store = await cdp.eval(`
+        const out = {};
+        for (const k of Object.keys(localStorage)) out[k] = localStorage.getItem(k);
+        const db = await new Promise((res, rej) => { const r = indexedDB.open('iv-settings'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+        const rec = await new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dav'); q.onsuccess = () => res(q.result); });
+        db.close();
+        return { ls: JSON.stringify(out), rec };`);
+      check('账号存在 iv-settings 库里（用户 / 密码 / 地址 / 书库）', store.rec && store.rec.user === 'viewer' && store.rec.pass === 'pä ss' && store.rec.library === 'library', store.rec && { ...store.rec, pass: '***' });
+      check('localStorage 里没有账号 / 密码', !/viewer|pä ss/.test(store.ls));
+
+      /* ---- 3) openZipUrl 与 openZipFile 同一本 epub，结果一致 ---- */
+      await fresh(IVURL);
+      await setInputFiles('#zipInput', [epubSample]);
+      const viaFile = await stateOf();
+      const viaUrl = await cdp.eval(`
+        const auth = window.IVCore.basicAuth('viewer', 'pä ss');
+        const ok = await window.__IV.openZipUrl(location.origin + '/library/' + ${JSON.stringify(RELE)}.split('/').map(encodeURIComponent).join('/'),
+          { title: 'sample_comic.epub', authHeader: auth });
+        await window.__IV.wait(300);
+        return Object.assign({ ok }, window.__IV.state());`);
+      const sig = (s) => JSON.stringify({ n: s.total, d: s.decoded.map((d) => [d.name, d.path]), dir: s.S.direction, ch: s.chapters });
+      check('openZipUrl 的页序 / 路径 / 方向 / 章节 = openZipFile', viaUrl.ok === true && sig(viaFile) === sig(viaUrl), { a: sig(viaFile).slice(0, 160), b: sig(viaUrl).slice(0, 160) });
+
+      /* ---- 4) 方向优先级：OPF > 该书已保存的 > 链接 dir ---- */
+      if (!bookBufs['nodir.epub']) {
+        check('方向优先级', 'skip', 'fixture 的 OPF 不是 store，没法就地改');
+      } else {
+        const R2 = 'nodir.epub';
+        await fresh(IVURL + hashFor(R2, '&dir=rtl'));
+        await waitFor(`window.__IV.state().total === 5`, 8000);
+        const d1 = await stateOf();
+        check('OPF 没声明方向 + 没保存过 → 用链接的 dir=rtl', d1.total === 5 && d1.S.direction === 'rtl', d1.S);
+        await cdp.eval(`await __force('direction', false); window.__IV.saveProgress(); return 1;`);   // 用户切成左→右
+        const saved = await cdp.eval(`return window.__IV.books()['dav:nodir.epub'] && window.__IV.books()['dav:nodir.epub'].direction;`);
+        check('用户切换后，这本书（dav:key）记住了方向', saved === 'ltr', saved);
+        await fresh(IVURL + hashFor(R2, '&dir=rtl'));
+        await waitFor(`window.__IV.state().total === 5`, 8000);
+        const d2 = await stateOf();
+        check('再次用 dir=rtl 打开：已保存的该书方向（ltr）优先', d2.S.direction === 'ltr', d2.S);
+        await fresh(IVURL + hashFor('ltr.epub', '&dir=rtl'));
+        await waitFor(`window.__IV.state().total === 5`, 8000);
+        const d3 = await stateOf();
+        check('OPF 声明 ltr + 链接 dir=rtl → OPF 优先（ltr）', d3.S.direction === 'ltr', d3.S);
+      }
+
+      /* ---- 5) 只取用到的页：4MB 的 cbz，看前几页只发出很少字节；并发不超过 4 ---- */
+      await fresh(IVURL);
+      await cdp.eval(`localStorage.setItem('iv.ui.v1', JSON.stringify({ thumbs: false })); return 1;`);
+      await fresh(IVURL + hashFor('big/lazy.cbz'));
+      await waitFor(`window.__IV.state().total === 20`, 10000);
+      await cdp.eval(`await __tick(); return 1;`);
+      const bigPath = '/library/big/lazy.cbz';
+      const bigSize = bookBufs['big/lazy.cbz'].length;
+      const sent1 = iv.log.filter((e) => e.path === bigPath).reduce((a, e) => a + e.bytes, 0);
+      check('打开 20 页（约 ' + Math.round(bigSize / 1048576) + 'MB）的 cbz 并看第 1 页：只发出整本的 <35%', sent1 > 0 && sent1 < bigSize * 0.35, { sent1, bigSize });
+      await cdp.eval(`window.__IV.showPage(19); await __tick(); return 1;`);
+      const sent2 = iv.log.filter((e) => e.path === bigPath).reduce((a, e) => a + e.bytes, 0);
+      const st2 = await stateOf();
+      check('翻到最后一页才取最后一页的字节，且图能解出', sent2 > sent1 && st2.decoded[19].w === 400, { sent1, sent2, w: st2.decoded[19].w });
+      check('同时在途的书库请求 ≤ 4', iv.maxInflight <= 4, iv.maxInflight);
+      check('没有一次 200 整本响应', iv.log.filter((e) => e.path === bigPath).every((e) => e.status === 206 || e.method === 'HEAD'), iv.log.filter((e) => e.path === bigPath && e.status === 200).length);
+
+      /* ---- 6) 非法 / 恶意启动链接：拒绝，不发任何书库请求，hash 被清掉 ---- */
+      await fresh(IVURL);
+      const before = iv.log.length;
+      const hits0 = iv.hits.length;
+      const badHashes = ['#open=..%2F..%2Fsecret.epub', '#open=a%2F..%2Fb.epub', '#open=%2F%2Fevil.example%2Fa.epub',
+        '#open=http%3A%2F%2Fevil.example%2Fa.epub', '#open=javascript%3Aalert(1)', '#open=%2Fetc%2Fpasswd', '#open=a.epub&src=ftp', '#open=%E0%A4%A'];
+      const badRes = await cdp.eval(`
+        const out = [];
+        for (const h of ${JSON.stringify(badHashes)}) {
+          document.querySelector('#toast').textContent = '';
+          location.hash = h;
+          await window.__IV.wait(200);
+          out.push({ h, toast: document.querySelector('#toast').textContent, hash: location.hash });
+        }
+        return out;`);
+      check('8 种恶意 / 非法链接都被拒绝并提示', badRes.every((r) => /启动链接无效/.test(r.toast)), badRes.filter((r) => !/启动链接无效/.test(r.toast)));
+      check('拒绝后 hash 被清掉', badRes.every((r) => r.hash === ''), badRes.map((r) => r.hash));
+      check('拒绝的链接没有向书库发任何请求', iv.log.length === before && iv.hits.slice(hits0).every((h) => !/\/library|evil|secret|passwd/.test(h)), iv.hits.slice(hits0));
+      const noBack = await cdp.eval(`
+        location.hash = '#open=' + encodeURIComponent(${JSON.stringify(RELE)}) + '&back=' + encodeURIComponent('//evil.example/x');
+        for (let i = 0; i < 60 && window.__IV.state().total !== 5; i++) await window.__IV.wait(100);
+        return { total: window.__IV.state().total, back: window.__IV.launchInfo().back, disp: getComputedStyle(document.querySelector('#btnBack')).display, hash: location.hash };`);
+      check('hashchange（同页再点链接）也能打开；非法 back 被丢弃：能打开、没有返回键', noBack.total === 5 && noBack.back === null && noBack.disp === 'none' && noBack.hash === '', noBack);
+
+      /* ---- 7) 服务器忽略 Range / 404 ---- */
+      await fresh(IVURL);
+      const igBefore = iv.log.length;
+      const ig = await cdp.eval(`
+        location.hash = '#open=' + encodeURIComponent('ignore/${RELE}');
+        for (let i = 0; i < 60 && !/Range/.test(document.querySelector('#toast').textContent); i++) await window.__IV.wait(100);
+        return { toast: document.querySelector('#toast').textContent, total: window.__IV.state().total, hash: location.hash };`);
+      const igReqs = iv.log.slice(igBefore);
+      check('服务器忽略 Range（200）→ 明确报错，没有打开', /server ignores Range/.test(ig.toast) && ig.total === 0, ig);
+      check('只发了 1 个请求就中止（没有反复 / 整本下载）', igReqs.length === 1, igReqs);
+      check('失败时 hash 保留（刷新可重试）', /open=/.test(ig.hash), ig.hash);
+      await fresh(IVURL);
+      const nf = await cdp.eval(`
+        location.hash = '#open=' + encodeURIComponent('不存在的书.epub');
+        for (let i = 0; i < 60 && !/404/.test(document.querySelector('#toast').textContent); i++) await window.__IV.wait(100);
+        return document.querySelector('#toast').textContent;`);
+      check('404 → 提示找不到', /404/.test(nf), nf);
+
+      /* ---- 8) 打开之后密码被改 → 翻页遇到 401 → 重新弹框 ---- */
+      await fresh(IVURL + hashFor('big/lazy.cbz'));
+      await waitFor(`window.__IV.state().total === 20`, 10000);
+      iv.pass = 'changed';
+      await cdp.eval(`window.__IV.showPage(12); return 1;`);
+      const re401 = await waitFor(`${dlgOpen} && /401/.test(document.querySelector('#davMsg').textContent)`, 8000);
+      check('已打开的书翻页遇到 401 → 自动弹出账号框', !!re401);
+      await cdp.eval(`document.querySelector('#davCancel').click(); return 1;`);
+      check('取消 → 框收起、等待中的 Promise 结束', await cdp.eval(`return ${dlgOpen} === false && window.__IV.launchInfo().pending === false;`));
+      iv.pass = 'pä ss';
+
+      /* ---- 9) 忘记此设备；返回键 ---- */
+      await fresh(IVURL);
+      const forgot = await cdp.eval(`
+        const had = await window.__IV.davEnsure();
+        window.__IV.askDav();
+        for (let i = 0; i < 50 && document.querySelector('#dav').classList.contains('hidden'); i++) await window.__IV.wait(50);
+        document.querySelector('#davForget').click();
+        await window.__IV.wait(300);
+        const db = await new Promise((res, rej) => { const r = indexedDB.open('iv-settings'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+        const rec = await new Promise((res) => { const q = db.transaction('kv').objectStore('kv').get('dav'); q.onsuccess = () => res(q.result); });
+        db.close();
+        return { had: !!had, rec: rec === undefined, open: !document.querySelector('#dav').classList.contains('hidden'), mem: await window.__IV.davEnsure() };`);
+      check('「忘记此设备」清掉 IndexedDB 里的账号并关框', forgot.had && forgot.rec && !forgot.open && forgot.mem === null, forgot);
+      await fresh(IVURL + hashFor(RELE));
+      check('忘记之后再从链接打开 → 重新要账号', !!(await waitFor(dlgOpen, 6000)));
+      await cdp.eval(`document.querySelector('#davBase').value = '${iv.origin}'; document.querySelector('#davUser').value = 'viewer'; document.querySelector('#davPass').value = 'pä ss'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`window.__IV.state().total === 5`, 8000);
+      await cdp.eval(`location.hash = '#open=' + encodeURIComponent(${JSON.stringify(RELE)}) + '&back=%2Freader%2F'; return 1;`);
+      await waitFor(`window.__IV.launchInfo().back === '/reader/'`, 8000);
+      const csp2 = await cdp.eval(`return window.__csp || [];`);
+      check('CSP 零违规（走完打开 / 翻页 / 弹框后的 /iv/ 页面）', csp2.length === 0, csp2);
+      iv.hits.length = 0;
+      await cdp.eval(`document.querySelector('#btnBack').click(); return 1;`);
+      await sleep(900);
+      check('点「← 返回」回到 back 指定的同源页面', iv.hits.some((h) => h === 'GET /reader/'), iv.hits.slice(0, 5));
+      iv.close();
+    }
 
     log('\n[24] 无未捕获异常');
     const errs = await cdp.eval(`return (window.__errs || []).slice(0, 8)`);
