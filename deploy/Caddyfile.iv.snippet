@@ -1,0 +1,27 @@
+# /iv/ ：网页版漫画浏览器（纯静态 PWA），与 /reader/、WebDAV 同域。
+#
+# 放进站点块里，位置必须在兜底（catch-all，反代到 SFTPGo WebDAV 的那个 handle / reverse_proxy）之前，
+# 紧挨着现有的 `handle_path /reader/* { ... }`。不要改动别的块。
+#
+# 静态目录 = deploy/build_iv_static.py 的输出（index.html + manifest + sw.js + icons），部署到 /var/www/iv。
+#
+# 注意 1：这里故意不写 `encode`。/iv/ 下的东西很小，没必要压缩；更重要的是 WebDAV（zip / epub 的 Range 读取）
+#         那条路径绝不能被压缩，否则 Content-Range / Content-Length 会对不上。如果站点块顶层本来就有
+#         `encode gzip zstd`，请把它挪进 /reader/ 这样的 handle 里（或在 WebDAV 的 handle 里排除），
+#         见 README-iv-deploy.md 第 6 步的验证命令。
+# 注意 2：`/iv`（不带斜杠）不会被 handle_path /iv/* 匹配，所以先补一条跳转。
+
+	redir /iv /iv/ 308
+
+	handle_path /iv/* {
+		root * /var/www/iv
+		# 页面 / service worker / manifest 每次都向服务器确认（304 很便宜），发布后马上生效
+		header Cache-Control "no-cache"
+		# 同源 WebDAV 上有登录凭据（只读账号）：禁止别的站点把这个页面放进 iframe，不给 Referer
+		header X-Content-Type-Options "nosniff"
+		header Referrer-Policy "no-referrer"
+		header X-Frame-Options "DENY"
+		header Content-Security-Policy "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+		# sw.js 默认 Service-Worker-Allowed 就是它所在目录（/iv/），不要放宽
+		file_server
+	}
