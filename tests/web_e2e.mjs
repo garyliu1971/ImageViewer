@@ -202,8 +202,8 @@ function startIvServer(books) {
       }, S.slow[rel] || 15);
       return;
     }
-    /* /iv-progress/：进度文件夹。writer 能写；viewer（只读账号）→ 403；其它 → 401。文件夹要先 MKCOL，否则 PUT 回 409（和 SFTPGo 一样） */
-    if (p.startsWith('/iv-progress')) {
+    /* /users/gary/iv-progress/：进度文件夹（和 PyReader 同一个同步用户目录）。writer 能写；viewer（只读账号）→ 403；其它 → 401。文件夹要先 MKCOL，否则 PUT 回 409（和 SFTPGo 一样） */
+    if (p === '/users' || p === '/users/gary' || p.startsWith('/users/gary/iv-progress')) {
       const chunks = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
@@ -214,7 +214,7 @@ function startIvServer(books) {
         let code = 200, body = '';
         if (a !== basic('writer', 'w pass') && a !== basic(S.user, S.pass)) code = 401;
         else if (a === basic(S.user, S.pass) && req.method !== 'GET') code = 403;
-        else if (req.method === 'MKCOL') { S.progDir = true; code = 201; }
+        else if (req.method === 'MKCOL') { if (p === '/users/gary/iv-progress') S.progDir = true; code = 201; }
         else if (req.method === 'PUT') { if (!S.progDir) code = 409; else { S.prog[p] = ent.body; code = 201; } }
         else if (req.method === 'GET') { if (S.prog[p] === undefined) code = 404; else body = S.prog[p]; }
         else code = 405;
@@ -1351,17 +1351,17 @@ function check(name, ok, detail) {
       iv.progLog.length = 0;
       const cfgJs = (extra) => `await window.__IV.davStore(Object.assign({ base: '${iv.origin}', library: 'library', user: 'viewer', pass: 'pä ss' }, ${extra})); return 1;`;
       await fresh(IVURL);
-      await cdp.eval(cfgJs(`{ syncDir: 'iv-progress', syncUser: 'writer', syncPass: 'w pass' }`));
+      await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress', syncUser: 'writer', syncPass: 'w pass' }`));
       await newDeviceOpen('big/lazy.cbz');
       iv.progLog.length = 0;
       await cdp.eval(`window.__IV.showPage(5); window.__IV.saveProgress(); return window.__IV.syncPush(false);`);
       await waitFor(`window.__IV.syncState().sent[${JSON.stringify(SYNCKEY)}]`, 6000);
       const pIdx = (await stateOf()).index;
       const puts = iv.progLog.filter((e) => e.method === 'PUT' || e.method === 'MKCOL');
-      check('进度文件夹不存在 → 先 MKCOL 再 PUT（不是反复重试）', puts[0] && puts[0].status === 409 && puts[1] && puts[1].method === 'MKCOL' && puts[2] && puts[2].method === 'PUT' && puts[2].status === 201, puts.map((e) => e.method + e.status));
+      check('进度文件夹不存在 → 逐层 MKCOL（users / users/gary / users/gary/iv-progress）再 PUT', puts[0] && puts[0].status === 409 && puts.slice(1, 4).every((e) => e.method === 'MKCOL' && e.status === 201) && puts[3].path === '/users/gary/iv-progress' && puts[4] && puts[4].method === 'PUT' && puts[4].status === 201, puts.map((e) => e.method + e.status));
       const wrote = Object.values(iv.prog).map((b) => JSON.parse(b))[0] || {};
       check('写出去的 JSON：key / 页码 / 方向 / 设备，且不含双页 / 适应方式', wrote.key === SYNCKEY && wrote.index === pIdx && pIdx >= 1 && /^(rtl|ltr)$/.test(wrote.direction) && wrote.at > 1.7e12 && !('spread' in wrote) && !('fit' in wrote), wrote);
-      check('用的是进度账号（writer），不是只读的书库账号', puts[2].auth === 'Basic ' + Buffer.from('writer:w pass').toString('base64'), puts[2].auth);
+      check('用的是进度账号（writer），不是只读的书库账号', puts[4].auth === 'Basic ' + Buffer.from('writer:w pass').toString('base64'), puts[4].auth);
 
       // 另一台设备（本地没有记录）打开同一本书 → 接上云端的页码
       await newDeviceOpen('big/lazy.cbz');
@@ -1388,7 +1388,7 @@ function check(name, ok, detail) {
 
       // 只有只读账号（没填进度账号）→ 403 → 提示一次并停用，不反复重试
       await fresh(IVURL);
-      await cdp.eval(cfgJs(`{ syncDir: 'iv-progress' }`));
+      await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress' }`));
       await fresh(IVURL + hashFor('big/lazy.cbz'));
       await waitFor(`window.__IV.state().total === 20`, 10000);
       const n0 = iv.progLog.length;
@@ -1409,7 +1409,7 @@ function check(name, ok, detail) {
       await sleep(400);
       check('进度文件夹留空 → 不同步（零请求）', iv.progLog.length === n1, iv.progLog.slice(n1));
       await fresh(IVURL);
-      await cdp.eval(cfgJs(`{ syncDir: 'iv-progress' }`));
+      await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress' }`));
 
       /* ---- 9) 忘记此设备；返回键 ---- */
       await fresh(IVURL);

@@ -630,3 +630,9 @@ test('云端进度：文件名哈希 / URL / 校验 / 新旧判断', () => {
   assert.equal(C.remoteIsNewer({ at: 10 }, null), true);
   assert.equal(C.remoteIsNewer(null, { at: 1 }), false);
 });
+
+test('进度文件夹逐层 MKCOL 的 URL 链', () => {
+  const o = 'https://h.example';
+  assert.deepEqual(C.progressDirChain(o, 'users/gary/iv-progress'), [o + '/users', o + '/users/gary', o + '/users/gary/iv-progress']);
+  assert.deepEqual(C.progressDirChain(o, '/iv-progress/'), [o + '/iv-progress']);
+});

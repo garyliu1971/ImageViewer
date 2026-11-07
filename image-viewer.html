@@ -523,7 +523,7 @@
       <summary>跨设备续读（进度同步）</summary>
       <p class="dav-note">读到哪一页会写到 WebDAV 上的进度文件夹，换一台设备打开同一本书自动接上。书库账号是只读的，
         写进度要<b>另一个只能写进度文件夹的账号</b>（留空 = 用上面的账号，没有写权限就同步不了）。进度文件夹留空 = 关闭同步。</p>
-      <label>进度文件夹<input type="text" id="davSyncDir" autocomplete="off" spellcheck="false" placeholder="iv-progress"></label>
+      <label>进度文件夹<input type="text" id="davSyncDir" autocomplete="off" spellcheck="false" placeholder="users/gary/iv-progress"></label>
       <label>进度账号（可选）<input type="text" id="davSyncUser" autocomplete="off" spellcheck="false"></label>
       <label>进度密码<input type="password" id="davSyncPass" autocomplete="off"></label>
     </details>
@@ -1164,6 +1164,12 @@
     return ('00000000000000' + s).slice(-14);
   }
   function progressDirUrl(base, dir) { return davBookUrl(base, dir, '').replace(/\/+$/, ''); }
+  /** 进度文件夹每一层的 URL（users → users/gary → users/gary/iv-progress），逐层 MKCOL 用 */
+  function progressDirChain(base, dir) {
+    var segs = String(dir).split('/').filter(Boolean), out = [];
+    for (var i = 1; i <= segs.length; i++) out.push(progressDirUrl(base, segs.slice(0, i).join('/')));
+    return out;
+  }
   function progressUrl(base, dir, key) { return progressDirUrl(base, dir) + '/' + hash53(String(key)) + '.json'; }
   /** 云端进度 JSON 是外来输入：只认字段齐全、key 对得上的，数值一律夹紧；不合格返回 null */
   function normalizeProgress(raw, key) {
@@ -1188,7 +1194,7 @@
   function remoteIsNewer(remote, local) { return !!remote && remote.at > ((local && local.at) || 0); }
 
   global.IVCore = {
-    hash53: hash53, progressDirUrl: progressDirUrl, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
+    hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
     toRemoteProgress: toRemoteProgress, remoteIsNewer: remoteIsNewer,
     basicAuth: basicAuth, UrlRangeSource: UrlRangeSource, parseLaunchHash: parseLaunchHash,
     relError: relError, backOk: backOk, normalizeDavBase: normalizeDavBase, davBookUrl: davBookUrl,
@@ -2883,11 +2889,13 @@
      每本书一个 <进度文件夹>/<hash>.json。打开时拉一次（云端更新才采用），翻页后 3 秒无动作就写上去，切走 / 关页时补写。
      书库账号是只读的，所以写进度可以另填一个有写权限、只管进度文件夹的账号（不填就用书库账号，没写权限会提示一次后停用）。
      同步只是锦上添花：任何失败都不挡开书、不挡翻页。 */
+  /* 放在 PyReader 同一个同步用户目录下，和它的 progress/ 并列（文件格式不同，不互相读写） */
+  var DEFAULT_SYNC_DIR = 'users/gary/iv-progress';
   var syncOff = false, syncTimer = null, syncSent = {}, LS_SYNC_DENIED = 'iv.sync.denied.v1';
   /** 同一个账号 + 文件夹被拒过写权限就记住，别每次打开页面都弹一遍；换了账号 / 文件夹自然不再匹配 */
   function syncId(cfg) { return (cfg.syncUser || cfg.user || '') + '@' + syncDir(cfg); }
   function syncDenied(cfg) { return syncOff || lsGet(LS_SYNC_DENIED, '') === syncId(cfg); }
-  function syncDir(cfg) { return !cfg || cfg.syncDir === '' ? null : (cfg.syncDir == null ? 'iv-progress' : cfg.syncDir); }
+  function syncDir(cfg) { return !cfg || cfg.syncDir === '' ? null : (cfg.syncDir == null ? DEFAULT_SYNC_DIR : cfg.syncDir); }
   function syncAuth(cfg) {
     if (cfg.syncUser) return C.basicAuth(cfg.syncUser, cfg.syncPass || '');
     return cfg.user ? C.basicAuth(cfg.user, cfg.pass || '') : null;
@@ -2936,7 +2944,8 @@
     put().then(function (r) {
       /* 进度文件夹还不存在 → 建一次再写（SFTPGo 对缺父目录的 PUT 回 409 / 404） */
       if ((r.status === 409 || r.status === 404) && !keepalive) {
-        return syncReq(cfg, 'MKCOL', C.progressDirUrl(cfg.base, syncDir(cfg))).then(put);
+        var chain = C.progressDirChain(cfg.base, syncDir(cfg));
+        return chain.reduce(function (p, u) { return p.then(function () { return syncReq(cfg, 'MKCOL', u); }); }, Promise.resolve()).then(put);
       }
       return r;
     }).then(function (r) {
@@ -2961,7 +2970,7 @@
       var cfg = c || { base: location.origin, library: 'library', user: '', pass: '' };
       $('#davBase').value = cfg.base; $('#davLib').value = cfg.library;
       $('#davUser').value = cfg.user || ''; $('#davPass').value = cfg.pass || '';
-      $('#davSyncDir').value = cfg.syncDir == null ? 'iv-progress' : cfg.syncDir;
+      $('#davSyncDir').value = cfg.syncDir == null ? DEFAULT_SYNC_DIR : cfg.syncDir;
       $('#davSyncUser').value = cfg.syncUser || ''; $('#davSyncPass').value = cfg.syncPass || '';
       $('#davMsg').textContent = msg || '';
       if (davPending === p) {
