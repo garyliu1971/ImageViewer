@@ -636,3 +636,53 @@ test('进度文件夹逐层 MKCOL 的 URL 链', () => {
   assert.deepEqual(C.progressDirChain(o, 'users/gary/iv-progress'), [o + '/users', o + '/users/gary', o + '/users/gary/iv-progress']);
   assert.deepEqual(C.progressDirChain(o, '/iv-progress/'), [o + '/iv-progress']);
 });
+
+test('书架：parsePropfind / shelfSplit / 面包屑', () => {
+  const ms = (inner, ns = 'D') => `<?xml version="1.0" encoding="UTF-8"?><${ns}:multistatus xmlns:${ns}="DAV:">${inner}</${ns}:multistatus>`;
+  const dirR = (href) => `<D:response><D:href>${href}</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>`;
+  const fileR = (href, len, mod) => `<D:response><D:href>${href}</D:href><D:propstat><D:prop><D:resourcetype/><D:getcontentlength>${len}</D:getcontentlength><D:getlastmodified>${mod}</D:getlastmodified></D:prop></D:propstat></D:response>`;
+  const xml = ms(
+    dirR('/library/%E5%B0%8F%E8%AF%B4/') +                                  // 自己
+    dirR('/library/%E5%B0%8F%E8%AF%B4/%E7%AC%AC%E4%BA%8C%E5%8D%B7/') +       // 子目录「第二卷」
+    fileR('/library/%E5%B0%8F%E8%AF%B4/a%20b%231.epub', 1234, 'Sat, 07 Nov 2026 08:00:00 GMT') +
+    fileR('/library/%E5%B0%8F%E8%AF%B4/vol10.cbz', 5, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/vol2.cbz', 6, 'x') +
+    fileR('/library/%E5%B0%8F%E8%AF%B4/x.pdf', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/.hidden.cbz', 9, 'x') +
+    fileR('/library/%E5%B0%8F%E8%AF%B4/a&amp;b.zip', 7, 'x'));
+  const es = C.parsePropfind(xml, '/library/%E5%B0%8F%E8%AF%B4/');
+  assert.deepEqual(es.map((e) => e.name), ['第二卷', 'a b#1.epub', 'vol10.cbz', 'vol2.cbz', 'x.pdf', '.hidden.cbz', 'a&b.zip']);
+  assert.equal(es[0].isDir, true); assert.equal(es[1].isDir, false); assert.equal(es[1].size, 1234);
+  assert.equal(es[1].mtime, Date.parse('2026-11-07T08:00:00Z')); assert.equal(es[2].mtime, null);
+  const sp = C.shelfSplit(es);
+  assert.deepEqual(sp.dirs.map((e) => e.name), ['第二卷']);
+  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz']);   // 自然排序，隐藏文件不列
+  assert.equal(sp.other, 1);                                                                          // x.pdf 只计数
+
+  // 不带前缀的 XML、绝对 URL 的 href、小写前缀
+  const x2 = '<multistatus xmlns="DAV:"><response><href>https://h.example/library/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>' +
+    '<response><href>https://h.example/library/a.cbz</href><propstat><prop><getcontentlength>3</getcontentlength></prop></propstat></response></multistatus>';
+  assert.deepEqual(C.parsePropfind(x2, '/library/').map((e) => e.name), ['a.cbz']);
+  assert.deepEqual(C.parsePropfind(ms('<d:response><d:href>/library/z.epub</d:href></d:response>', 'd').replace(/D:/g, 'd:'), '/library').map((e) => e.name), ['z.epub']);
+
+  // 恶意 / 越界 href：非直接子项、.. 、反斜杠、空名 一律丢弃
+  const evil = ms(fileR('/library/sub/deep.cbz', 1, 'x') + fileR('/other/a.cbz', 1, 'x') + fileR('/library/..', 1, 'x') +
+    fileR('/library/a%5Cb.cbz', 1, 'x') + fileR('/library/%2E%2E/x.cbz', 1, 'x') + fileR('/library/ok.cbz', 1, 'x'));
+  assert.deepEqual(C.parsePropfind(evil, '/library/').map((e) => e.name), ['ok.cbz']);
+  assert.deepEqual(C.parsePropfind('', '/library/'), []);
+  assert.deepEqual(C.parsePropfind('not xml', '/library/'), []);
+
+  assert.equal(C.relJoin('', 'a.cbz'), 'a.cbz'); assert.equal(C.relJoin('a/b', 'c.cbz'), 'a/b/c.cbz');
+  assert.deepEqual(C.shelfCrumbs('a/b'), [{ name: 'a', rel: 'a' }, { name: 'b', rel: 'a/b' }]);
+  assert.deepEqual(C.shelfCrumbs(''), []);
+});
+
+test('relError：书架来的路径（trusted）允许「Re:Zero/…」，外来链接仍拒绝协议', () => {
+  assert.equal(C.relError('Re:Zero/v1.cbz', true), null);
+  assert.equal(C.relError('Vol1: Title.cbz', true), null);
+  assert.ok(C.relError('Re:Zero/v1.cbz'));
+  assert.ok(C.relError('javascript:alert(1)'));
+  assert.ok(C.relError('javascript:alert(1)', false));
+  assert.ok(C.relError('/abs', true));            // trusted 只放过协议检查，其余照旧
+  assert.ok(C.relError('a/../b.cbz', true));
+  assert.ok(C.relError('a\b.cbz', true));
+  assert.equal(C.davBookUrl('https://h', 'library', 'Re:Zero/v1.cbz'), 'https://h/library/Re%3AZero/v1.cbz');
+});

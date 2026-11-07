@@ -261,6 +261,7 @@
     backdrop-filter: blur(4px);
   }
   .modal.hidden { display: none; }
+  #dav { z-index: 75; }   /* 书架（同为 .modal，DOM 在后）读目录时要账号框：必须盖在书架上面，toast 是 80 */
   .modal-card {
     background: #1a1d24; border: 1px solid var(--border); border-radius: 14px;
     max-width: 640px; width: calc(100% - 40px); max-height: 82vh; overflow: auto;
@@ -306,8 +307,35 @@
   #backendTag { display: none; font-size: 11px; color: var(--muted); }
   body.has-backend #backendTag { display: inline; }
 
+  /* ---------- 书架（云端书库目录）---------- */
+  #shelf .modal-card { max-width: 720px; }
+  .shelf-crumbs { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; font-size: 13px; margin-bottom: 10px; }
+  .shelf-crumbs button { color: #8ab4ff; padding: 2px 4px; border-radius: 4px; }
+  .shelf-crumbs button:hover { background: rgba(255,255,255,.08); }
+  .shelf-crumbs span { color: var(--muted); }
+  #shelfFilter { width: 100%; margin-bottom: 8px; font: inherit; color: var(--text); background: #12151b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; outline: none; }
+  #shelfList { min-height: 80px; }
+  .shelf-row { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 9px 8px;
+    border-bottom: 1px solid rgba(255,255,255,.05); border-radius: 6px; }
+  .shelf-row:hover, .shelf-row:focus-visible { background: rgba(255,255,255,.07); outline: none; }
+  .shelf-row .ico { flex: 0 0 auto; width: 22px; text-align: center; }
+  .shelf-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .shelf-row .meta { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+  .shelf-row .meta b { color: var(--text); font-weight: 600; }
+  .shelf-row .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .shelf-row .main .nm { flex: none; }
+  .shelf-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,.1); }
+  .shelf-bar i { display: block; height: 100%; border-radius: 2px; background: #6ea8ff; }
+  .shelf-h { font-size: 12px; color: var(--muted); margin: 4px 2px 2px; letter-spacing: .04em; }
+  #shelfRecent { margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.08); }
+  #shelfRecent:empty { display: none; }
+  .shelf-opt { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .shelf-empty { color: var(--muted); font-size: 13px; padding: 18px 4px; line-height: 1.8; }
+
   /* ---------- 云端书库账号 / 返回（只在 http(s) 且无本地后端时出现）---------- */
-  #btnBack, #startDav { display: none; }
+  #btnBack, #startDav, #startShelf, #btnShelf { display: none; }
+  body.has-dav #startShelf, body.has-dav #btnShelf { display: inline-flex; }
   body.has-back #btnBack { display: inline-flex; }
   body.has-dav #startDav { display: inline-flex; }
   #dav .dav-note { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 4px; }
@@ -356,6 +384,7 @@
     <button class="btn primary" id="btnFolder" title="打开文件夹（子目录自动识别为章节）">📂 文件夹</button>
     <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 图片</button>
     <button class="btn" id="btnZip" title="打开压缩包 zip / cbz（连上本地后端后也支持 rar / cbr）">📦 压缩包</button>
+    <button class="btn" id="btnShelf" title="云端书架（L）：浏览书库目录">📚 书架</button>
     <button class="btn" id="btnDisk" title="按磁盘路径打开（目录 / rar·cbr / PDF，需本地后端）">🖧 磁盘路径</button>
   </div>
   <div class="sep"></div>
@@ -429,6 +458,7 @@
       <button class="btn primary" id="startFolder">📂 打开文件夹</button>
       <button class="btn" id="startFiles">🖼 打开图片</button>
       <button class="btn" id="startZip">📦 打开压缩包</button>
+      <button class="btn primary" id="startShelf" title="浏览云端书库的目录，点书就读">📚 云端书架</button>
       <button class="btn" id="startDav" title="云端书库（WebDAV）账号">☁ 书库账号</button>
     </div>
     <p class="start-resume" id="resumeHint"></p>
@@ -476,7 +506,8 @@
         也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
       <tr><td>☁ 云端书库（部署在 <code>/iv/</code> 时）</td><td>打开 <code>/iv/#open=书的相对路径</code>，第一次填一个<b>只读</b> WebDAV 账号；
         zip / cbz / epub 只按需取用到的页（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。
-        账号框里的「跨设备续读」可把读到哪页写到 WebDAV 的进度文件夹，换设备打开同一本书自动接上。</td></tr>
+        账号框里的「跨设备续读」可把读到哪页写到 WebDAV 的进度文件夹，换设备打开同一本书自动接上。
+        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip 就读。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
@@ -532,6 +563,23 @@
       <button class="btn" id="davForget" title="删除这台设备上保存的账号" style="margin-right:auto">忘记此设备</button>
       <button class="btn" id="davCancel">取消</button>
       <button class="btn primary" id="davSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="shelf" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" data-close="shelf">✕</button>
+    <h2>📚 云端书架</h2>
+    <div id="shelfRecent"></div>
+    <div class="shelf-crumbs" id="shelfCrumbs"></div>
+    <input type="text" id="shelfFilter" placeholder="筛选当前目录…" autocomplete="off" spellcheck="false">
+    <div id="shelfList"></div>
+    <div class="modal-actions">
+      <span id="shelfInfo" style="margin-right:auto;font-size:12px;color:var(--muted)"></span>
+      <label class="shelf-opt" title="每次打开 /iv/ 先显示书架和上次读到哪"><input type="checkbox" id="shelfHome"> 启动时显示</label>
+      <button class="btn" id="shelfReload">刷新</button>
+      <button class="btn" data-close="shelf">关闭</button>
     </div>
   </div>
 </div>
@@ -1093,12 +1141,14 @@
   /* ---------------- 启动链接 #open=<相对路径>&src=dav&bid=…&dir=rtl|ltr&back=/reader/ ----------------
      来自别的页面（PyReader 网页版）的链接，一律当不可信输入：严格校验，不合格就拒绝。 */
   var CTRL_RE = /[\u0000-\u001f\u007f]/;
-  function relError(rel) {
+  /** trusted = 路径来自书架（服务器目录列表，逐段 encodeURIComponent 拼 URL）：「Re:Zero/…」这类名字合法；
+      启动链接（#open=）这种外来输入不传，仍然拒绝带协议的路径 */
+  function relError(rel, trusted) {
     if (!rel) return '缺少书的路径';
     if (rel.length > 1024) return '路径太长';
     if (CTRL_RE.test(rel) || rel.indexOf('\\') >= 0) return '路径含非法字符';
     if (rel.charAt(0) === '/') return '路径必须是相对路径';
-    if (/^[a-z][a-z0-9+.-]*:/i.test(rel)) return '路径不能带协议（如 http: / javascript:）';
+    if (!trusted && /^[a-z][a-z0-9+.-]*:/i.test(rel)) return '路径不能带协议（如 http: / javascript:）';
     var segs = rel.split('/');
     for (var i = 0; i < segs.length; i++) {
       if (segs[i] === '' || segs[i] === '.' || segs[i] === '..') return '路径含空段或 ./ ../';
@@ -1193,7 +1243,65 @@
   /** 云端比本地新才采用（相等 = 自己刚写的，不算） */
   function remoteIsNewer(remote, local) { return !!remote && remote.at > ((local && local.at) || 0); }
 
+  /* ---------------- 书架：WebDAV PROPFIND（Depth:1）结果 -> 目录 / 书列表 ---------------- */
+  function xmlText(s) {
+    return String(s).replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1').replace(/&(lt|gt|quot|apos|amp|#\d+|#x[0-9a-f]+);/gi, function (m, e) {
+      var l = e.toLowerCase();
+      if (l === 'lt') return '<'; if (l === 'gt') return '>'; if (l === 'quot') return '"'; if (l === 'apos') return "'"; if (l === 'amp') return '&';
+      var n = l.charAt(1) === 'x' ? parseInt(l.slice(2), 16) : parseInt(l.slice(1), 10);
+      return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : m;
+    });
+  }
+  /** 解析 207 multistatus；selfPath = 被列目录自己的 URL 路径，用来去掉「自己」那一条。
+      只收直接子项（href 的父路径必须等于 selfPath），名字里不许有 \ 和控制字符。返回 [{name, isDir, size, mtime}] */
+  function parsePropfind(xml, selfPath) {
+    function norm(p) {
+      var q = String(p || '');
+      try { q = new URL(q, 'http://x').pathname; } catch (e) { /* 保持原样 */ }
+      try { q = decodeURIComponent(q); } catch (e) { /* 保持原样 */ }
+      return q.replace(/\/+$/, '');
+    }
+    var self = norm(selfPath), out = [], seen = Object.create(null);
+    var re = /<(?:[\w.-]+:)?response\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?response\s*>/gi, m;
+    while ((m = re.exec(String(xml || '')))) {
+      var b = m[1];
+      var h = /<(?:[\w.-]+:)?href\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?href\s*>/i.exec(b);
+      if (!h) continue;
+      var full = norm(xmlText(h[1]).trim());
+      if (full === self) continue;
+      var i = full.lastIndexOf('/');
+      if (i < 0 || full.slice(0, i) !== self) continue;
+      var name = full.slice(i + 1);
+      if (!name || name === '.' || name === '..' || /[\\\u0000-\u001f\u007f]/.test(name) || seen[name]) continue;
+      seen[name] = true;
+      var len = /<(?:[\w.-]+:)?getcontentlength\b[^>]*>\s*(\d+)\s*</i.exec(b);
+      var mod = /<(?:[\w.-]+:)?getlastmodified\b[^>]*>([^<]*)</i.exec(b);
+      var t = mod ? Date.parse(xmlText(mod[1]).trim()) : NaN;
+      out.push({ name: name, isDir: /<(?:[\w.-]+:)?collection\b/i.test(b), size: len ? +len[1] : null, mtime: isNaN(t) ? null : t });
+    }
+    return out;
+  }
+  var SHELF_BOOK_RE = /\.(epub|cbz|zip)$/i;
+  /** 目录在前、书在后，各自自然排序；能打开的只有 epub / cbz / zip，其余（rar / pdf …）只计数不列出 */
+  function shelfSplit(entries) {
+    var dirs = [], bks = [], other = 0;
+    (entries || []).forEach(function (e) {
+      if (e.name.charAt(0) === '.') return;
+      if (e.isDir) dirs.push(e); else if (SHELF_BOOK_RE.test(e.name)) bks.push(e); else other++;
+    });
+    function byName(a, b) { return naturalCompare(a.name, b.name); }
+    return { dirs: dirs.sort(byName), books: bks.sort(byName), other: other };
+  }
+  function relJoin(dir, name) { return dir ? dir + '/' + name : name; }
+  /** 面包屑：'a/b' -> [{name:'a', rel:'a'}, {name:'b', rel:'a/b'}] */
+  function shelfCrumbs(rel) {
+    var segs = String(rel || '').split('/').filter(Boolean), out = [];
+    for (var i = 0; i < segs.length; i++) out.push({ name: segs[i], rel: segs.slice(0, i + 1).join('/') });
+    return out;
+  }
+
   global.IVCore = {
+    parsePropfind: parsePropfind, shelfSplit: shelfSplit, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
     toRemoteProgress: toRemoteProgress, remoteIsNewer: remoteIsNewer,
     basicAuth: basicAuth, UrlRangeSource: UrlRangeSource, parseLaunchHash: parseLaunchHash,
@@ -2228,6 +2336,8 @@
       if (e.key === 'Escape') closeModals();
       return;
     }
+    /* 书架开着时，空格 / 方向键 / L 等不要去翻后面的书（Esc 照常关弹窗） */
+    if (e.key !== 'Escape' && !$('#shelf').classList.contains('hidden')) return;
     switch (e.key) {
       case 'ArrowRight': case 'PageDown': case ' ': e.preventDefault(); next(); break;
       case 'ArrowLeft': case 'PageUp': e.preventDefault(); prev(); break;
@@ -2245,6 +2355,7 @@
       case 'b': case 'B': toggleMode('book', '纸质书质感'); break;
       case 'a': case 'A': setAuto(!autoOn); break;
       case 'g': case 'G': openJump(); break;
+      case 'l': case 'L': if (document.body.classList.contains('has-dav')) openShelf(); break;
       case 'i': case 'I': showDetails(); break;
       case 't': case 'T': toggleThumbs(); break;
       case '[': adjustAuto(-0.5); break;
@@ -2262,16 +2373,17 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav'];
+  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
-  function closeModals() { MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
+  function closeModals() { shelfSeq++; MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
   function toggleModal(id, force) {
     var m = $('#' + id);
     var show = force === undefined ? m.classList.contains('hidden') : force;
     m.classList.toggle('hidden', !show);
     if (id === 'dav' && !show && davPending) davFinish(null);
+    if (id === 'shelf' && !show) shelfSeq++;            /* 关掉书架 = 作废还在飞的读目录，别再弹账号框 */
     if (id === 'jump' && show) setTimeout(function () { try { $('#jumpInput').focus(); $('#jumpInput').select(); } catch (e) {} }, 30);
   }
 
@@ -2769,7 +2881,7 @@
   document.querySelectorAll('[data-close]').forEach(function (b) {
     b.addEventListener('click', function () { toggleModal(b.dataset.close, false); });
   });
-  ['help', 'detail', 'jump', 'browse', 'dav'].forEach(function (id) {
+  ['help', 'detail', 'jump', 'browse', 'dav', 'shelf'].forEach(function (id) {
     $('#' + id).addEventListener('click', function (e) { if (e.target === $('#' + id)) toggleModal(id, false); });
   });
   $('#folderInput').addEventListener('change', function (e) {
@@ -3053,6 +3165,204 @@
       });
     });
   }
+  /* ================= 书架：浏览云端书库目录（PROPFIND Depth:1），点书走 openDavBook ================= */
+  var LS_SHELF = 'iv.shelf.dir.v1', LS_HOME = 'iv.home.shelf.v1';
+  var shelfRel = '', shelfSeq = 0, shelfData = null, shelfRecentDone = false;
+  function shelfUrl(cfg, rel) {
+    return C.davBookUrl(cfg.base, cfg.library, rel).replace(/\/+$/, '') + '/';
+  }
+  function propfind(cfg, rel) { return propfindUrl(shelfUrl(cfg, rel), davAuthHeader()); }
+  function propfindUrl(url, a) {
+    var h = { Depth: '1', 'Content-Type': 'application/xml' }, ctl = null, t = 0;
+    if (a) h['Authorization'] = a;
+    if (typeof AbortController !== 'undefined') { ctl = new AbortController(); t = setTimeout(function () { ctl.abort(); }, 20000); }
+    return fetch(url, { method: 'PROPFIND', headers: h, credentials: 'omit', cache: 'no-store', signal: ctl ? ctl.signal : undefined,
+      body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>' })
+      .then(function (r) {
+        if (r.status !== 207 && r.status !== 200) {
+          var e = new Error(r.status === 404 ? '这个文件夹不存在（404）' : 'HTTP ' + r.status);
+          e.status = r.status; throw e;
+        }
+        return r.text();                               /* 超时计时器要一直跑到正文读完（signal 也管着读 body） */
+      })
+      .then(function (xml) {
+        clearTimeout(t);
+        if (!/<(?:[\w.-]+:)?multistatus\b/i.test(xml)) throw new Error('服务器返回的不是 WebDAV 目录（请检查 WebDAV 地址 / 书库文件夹）');
+        return C.parsePropfind(xml, new URL(url).pathname);
+      }, function (e) { clearTimeout(t); throw (e && e.name === 'AbortError') ? new Error('连接超时') : e; });
+  }
+  /* ---- 云端进度（users/gary/iv-progress/<hash>.json）：目录里有哪些文件 = 哪些书读过；只读读过的那几本 ---- */
+  var cloudProg = {}, cloudIdx = null;
+  function progOf(key) {
+    var c = cloudProg[key], l = books[key];
+    return c && (!l || c.at > (l.at || 0)) ? c : (l || null);
+  }
+  function cloudIndex(force) {
+    if (!force && cloudIdx && Date.now() - cloudIdx.at < 30000) return Promise.resolve(cloudIdx.map);
+    return davEnsure().then(function (cfg) {
+      if (!cfg || syncDir(cfg) === null) return null;
+      var url = C.progressDirUrl(cfg.base, syncDir(cfg)) + '/';
+      return propfindUrl(url, syncAuth(cfg)).then(function (es) {
+        var map = Object.create(null);
+        es.forEach(function (e) { if (!e.isDir && /\.json$/i.test(e.name)) map[e.name] = e.mtime || 0; });
+        cloudIdx = { at: Date.now(), map: map };
+        return map;
+      });
+    }).then(null, function () { return null; });                 /* 没有进度文件夹 / 没权限：当没有云端进度 */
+  }
+  function fetchCloud(key) {
+    if (cloudProg[key]) return Promise.resolve(cloudProg[key]);
+    return pullProgress(key).then(function (r) { if (r) cloudProg[key] = r; return r; });
+  }
+  /** 并发 <= 4 地取一批 key 的云端进度 */
+  function fetchCloudMany(keys) {
+    var i = 0;
+    function worker() { if (i >= keys.length) return Promise.resolve(); return fetchCloud(keys[i++]).then(worker, worker); }
+    return Promise.all([worker(), worker(), worker(), worker()]);
+  }
+  function ago(ms) {
+    var d = Math.max(0, Date.now() - ms) / 1000;
+    if (d < 60) return '刚刚';
+    if (d < 3600) return Math.floor(d / 60) + ' 分钟前';
+    if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
+    if (d < 86400 * 30) return Math.floor(d / 86400) + ' 天前';
+    return new Date(ms).toLocaleDateString();
+  }
+  function progLabel(r) {
+    var tot = r.total | 0, n = (r.index | 0) + 1;
+    return '读到第 <b>' + n + '</b>' + (tot ? ' / ' + tot : '') + ' 页' + (r.chapter ? ' · 章节 ' + (r.chapter + 1) : '');
+  }
+  function progBar(r) {
+    var tot = r.total | 0;
+    return tot > 0 ? '<span class="shelf-bar"><i style="width:' + Math.max(2, Math.min(100, Math.round(((r.index | 0) + 1) / tot * 100))) + '%"></i></span>' : '';
+  }
+  /** 当前目录里读过的书：索引里有对应文件的才去取 */
+  function loadFolderProgress(seq) {
+    if (!shelfData) return Promise.resolve();
+    return cloudIndex(false).then(function (map) {
+      if (!map || seq !== shelfSeq) return;
+      var keys = shelfData.books.map(function (b) { return 'dav:' + C.relJoin(shelfRel, b.name); })
+        .filter(function (k) { return map[C.hash53(k) + '.json'] !== undefined; });
+      return fetchCloudMany(keys).then(function () { if (seq === shelfSeq) renderShelf(); });
+    });
+  }
+  /** 「继续阅读」：云端最近改过的几个进度文件 + 本机最近读的，按 at 合并取前 5 */
+  function loadRecent(seq) {
+    function render() {
+      if (seq !== shelfSeq) return;
+      var seen = Object.create(null), list = [];
+      function add(k, r) { if (r && /^dav:/.test(k) && !seen[k]) { seen[k] = 1; list.push({ k: k, r: r }); } }
+      Object.keys(books).forEach(function (k) { add(k, progOf(k)); });
+      Object.keys(cloudProg).forEach(function (k) { add(k, progOf(k)); });
+      list.sort(function (a, b) { return (b.r.at || 0) - (a.r.at || 0); });
+      list = list.slice(0, 5);
+      $('#shelfRecent').innerHTML = list.length ? '<div class="shelf-h">继续阅读</div>' + list.map(function (x) {
+        var rel = x.k.slice(4);
+        return '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="main"><span class="nm">' +
+          esc(x.r.title || C.baseName(rel)) + '</span>' + progBar(x.r) + '</span><span class="meta">' + progLabel(x.r) + ' · ' + ago(x.r.at || 0) + '</span></button>';
+      }).join('') : '';
+    }
+    render();
+    return cloudIndex(false).then(function (map) {
+      if (!map || seq !== shelfSeq) return;
+      var names = Object.keys(map).sort(function (a, b) { return map[b] - map[a]; }).slice(0, 8);
+      /* 文件名是哈希，要读内容才知道是哪本书；已经取过的不重复取 */
+      var have = Object.create(null);
+      Object.keys(cloudProg).forEach(function (k) { have[C.hash53(k) + '.json'] = 1; });
+      var todo = names.filter(function (n) { return !have[n]; });
+      return Promise.all(todo.map(function (n) {
+        return davEnsure().then(function (cfg) {
+          return syncReq(cfg, 'GET', C.progressDirUrl(cfg.base, syncDir(cfg)) + '/' + n).then(function (r) { return r.ok ? r.json() : null; });
+        }).then(function (raw) {
+          if (raw && typeof raw.key === 'string' && /^dav:/.test(raw.key)) {
+            var norm = C.normalizeProgress(raw, raw.key);
+            if (norm && C.hash53(raw.key) + '.json' === n) cloudProg[raw.key] = norm;
+          }
+        }, function () {});
+      })).then(render);
+    });
+  }
+  function openShelf() {
+    if (BE.on || !/^https?:$/.test(location.protocol)) { toast('云端书架只在 /iv/ 页面（没连本地后端）可用'); return; }
+    var last = ''; try { last = localStorage.getItem(LS_SHELF) || ''; } catch (e) { last = ''; }
+    toggleModal('shelf', true);
+    $('#shelfFilter').value = '';
+    shelfRecentDone = false; cloudIdx = null;
+    try { $('#shelfHome').checked = localStorage.getItem(LS_HOME) !== '0'; } catch (e) { $('#shelfHome').checked = true; }
+    loadShelf(C.relError(last, true) ? '' : last);
+  }
+  function shelfMsg(html) { $('#shelfList').innerHTML = '<div class="shelf-empty">' + html + '</div>'; $('#shelfInfo').textContent = ''; }
+  function loadShelf(rel) {
+    var seq = ++shelfSeq;
+    shelfRel = rel; shelfData = null;
+    renderCrumbs();
+    shelfMsg('读取中…');
+    return davEnsure().then(function (cfg) {
+      if (seq !== shelfSeq) return null;                /* 书架已经关了：不要再弹账号框 */
+      return cfg || askDav('第一次使用云端书架：请填 WebDAV 账号（建议只读账号）');
+    }).then(function (cfg) {
+      if (seq !== shelfSeq) return;
+      if (!cfg) { shelfMsg('还没有书库账号。点「☁ 书库账号」填写后再打开书架。'); return; }
+      return propfind(cfg, rel).then(function (entries) {
+        if (seq !== shelfSeq) return;
+        shelfData = C.shelfSplit(entries);
+        try { localStorage.setItem(LS_SHELF, rel); } catch (e) { /* 忽略 */ }
+        renderShelf();
+        loadFolderProgress(seq);
+        if (!shelfRecentDone) { shelfRecentDone = true; loadRecent(seq); }
+      }, function (e) {
+        if (seq !== shelfSeq) return;
+        if (e && e.status === 401) {
+          return askDav('账号或密码不对（HTTP 401），请重新输入').then(function (c) {
+            if (seq !== shelfSeq) return;
+            if (c) return loadShelf(rel);
+            shelfMsg('没有有效的书库账号（HTTP 401）。');
+          });
+        }
+        if (e && e.status === 404 && rel) { toast('这个文件夹不存在，回到书库根'); return loadShelf(''); }
+        shelfMsg('读取失败：' + esc((e && e.message) || e) + '。<br>请检查网络 / 账号，或点「刷新」。');
+      });
+    });
+  }
+  function renderCrumbs() {
+    var lib = (davCfg && davCfg.library) || '书库';
+    var html = '<button data-rel="">📚 ' + esc(lib) + '</button>';
+    C.shelfCrumbs(shelfRel).forEach(function (c) { html += '<span>/</span><button data-rel="' + esc(c.rel) + '">' + esc(c.name) + '</button>'; });
+    $('#shelfCrumbs').innerHTML = html;
+  }
+  function renderShelf() {
+    if (!shelfData) return;
+    var q = $('#shelfFilter').value.trim().toLowerCase();
+    function hit(e) { return !q || e.name.toLowerCase().indexOf(q) >= 0; }
+    var ds = shelfData.dirs.filter(hit), bs = shelfData.books.filter(hit), html = '';
+    ds.forEach(function (d) {
+      html += '<button class="shelf-row" data-dir="' + esc(C.relJoin(shelfRel, d.name)) + '"><span class="ico">📁</span><span class="nm">' + esc(d.name) + '</span></button>';
+    });
+    var withProg = bs.map(function (b, i) { return { b: b, i: i, r: progOf('dav:' + C.relJoin(shelfRel, b.name)) }; });
+    withProg.sort(function (x, y) {                                /* 读过的在前（最近的最前），其余保持名字顺序 */
+      if (!!x.r !== !!y.r) return x.r ? -1 : 1;
+      return x.r ? (y.r.at || 0) - (x.r.at || 0) : x.i - y.i;
+    });
+    withProg.forEach(function (x) {
+      var b = x.b, rel = C.relJoin(shelfRel, b.name), r = x.r;
+      var meta = (r ? progLabel(r) + ' · ' : '') + (b.size != null ? fmtSize(b.size) : '');
+      html += '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="main"><span class="nm">' + esc(b.name) + '</span>' +
+        (r ? progBar(r) : '') + '</span><span class="meta">' + meta + '</span></button>';
+    });
+    if (!html) shelfMsg(q ? '没有匹配「' + esc(q) + '」的项目。' : '这个文件夹里没有 epub / cbz / zip，也没有子文件夹。');
+    else $('#shelfList').innerHTML = html;
+    $('#shelfInfo').textContent = shelfData.dirs.length + ' 个文件夹 · ' + shelfData.books.length + ' 本书' +
+      (shelfData.other ? ' · 另有 ' + shelfData.other + ' 个暂不支持的文件（rar / pdf 等）' : '');
+  }
+  function openShelfBook(rel) {
+    var bad = C.relError(rel, true);
+    if (bad) { toast('路径不合法：' + bad); return; }
+    toggleModal('shelf', false);
+    var token = ++launchSeq;
+    setBack(null);
+    toast('正在打开…');
+    openDavBook({ rel: rel, title: C.baseName(rel), dir: null }, token)['catch'](function (e) { toast('云端打开失败：' + ((e && e.message) || e)); });
+  }
   function applyLaunchHash(hash) {
     var p = C.parseLaunchHash(hash === undefined ? location.hash : hash);
     if (!p) return Promise.resolve(false);
@@ -3076,6 +3386,12 @@
   detectBackend().then(function () {
     if (/^https?:$/.test(location.protocol) && !BE.on) document.body.classList.add('has-dav');
     return applyLaunchHash();
+  }).then(function (opened) {
+    /* Reader 式首页：已经存过账号、没有启动链接、没有打开书 → 直接显示书架（含「继续阅读」）；可在书架里关掉 */
+    if (opened || location.hash || !document.body.classList.contains('has-dav') || !$('#start') || $('#start').classList.contains('hidden')) return;
+    var on = true; try { on = localStorage.getItem(LS_HOME) !== '0'; } catch (e) { on = true; }
+    if (!on) return;
+    return davEnsure().then(function (cfg) { if (cfg && !anyModal()) openShelf(); });
   })['catch'](function (e) { toast('启动链接处理失败：' + ((e && e.message) || e)); });
   window.addEventListener('hashchange', function () {
     applyLaunchHash()['catch'](function (e) { toast('启动链接处理失败：' + ((e && e.message) || e)); });
@@ -3090,6 +3406,25 @@
     location.assign(launchBack);
   });
   $('#startDav').addEventListener('click', function () { askDav(); });
+  $('#startShelf').addEventListener('click', openShelf);
+  $('#btnShelf').addEventListener('click', openShelf);
+  $('#shelfReload').addEventListener('click', function () { loadShelf(shelfRel); });
+  $('#shelfFilter').addEventListener('input', renderShelf);
+  $('#shelfCrumbs').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('button[data-rel]') : null;
+    if (b) { $('#shelfFilter').value = ''; loadShelf(b.getAttribute('data-rel')); }
+  });
+  $('#shelfRecent').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.shelf-row[data-book]') : null;
+    if (b) openShelfBook(b.getAttribute('data-book'));
+  });
+  $('#shelfHome').addEventListener('change', function () { try { localStorage.setItem(LS_HOME, this.checked ? '1' : '0'); } catch (e) { /* 忽略 */ } });
+  $('#shelfList').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.shelf-row') : null;
+    if (!b) return;
+    if (b.hasAttribute('data-dir')) { $('#shelfFilter').value = ''; loadShelf(b.getAttribute('data-dir')); }
+    else if (b.hasAttribute('data-book')) openShelfBook(b.getAttribute('data-book'));
+  });
   $('#davSave').addEventListener('click', davSubmit);
   $('#davCancel').addEventListener('click', function () { davFinish(null); });
   $('#davClose').addEventListener('click', function () { davFinish(null); });
@@ -3120,6 +3455,7 @@
   /* 测试钩子（不影响正常使用） */
   window.__IV = {
     openItems: openItems, openZipFile: openZipFile, openZipSource: openZipSource, openZipUrl: openZipUrl, scanDir: scanDir,
+    openShelf: openShelf, loadShelf: loadShelf, shelfState: function () { return { rel: shelfRel, data: shelfData }; },
     syncPush: syncPush, pullProgress: pullProgress, syncState: function () { return { off: syncOff, sent: syncSent }; },
     applyLaunchHash: applyLaunchHash, askDav: askDav, davEnsure: davEnsure, davStore: davStore, davForget: davForget,
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
