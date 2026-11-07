@@ -161,6 +161,19 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
   - 页面连着本地后端（`web_backend.py`）时不处理 `#open=`（那里没有书库账号入口），只弹一条提示。
   - 链接里**绝不放账号密码**。
 
+## 7b. 跨设备续读（进度同步）
+
+每本云端书一个 JSON：`/iv-progress/<bookKey 的 14 位哈希>.json`（只含读到哪页 / 章节 / 方向 / 设备 / 毫秒时间戳 `at`，
+双页、去边等跟屏幕有关的设置不同步）。打开书时先 GET，云端 `at` 比本地新才采用；翻页 3 秒后 PUT，切走 / 关页时补写。
+**以时间戳为准，两台设备时钟差几分钟以上会判错新旧**（手机和电脑都开自动校时即可）。
+
+`iv-viewer` 是只读的，**写不了进度**，所以要再建一个只管进度的账号（Caddy 不用改：`/iv-progress/` 落在兜底反代 → SFTPGo WebDAV）：
+
+- 用户名 `iv-sync`（随意），Virtual folders 新建一个 Azure Blob / 本地目录的虚拟文件夹挂到 `/iv-progress`，**别挂书库**；
+- Permissions：`/iv-progress` 给 `list` `download` `upload` `overwrite` `create_dirs`（PUT 缺父目录时页面会 MKCOL 一次）；`/` 不给任何权限；
+- 手机 / 电脑上：「☁ 书库账号」→「跨设备续读」填进度文件夹 `iv-progress` + 这个账号。进度文件夹留空 = 关闭同步；进度账号留空 = 用书库账号（只读 → 403，页面提示一次并记住，不再反复弹）。
+- 验证：`curl -u iv-sync:… -X PUT --data '{}' $HOST/iv-progress/x.json` → 201；同样用 `iv-viewer` → 403/404；删掉 `x.json`。
+
 ## 8. 回滚 / 下线
 
 - 只回滚页面：见第 2 步。
