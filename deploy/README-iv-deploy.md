@@ -25,6 +25,8 @@ python deploy/build_iv_static.py            # -> dist/iv-static/ 和 dist/iv-sta
 
 目录内容：`index.html`（= `image-viewer.html` 改名）、`manifest.webmanifest`、`sw.js`（`__BUILD__` 已换成内容哈希）、
 `icons/*.png`。图标是 `deploy/make_pwa_icons.py` 生成并已提交的，平时不用重跑。
+`--out <目录>` 只接受不存在的新目录、空目录，或本脚本上次生成的目录（里面有 `.iv-static-build` 标记，不会进 .tgz）；
+别的有内容的目录（例如仓库里的 `deploy/`、`tests/`）会被拒绝，什么都不删。build 号只看内容，不受 CRLF / LF 检出影响。
 
 先在本机看一眼（可选）：`python -m http.server -d dist/ 8099`，打开 `http://localhost:8099/iv-static/` 只能验证页面能起来；
 真正的 `/iv/` 作用域要在 VM 上验证。
@@ -152,9 +154,11 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
 - 启动链接格式（给其他页面做跳转用）：
   `/iv/#open=<encodeURIComponent(相对路径)>&src=dav&bid=<可选>&dir=rtl|ltr&back=/reader/`
   - `open` 必须是书库下的相对路径（不能以 `/` 开头，不能含 `..`、协议、反斜杠）；
-  - `dir` 只在 epub 没声明翻页方向、且这本书还没有保存过方向时才生效，之后以用户自己的切换为准；
+  - 阅读方向是**每本书各自记住**的：这本书第一次打开时，方向初值 = epub 的 OPF `page-progression-direction`（有的话）> 链接的 `dir`；
+    一旦保存过（用户切换过，或第一次打开时已存下），以后每次都用保存的值，OPF / `dir` 都不再覆盖；
   - `back` 只接受同源路径（`/…`，不能 `//…`），有效时工具栏出现「← 返回」。
-  - 打开后页面会用 `history.replaceState` 把 `#…` 去掉。
+  - 打开后页面会用 `history.replaceState` 把 `#…` 去掉。连续点两个链接时以最后一个为准（慢的旧链接完成后会被丢弃）。
+  - 页面连着本地后端（`web_backend.py`）时不处理 `#open=`（那里没有书库账号入口），只弹一条提示。
   - 链接里**绝不放账号密码**。
 
 ## 8. 回滚 / 下线

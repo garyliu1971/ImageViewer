@@ -152,7 +152,7 @@ function startIvServer(books) {
   const html = fs.readFileSync(PAGE);
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').replace('__BUILD__', 'e2e');
   const manifest = fs.readFileSync(path.join(ROOT, 'manifest.webmanifest'));
-  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [] };
+  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [], slow: {} };   // slow: 相对路径 -> 每个请求的延迟 ms（默认 15）
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     const p = decodeURIComponent(u.pathname);
@@ -199,7 +199,7 @@ function startIvServer(books) {
         res.writeHead(206, { 'Content-Range': `bytes ${a}-${b}/${data.length}`, 'Content-Length': body.length,
           'Content-Type': 'application/octet-stream', 'Accept-Ranges': 'bytes' });
         res.end(body);
-      }, 15);
+      }, S.slow[rel] || 15);
       return;
     }
     send(404, 'text/plain', 'nf');
@@ -1075,7 +1075,9 @@ function check(name, ok, detail) {
         const noPpd = Buffer.from(epubBuf); Buffer.alloc(ppd.length, 0x20).copy(noPpd, at);
         const ltr = Buffer.from(epubBuf); Buffer.from('page-progression-direction="ltr"').copy(ltr, at);
         bookBufs['nodir.epub'] = noPpd; bookBufs['ltr.epub'] = ltr;
+        bookBufs['rtl2.epub'] = epubBuf;     // OPF 声明 rtl，用来测「保存的该书方向」压过 OPF
       }
+      bookBufs['slow/x.epub'] = epubBuf;     // 慢书：测两次快速启动「最后一个说了算」
       // 大 cbz：20 页，每页 PNG 后面补 200KB 零（store，不压缩）→ 约 4MB，用来证明只取用到的页
       const bigFiles = [];
       for (let i = 1; i <= 20; i++) {
@@ -1180,7 +1182,7 @@ function check(name, ok, detail) {
       const sig = (s) => JSON.stringify({ n: s.total, d: s.decoded.map((d) => [d.name, d.path]), dir: s.S.direction, ch: s.chapters });
       check('openZipUrl 的页序 / 路径 / 方向 / 章节 = openZipFile', viaUrl.ok === true && sig(viaFile) === sig(viaUrl), { a: sig(viaFile).slice(0, 160), b: sig(viaUrl).slice(0, 160) });
 
-      /* ---- 4) 方向优先级：OPF > 该书已保存的 > 链接 dir ---- */
+      /* ---- 4) 方向「每本书各自记住」：第一次打开 = OPF > 链接 dir 做初值；保存之后以保存的为准（OPF / 链接都不再覆盖） ---- */
       if (!bookBufs['nodir.epub']) {
         check('方向优先级', 'skip', 'fixture 的 OPF 不是 store，没法就地改');
       } else {
@@ -1199,7 +1201,21 @@ function check(name, ok, detail) {
         await fresh(IVURL + hashFor('ltr.epub', '&dir=rtl'));
         await waitFor(`window.__IV.state().total === 5`, 8000);
         const d3 = await stateOf();
-        check('OPF 声明 ltr + 链接 dir=rtl → OPF 优先（ltr）', d3.S.direction === 'ltr', d3.S);
+        check('第一次打开：OPF 声明 ltr + 链接 dir=rtl → OPF 优先（ltr）', d3.S.direction === 'ltr', d3.S);
+        // OPF 声明 rtl 的书：第一次 rtl（OPF 压过链接 dir=ltr）→ 用户切成 ltr → 再次打开（OPF 仍是 rtl、链接 dir=rtl）→ 用保存的 ltr
+        await fresh(IVURL + hashFor('rtl2.epub', '&dir=ltr'));
+        await waitFor(`window.__IV.state().total === 5`, 8000);
+        const e1 = await stateOf();
+        check('第一次打开：OPF rtl > 链接 dir=ltr → rtl', e1.S.direction === 'rtl', e1.S);
+        await cdp.eval(`await __force('direction', false); window.__IV.saveProgress(); return 1;`);
+        await fresh(IVURL + hashFor('rtl2.epub', '&dir=rtl'));
+        await waitFor(`window.__IV.state().total === 5`, 8000);
+        const e2 = await stateOf();
+        check('用户切换后再次打开：保存的方向（ltr）压过 OPF rtl 和链接 dir=rtl', e2.S.direction === 'ltr' && e2.bookKey === 'dav:rtl2.epub', e2.S);
+        await cdp.eval(`window.__IV.toggleDirection(); window.__IV.saveProgress(); return 1;`);   // 切回 rtl 也同样被记住
+        await fresh(IVURL + hashFor('rtl2.epub', '&dir=ltr'));
+        await waitFor(`window.__IV.state().total === 5`, 8000);
+        check('再切一次 → 第三次打开仍用保存的值（rtl）', (await stateOf()).S.direction === 'rtl');
       }
 
       /* ---- 5) 只取用到的页：4MB 的 cbz，看前几页只发出很少字节；并发不超过 4 ---- */
@@ -1242,6 +1258,36 @@ function check(name, ok, detail) {
         for (let i = 0; i < 60 && window.__IV.state().total !== 5; i++) await window.__IV.wait(100);
         return { total: window.__IV.state().total, back: window.__IV.launchInfo().back, disp: getComputedStyle(document.querySelector('#btnBack')).display, hash: location.hash };`);
       check('hashchange（同页再点链接）也能打开；非法 back 被丢弃：能打开、没有返回键', noBack.total === 5 && noBack.back === null && noBack.disp === 'none' && noBack.hash === '', noBack);
+
+      /* ---- 6b) 连着本地后端（BE.on）时不处理 #open=：提示 + 不发请求 + hash 清掉 ---- */
+      await fresh(IVURL);
+      const be0 = iv.log.length;
+      const beRes = await cdp.eval(`
+        const BE = window.__IV.backend(); const was = BE.on; BE.on = true;
+        document.querySelector('#toast').textContent = '';
+        location.hash = '#open=' + encodeURIComponent(${JSON.stringify(RELE)});
+        await window.__IV.wait(600);
+        const out = { toast: document.querySelector('#toast').textContent, hash: location.hash, total: window.__IV.state().total };
+        BE.on = was;
+        return out;`);
+      check('连着本地后端：#open= 不处理，给出提示、不发书库请求、hash 清掉', /本地后端/.test(beRes.toast) && beRes.total === 0 && beRes.hash === '' && iv.log.length === be0, { beRes, n: iv.log.length - be0 });
+
+      /* ---- 6c) 连点两个启动链接：最后一个说了算，慢的旧链接后到也不覆盖 ---- */
+      await fresh(IVURL);
+      iv.slow['slow/x.epub'] = 400;
+      await cdp.eval(`location.hash = '#open=' + encodeURIComponent('slow/x.epub'); await window.__IV.wait(120);
+        location.hash = '#open=' + encodeURIComponent(${JSON.stringify(RELE)}); return 1;`);
+      await waitFor(`window.__IV.state().total === 5 && window.__IV.state().bookKey === 'dav:' + ${JSON.stringify(RELE)}`, 8000);
+      await sleep(2500);                                    // 慢书的几个请求（各 400ms）早就返回完了
+      const raced = await cdp.eval(`return { key: window.__IV.state().bookKey, total: window.__IV.state().total, hash: location.hash };`);
+      check('先慢后快：最后点的那本留着，慢的旧链接完成后没有盖上去', raced.key === 'dav:' + RELE && raced.total === 5 && raced.hash === '', raced);
+      check('旧链接确实发过请求（所以测到的是丢弃而不是没发）', iv.log.some((e) => e.path === '/library/slow/x.epub'));
+      delete iv.slow['slow/x.epub'];
+
+      /* ---- 6d) 起始页的续读提示：云端书（dav:）不能叫人「重新选中同一个文件夹」 ---- */
+      await fresh(IVURL);
+      const hint = await cdp.eval(`return document.querySelector('#resumeHint').textContent;`);
+      check('最近读的是云端书 → 提示重新打开书 / 链接，而不是重新选文件夹', /上次阅读/.test(hint) && /云端/.test(hint) && !/重新选中同一个文件夹/.test(hint), hint);
 
       /* ---- 7) 服务器忽略 Range / 404 ---- */
       await fresh(IVURL);

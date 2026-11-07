@@ -842,16 +842,16 @@
   };
 
   /** 解出条目字节：store 直接切，deflate 走原生 DecompressionStream('deflate-raw') */
-  ZipReader.prototype.extract = function (entry) {
+  ZipReader.prototype.extract = function (entry, low) {
     if (entry.dir) return Promise.reject(new Error('目录条目'));
     if (entry.flags & 1) return Promise.reject(new Error('压缩包已加密，请用桌面版'));
     if (entry.method !== 0 && entry.method !== 8) return Promise.reject(new Error('不支持的压缩方式 ' + entry.method));
     var self = this;
-    return this.src.read(entry.localOffset, 30).then(function (head) {
+    return this.src.read(entry.localOffset, 30, low).then(function (head) {
       var hdv = new DataView(head.buffer, head.byteOffset, head.byteLength);
       if (u32(hdv, 0) !== 0x04034b50) throw new Error('zip 本地文件头损坏');
       var dataStart = entry.localOffset + 30 + u16(hdv, 26) + u16(hdv, 28);
-      return self.src.read(dataStart, entry.compSize);
+      return self.src.read(dataStart, entry.compSize, low);
     }).then(function (raw) {
       if (entry.method === 0) return raw;
       if (typeof DecompressionStream !== 'function') throw new Error('当前浏览器不支持 deflate-raw 解压');
@@ -956,6 +956,7 @@
     this.onAuthFail = opts.onAuthFail || null;
     this.size = 0;
     this._active = 0; this._queue = [];
+    this._lowActive = 0; this._lowQueue = [];     // 低优先级（缩略图）读：排在所有页面读后面，且最多占 maxParallel-1 个名额，页面读永远有位子
     this._tail = null;       // 文件尾部那一块（ZipReader.open 先读它）：中央目录通常就在里面，不再单独请求
     this.requests = 0;       // 统计：发出过多少个 HTTP 请求（测试 / 排错用）
   }
@@ -1015,22 +1016,27 @@
       return dropBody(res).then(head);          // 416 / 405 等：退回 HEAD
     });
   };
-  UrlRangeSource.prototype._run = function (task) {
+  UrlRangeSource.prototype._run = function (task, low) {
     var self = this;
     return new Promise(function (resolve, reject) {
-      self._queue.push({ task: task, resolve: resolve, reject: reject });
+      (low ? self._lowQueue : self._queue).push({ task: task, resolve: resolve, reject: reject, low: !!low });
       self._pump();
     });
   };
+  /** 页面读（_queue）永远先于缩略图读（_lowQueue）；缩略图读最多同时占 maxParallel-1 个名额（maxParallel=1 时占 1 个） */
   UrlRangeSource.prototype._pump = function () {
-    var self = this;
-    while (this._active < this.maxParallel && this._queue.length) {
+    var self = this, lowMax = Math.max(1, this.maxParallel - 1);
+    for (;;) {
+      if (this._active >= this.maxParallel) return;
+      var job = this._queue.length ? this._queue.shift()
+        : (this._lowQueue.length && this._lowActive < lowMax ? this._lowQueue.shift() : null);
+      if (!job) return;
       (function (job) {
-        self._active++;
+        self._active++; if (job.low) self._lowActive++;
         Promise.resolve().then(job.task).then(job.resolve, job.reject).then(function () {
-          self._active--; self._pump();
+          self._active--; if (job.low) self._lowActive--; self._pump();
         });
-      })(this._queue.shift());
+      })(job);
     }
   };
   UrlRangeSource.prototype._readOnce = function (off, len) {
@@ -1048,7 +1054,8 @@
       });
     });
   };
-  UrlRangeSource.prototype.read = function (off, len) {
+  /** low=true：低优先级（缩略图），只在没有页面读排队时才发出 */
+  UrlRangeSource.prototype.read = function (off, len, low) {
     var self = this;
     if (off < 0) return Promise.reject(httpError('读取位置为负', 0, 'arg'));
     len = Math.min(len, this.size - off);
@@ -1066,7 +1073,7 @@
         });
       }
       return attempt(0);
-    }).then(function (buf) {
+    }, low).then(function (buf) {
       if (off + len === self.size && len <= 131072) self._tail = { off: off, buf: buf };
       return buf;
     });
@@ -1369,14 +1376,19 @@
       bmpW: 0, bmpH: 0, crop: null, probeDone: false };
   }
 
-  function pageBlob(p) {
+  /* low=true：缩略图读（远程源上排在页面读后面）。同一页已有在途读取就共用；在途的是低优先级而现在要高优先级 → 另起一个高优先级读 */
+  function pageBlob(p, low) {
     if (p.kind === 'url') return Promise.resolve(p.url);   /* 后端直接给地址 */
     if (p._blob) return Promise.resolve(p._blob);
     if (p.kind === 'zip') {
-      return p.zf.extract(p.entry).then(function (bytes) {
-        p._blob = new Blob([bytes], { type: mimeOf(p.name) });
+      if (p._bp && (low || !p._bpLow)) return p._bp;
+      var bp = p.zf.extract(p.entry, !!low).then(function (bytes) {
+        if (p._bp === bp) p._bp = null;
+        if (!p._blob) p._blob = new Blob([bytes], { type: mimeOf(p.name) });
         return p._blob;
-      });
+      }, function (e) { if (p._bp === bp) p._bp = null; throw e; });
+      p._bp = bp; p._bpLow = !!low;
+      return bp;
     }
     if (p.kind === 'fsa') {
       return p.handle.getFile().then(function (f) { p.size = f.size; return f; });
@@ -1391,11 +1403,13 @@
       apng: 'png', tif: 'tiff', ico: 'x-icon' }[e] || e || 'png');
   }
 
-  function urlFor(p) {
+  function urlFor(p, low) {
     if (p.kind === 'url') return Promise.resolve(p.url);   /* 不进 LRU，不建 objectURL */
     var hit = urlMap.get(p.id);
     if (hit) { urlMap.delete(p.id); urlMap.set(p.id, hit); return Promise.resolve(hit.url); }
-    return pageBlob(p).then(function (blob) {
+    return pageBlob(p, low).then(function (blob) {
+      var again = urlMap.get(p.id);                         /* 共用读取时可能已经有人建好了 */
+      if (again) return again.url;
       var rec = { url: URL.createObjectURL(blob), page: p };
       urlMap.set(p.id, rec);
       evictUrls();
@@ -1480,7 +1494,8 @@
     bookKey = opts.key || C.bookKey(bookKind, bookTitle, keep.length,
       C.entriesSig(keep.map(function (k) { return k.path; })));
 
-    /* epub 的 OPF 声明了翻页方向（日漫 rtl）：没有该书自己的记录时采用 */
+    /* 阅读方向是「每本书各自记住」的：这本书已经保存过方向（用户切换过 / 之前打开时存下）→ 以保存的为准（loadList 里套用）；
+       只有第一次打开（没有保存的方向）才用 opts.dir 做初值，而 opts.dir 本身已按 OPF 的 page-progression-direction > 启动链接 dir 提示 选出。 */
     if (opts.dir && !(books[bookKey] && books[bookKey].direction)) S.direction = opts.dir;
 
     var built = keep.map(function (k) { return makePage(k); });
@@ -1984,7 +1999,7 @@
     highlightThumb();
   }
   function isRemotePage(p) { return !!(p && p.zf && p.zf.src instanceof C.UrlRangeSource); }
-  var tQueue = [], tBusy = 0, T_CONC = 2;
+  var tQueue = [], tBusy = 0, T_CONC = 2, T_CONC_REMOTE = 1;   /* 远程书的缩略图 = 整页下载：同时只做 1 张，且读取排在页面读后面（低优先级） */
   /* 后端模式下缩略图交给服务端出图（不用把整本大图都拉回浏览器） */
   function thumbUrlFor(p) {
     if (!BE.on || !p.spath) return null;
@@ -1996,6 +2011,7 @@
   }
   function pumpThumbs() {
     while (tBusy < T_CONC && tQueue.length) {
+      if (tBusy >= T_CONC_REMOTE && tQueue[0] && isRemotePage(tQueue[0].page)) break;
       var t = tQueue.shift();
       if (!t) continue;
       t.queued = false;
@@ -2003,7 +2019,7 @@
       if (t.done) continue;
       tBusy++;
       (function (t) {
-        Promise.resolve(thumbUrlFor(t.page) || urlFor(t.page)).then(function (url) {
+        Promise.resolve(thumbUrlFor(t.page) || urlFor(t.page, true)).then(function (url) {
           return new Promise(function (res, rej) {
             var im = new Image();
             im.onload = function () {
@@ -2253,6 +2269,7 @@
     return Promise.resolve(src.init ? src.init() : src).then(function () {
       return zf.open();
     }).then(function () {
+      if (opts.stale && opts.stale()) return false;
       var items = [];
       zf.entries.forEach(function (en) {
         if (en.dir) return;
@@ -2267,8 +2284,10 @@
         ? epubReorder(zf, items)['catch'](function () { return null; })
         : Promise.resolve(null);
       return ordered.then(function (r) {
+        if (opts.stale && opts.stale()) return false;     // 读 OPF 期间又点了新的启动链接：别把旧的盖上去
         // 非图片条目（pdf / rar / 视频…）交给 classify 统一归到 skipped，行为跟文件夹一致
-        // 方向优先级：OPF 自己声明的 > 该书已保存的（openItems 里判断）> 启动链接的 dir 提示
+        // 方向初值（只在这本书第一次打开时用）：OPF 声明的 > 启动链接的 dir 提示；
+        // 这本书一旦保存过方向，以保存的为准（openItems 里判断），OPF / 链接都不再覆盖
         var o = { kind: 'zip', title: name, dir: (r && r.dir) || opts.dir || null };
         if (opts.key) o.key = opts.key;
         openItems(r ? r.items : items, o);
@@ -2854,23 +2873,28 @@
   function stripLaunchHash() {
     try { history.replaceState(history.state, '', location.pathname + location.search); } catch (e) { /* file:// 等环境不允许 */ }
   }
-  /** 从 WebDAV 书库打开 p.rel；401 -> 弹账号框重输后再试 */
-  function openDavBook(p) {
+  var launchSeq = 0;      // 每次有效的启动链接 +1：慢的旧链接打开完成时发现自己过期了，就丢掉结果（最新的链接说了算）
+  /** 从 WebDAV 书库打开 p.rel；401 -> 弹账号框重输后再试。token = 发起时的 launchSeq，不等于当前值就是过期的 */
+  function openDavBook(p, token) {
+    function stale() { return token !== launchSeq; }
     return davEnsure().then(function (cfg) {
       return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
     }).then(function (cfg) {
+      if (stale()) return false;
       if (!cfg) { toast('没有书库账号，无法打开云端的书'); return false; }
       var opening = true;
       return openZipUrl(C.davBookUrl(cfg.base, cfg.library, p.rel), {
-        title: p.title, key: 'dav:' + p.rel, dir: p.dir, rethrow: true, authHeader: davAuthHeader,
+        title: p.title, key: 'dav:' + p.rel, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale,
         /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
-        onAuthFail: function () { if (!opening) askDav('账号或密码不对（HTTP 401），请重新输入'); }
+        onAuthFail: function () { if (!opening && !stale()) askDav('账号或密码不对（HTTP 401），请重新输入'); }
       }).then(function (ok) { opening = false; return ok; }, function (e) {
         opening = false;
+        if (stale()) return false;                 // 过期的链接：失败也不打扰用户
         if (e && e.status === 401) {
           return askDav('账号或密码不对（HTTP 401），请重新输入').then(function (c) {
+            if (stale()) return false;
             if (!c) { toast('没有有效的书库账号'); return false; }
-            return openDavBook(p);
+            return openDavBook(p, token);
           });
         }
         toast('云端打开失败：' + ((e && e.message) || e));
@@ -2885,8 +2909,13 @@
     if (!/^https?:$/.test(location.protocol)) {
       toast('云端书库要通过网址（http / https）打开，不能用本地文件'); stripLaunchHash(); return Promise.resolve(false);
     }
+    /* 本地后端（web_backend.py）连着时没有「☁ 书库账号」入口，云端书库不在这条路上：明确告知，不静默忽略 */
+    if (BE.on) {
+      toast('已连上本地后端，云端书库链接（#open=）在这里不处理；请在 /iv/ 页面打开'); stripLaunchHash(); return Promise.resolve(false);
+    }
+    var token = ++launchSeq;
     setBack(p.back);
-    return openDavBook(p).then(function (ok) { if (ok) stripLaunchHash(); return ok; });
+    return openDavBook(p, token).then(function (ok) { if (ok && token === launchSeq) stripLaunchHash(); return ok; });
   }
 
   /* ================= 启动 ================= */
@@ -2921,16 +2950,19 @@
   });
 
   function renderResumeHint() {
-    var latest = null;
+    var latest = null, latestKey = '';
     Object.keys(books).forEach(function (k) {
       var b = books[k];
-      if (b && b.title && (!latest || (b.at || 0) > (latest.at || 0))) latest = b;
+      if (b && b.title && (!latest || (b.at || 0) > (latest.at || 0))) { latest = b; latestKey = k; }
     });
     if (!latest) return;
+    var tail = BE.on ? '（后端已连上，用「磁盘路径」直接打开即可续读）'
+      : /^dav:/.test(latestKey) ? '（云端的书：从书架重新点开这本书 / 再打开它的启动链接即可续读）'
+      : '（重新选中同一个文件夹 / 压缩包即可续读）';
     $('#resumeHint').innerHTML = '上次阅读：<b>' + esc(latest.title) + '</b> 第 ' +
       ((latest.index | 0) + 1) + ' 页' +
       (latest.chapter ? ' · 章节 ' + (latest.chapter + 1) : '') +
-      (BE.on ? '（后端已连上，用「磁盘路径」直接打开即可续读）' : '（重新选中同一个文件夹 / 压缩包即可续读）');
+      tail;
   }
   renderResumeHint();
 

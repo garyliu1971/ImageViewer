@@ -423,6 +423,59 @@ test('UrlRangeSource：并发读结果正确，且同时在途不超过 maxParal
   } finally { await s.close(); }
 });
 
+test('UrlRangeSource：页面读优先于排队的缩略图读（低优先级读不挡页面，也不会饿死）', async () => {
+  for (const maxParallel of [4, 1]) {
+    const s = await startServer({ data: synthetic, delayMs: 30 });
+    try {
+      const src = new C.UrlRangeSource(s.url, { maxParallel });
+      await src.init();
+      s.st.requests.length = 0; s.st.maxInflight = 0;
+      const order = [];
+      const lows = [];
+      for (let i = 0; i < 10; i++) {
+        lows.push(src.read(1000 + i * 1000, 500, true).then((b) => { order.push('low' + i); return b; }));
+      }
+      await new Promise((r) => setTimeout(r, 5));                 // 缩略图读已经占满了它们能占的名额，其余在排队
+      const page = src.read(200000, 500).then((b) => { order.push('page'); return b; });
+      const got = await Promise.all([page, ...lows]);
+      assert.deepEqual(Buffer.from(got[0]), synthetic.subarray(200000, 200500));
+      lows.forEach((_, i) => assert.deepEqual(Buffer.from(got[i + 1]), synthetic.subarray(1000 + i * 1000, 1500 + i * 1000), 'low ' + i));   // 没饿死、字节对
+      const firstQueuedLow = maxParallel === 4 ? 3 : 1;           // 缩略图最多占 maxParallel-1 个名额（至少 1 个）：之后的都是「排队中」的
+      const pagePos = order.indexOf('page');
+      assert.ok(pagePos >= 0 && pagePos <= (maxParallel === 4 ? 3 : 1),
+        `maxParallel=${maxParallel}：页面读应排在所有排队中的缩略图读之前完成：${order.join(',')}`);
+      assert.ok(order.slice(pagePos + 1).length >= 10 - firstQueuedLow, order.join(','));
+      const rangeIdx = (a) => s.st.requests.findIndex((r) => r.range === `bytes=${a}-${a + 499}`);
+      const pageReq = rangeIdx(200000);
+      for (let i = firstQueuedLow; i < 10; i++) assert.ok(pageReq < rangeIdx(1000 + i * 1000), `页面请求先于排队中的 low${i} 发出`);
+      assert.ok(s.st.maxInflight <= maxParallel, s.st.maxInflight);
+    } finally { await s.close(); }
+  }
+});
+
+test('ZipReader.extract(entry, low)：低优先级标记传到每一次 src.read（本地头 + 数据）；不传就是页面读', async () => {
+  const files = [{ name: 'a.png', data: Buffer.alloc(300, 7) }];
+  const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x800, 6);
+  lh.writeUInt32LE(300, 18); lh.writeUInt32LE(300, 22); lh.writeUInt16LE(5, 26);
+  const nb = Buffer.from('a.png');
+  const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(0x800, 8);
+  cd.writeUInt32LE(300, 20); cd.writeUInt32LE(300, 24); cd.writeUInt16LE(5, 28);
+  const body = Buffer.concat([lh, nb, files[0].data]);
+  const cdb = Buffer.concat([cd, nb]);
+  const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cdb.length, 12); eocd.writeUInt32LE(body.length, 16);
+  const zip = Buffer.concat([body, cdb, eocd]);
+  const calls = [];
+  const src = { size: zip.length, read: async (off, len, low) => { calls.push(!!low); return zip.subarray(off, off + len); } };
+  const zr = await new C.ZipReader(src).open();
+  calls.length = 0;
+  assert.deepEqual(Buffer.from(await zr.extract(zr.entries[0], true)), files[0].data);
+  assert.deepEqual(calls, [true, true]);
+  calls.length = 0;
+  await zr.extract(zr.entries[0]);
+  assert.deepEqual(calls, [false, false]);
+});
+
 test('UrlRangeSource + ZipReader：与内存源解出同样的条目 / 字节；尾部那块只取一次', { skip: !epubFixture }, async () => {
   const s = await startServer({ data: epubFixture });
   try {
