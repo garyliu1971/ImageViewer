@@ -323,6 +323,14 @@
   .shelf-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shelf-row .meta { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
   .shelf-row .meta b { color: var(--text); font-weight: 600; }
+  .shelf-row .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .shelf-row .main .nm { flex: none; }
+  .shelf-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,.1); }
+  .shelf-bar i { display: block; height: 100%; border-radius: 2px; background: #6ea8ff; }
+  .shelf-h { font-size: 12px; color: var(--muted); margin: 4px 2px 2px; letter-spacing: .04em; }
+  #shelfRecent { margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.08); }
+  #shelfRecent:empty { display: none; }
+  .shelf-opt { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   .shelf-empty { color: var(--muted); font-size: 13px; padding: 18px 4px; line-height: 1.8; }
 
   /* ---------- 云端书库账号 / 返回（只在 http(s) 且无本地后端时出现）---------- */
@@ -563,11 +571,13 @@
   <div class="modal-card">
     <button class="modal-close" data-close="shelf">✕</button>
     <h2>📚 云端书架</h2>
+    <div id="shelfRecent"></div>
     <div class="shelf-crumbs" id="shelfCrumbs"></div>
     <input type="text" id="shelfFilter" placeholder="筛选当前目录…" autocomplete="off" spellcheck="false">
     <div id="shelfList"></div>
     <div class="modal-actions">
       <span id="shelfInfo" style="margin-right:auto;font-size:12px;color:var(--muted)"></span>
+      <label class="shelf-opt" title="每次打开 /iv/ 先显示书架和上次读到哪"><input type="checkbox" id="shelfHome"> 启动时显示</label>
       <button class="btn" id="shelfReload">刷新</button>
       <button class="btn" data-close="shelf">关闭</button>
     </div>
@@ -3156,16 +3166,16 @@
     });
   }
   /* ================= 书架：浏览云端书库目录（PROPFIND Depth:1），点书走 openDavBook ================= */
-  var LS_SHELF = 'iv.shelf.dir.v1';
-  var shelfRel = '', shelfSeq = 0, shelfData = null;
+  var LS_SHELF = 'iv.shelf.dir.v1', LS_HOME = 'iv.home.shelf.v1';
+  var shelfRel = '', shelfSeq = 0, shelfData = null, shelfRecentDone = false;
   function shelfUrl(cfg, rel) {
     return C.davBookUrl(cfg.base, cfg.library, rel).replace(/\/+$/, '') + '/';
   }
-  function propfind(cfg, rel) {
-    var h = { Depth: '1', 'Content-Type': 'application/xml' }, a = davAuthHeader(), ctl = null, t = 0;
+  function propfind(cfg, rel) { return propfindUrl(shelfUrl(cfg, rel), davAuthHeader()); }
+  function propfindUrl(url, a) {
+    var h = { Depth: '1', 'Content-Type': 'application/xml' }, ctl = null, t = 0;
     if (a) h['Authorization'] = a;
     if (typeof AbortController !== 'undefined') { ctl = new AbortController(); t = setTimeout(function () { ctl.abort(); }, 20000); }
-    var url = shelfUrl(cfg, rel);
     return fetch(url, { method: 'PROPFIND', headers: h, credentials: 'omit', cache: 'no-store', signal: ctl ? ctl.signal : undefined,
       body: '<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>' })
       .then(function (r) {
@@ -3181,11 +3191,104 @@
         return C.parsePropfind(xml, new URL(url).pathname);
       }, function (e) { clearTimeout(t); throw (e && e.name === 'AbortError') ? new Error('连接超时') : e; });
   }
+  /* ---- 云端进度（users/gary/iv-progress/<hash>.json）：目录里有哪些文件 = 哪些书读过；只读读过的那几本 ---- */
+  var cloudProg = {}, cloudIdx = null;
+  function progOf(key) {
+    var c = cloudProg[key], l = books[key];
+    return c && (!l || c.at > (l.at || 0)) ? c : (l || null);
+  }
+  function cloudIndex(force) {
+    if (!force && cloudIdx && Date.now() - cloudIdx.at < 30000) return Promise.resolve(cloudIdx.map);
+    return davEnsure().then(function (cfg) {
+      if (!cfg || syncDir(cfg) === null) return null;
+      var url = C.progressDirUrl(cfg.base, syncDir(cfg)) + '/';
+      return propfindUrl(url, syncAuth(cfg)).then(function (es) {
+        var map = Object.create(null);
+        es.forEach(function (e) { if (!e.isDir && /\.json$/i.test(e.name)) map[e.name] = e.mtime || 0; });
+        cloudIdx = { at: Date.now(), map: map };
+        return map;
+      });
+    }).then(null, function () { return null; });                 /* 没有进度文件夹 / 没权限：当没有云端进度 */
+  }
+  function fetchCloud(key) {
+    if (cloudProg[key]) return Promise.resolve(cloudProg[key]);
+    return pullProgress(key).then(function (r) { if (r) cloudProg[key] = r; return r; });
+  }
+  /** 并发 <= 4 地取一批 key 的云端进度 */
+  function fetchCloudMany(keys) {
+    var i = 0;
+    function worker() { if (i >= keys.length) return Promise.resolve(); return fetchCloud(keys[i++]).then(worker, worker); }
+    return Promise.all([worker(), worker(), worker(), worker()]);
+  }
+  function ago(ms) {
+    var d = Math.max(0, Date.now() - ms) / 1000;
+    if (d < 60) return '刚刚';
+    if (d < 3600) return Math.floor(d / 60) + ' 分钟前';
+    if (d < 86400) return Math.floor(d / 3600) + ' 小时前';
+    if (d < 86400 * 30) return Math.floor(d / 86400) + ' 天前';
+    return new Date(ms).toLocaleDateString();
+  }
+  function progLabel(r) {
+    var tot = r.total | 0, n = (r.index | 0) + 1;
+    return '读到第 <b>' + n + '</b>' + (tot ? ' / ' + tot : '') + ' 页' + (r.chapter ? ' · 章节 ' + (r.chapter + 1) : '');
+  }
+  function progBar(r) {
+    var tot = r.total | 0;
+    return tot > 0 ? '<span class="shelf-bar"><i style="width:' + Math.max(2, Math.min(100, Math.round(((r.index | 0) + 1) / tot * 100))) + '%"></i></span>' : '';
+  }
+  /** 当前目录里读过的书：索引里有对应文件的才去取 */
+  function loadFolderProgress(seq) {
+    if (!shelfData) return Promise.resolve();
+    return cloudIndex(false).then(function (map) {
+      if (!map || seq !== shelfSeq) return;
+      var keys = shelfData.books.map(function (b) { return 'dav:' + C.relJoin(shelfRel, b.name); })
+        .filter(function (k) { return map[C.hash53(k) + '.json'] !== undefined; });
+      return fetchCloudMany(keys).then(function () { if (seq === shelfSeq) renderShelf(); });
+    });
+  }
+  /** 「继续阅读」：云端最近改过的几个进度文件 + 本机最近读的，按 at 合并取前 5 */
+  function loadRecent(seq) {
+    function render() {
+      if (seq !== shelfSeq) return;
+      var seen = Object.create(null), list = [];
+      function add(k, r) { if (r && /^dav:/.test(k) && !seen[k]) { seen[k] = 1; list.push({ k: k, r: r }); } }
+      Object.keys(books).forEach(function (k) { add(k, progOf(k)); });
+      Object.keys(cloudProg).forEach(function (k) { add(k, progOf(k)); });
+      list.sort(function (a, b) { return (b.r.at || 0) - (a.r.at || 0); });
+      list = list.slice(0, 5);
+      $('#shelfRecent').innerHTML = list.length ? '<div class="shelf-h">继续阅读</div>' + list.map(function (x) {
+        var rel = x.k.slice(4);
+        return '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="main"><span class="nm">' +
+          esc(x.r.title || C.baseName(rel)) + '</span>' + progBar(x.r) + '</span><span class="meta">' + progLabel(x.r) + ' · ' + ago(x.r.at || 0) + '</span></button>';
+      }).join('') : '';
+    }
+    render();
+    return cloudIndex(false).then(function (map) {
+      if (!map || seq !== shelfSeq) return;
+      var names = Object.keys(map).sort(function (a, b) { return map[b] - map[a]; }).slice(0, 8);
+      /* 文件名是哈希，要读内容才知道是哪本书；已经取过的不重复取 */
+      var have = Object.create(null);
+      Object.keys(cloudProg).forEach(function (k) { have[C.hash53(k) + '.json'] = 1; });
+      var todo = names.filter(function (n) { return !have[n]; });
+      return Promise.all(todo.map(function (n) {
+        return davEnsure().then(function (cfg) {
+          return syncReq(cfg, 'GET', C.progressDirUrl(cfg.base, syncDir(cfg)) + '/' + n).then(function (r) { return r.ok ? r.json() : null; });
+        }).then(function (raw) {
+          if (raw && typeof raw.key === 'string' && /^dav:/.test(raw.key)) {
+            var norm = C.normalizeProgress(raw, raw.key);
+            if (norm && C.hash53(raw.key) + '.json' === n) cloudProg[raw.key] = norm;
+          }
+        }, function () {});
+      })).then(render);
+    });
+  }
   function openShelf() {
     if (BE.on || !/^https?:$/.test(location.protocol)) { toast('云端书架只在 /iv/ 页面（没连本地后端）可用'); return; }
     var last = ''; try { last = localStorage.getItem(LS_SHELF) || ''; } catch (e) { last = ''; }
     toggleModal('shelf', true);
     $('#shelfFilter').value = '';
+    shelfRecentDone = false; cloudIdx = null;
+    try { $('#shelfHome').checked = localStorage.getItem(LS_HOME) !== '0'; } catch (e) { $('#shelfHome').checked = true; }
     loadShelf(C.relError(last, true) ? '' : last);
   }
   function shelfMsg(html) { $('#shelfList').innerHTML = '<div class="shelf-empty">' + html + '</div>'; $('#shelfInfo').textContent = ''; }
@@ -3205,6 +3308,8 @@
         shelfData = C.shelfSplit(entries);
         try { localStorage.setItem(LS_SHELF, rel); } catch (e) { /* 忽略 */ }
         renderShelf();
+        loadFolderProgress(seq);
+        if (!shelfRecentDone) { shelfRecentDone = true; loadRecent(seq); }
       }, function (e) {
         if (seq !== shelfSeq) return;
         if (e && e.status === 401) {
@@ -3233,10 +3338,16 @@
     ds.forEach(function (d) {
       html += '<button class="shelf-row" data-dir="' + esc(C.relJoin(shelfRel, d.name)) + '"><span class="ico">📁</span><span class="nm">' + esc(d.name) + '</span></button>';
     });
-    bs.forEach(function (b) {
-      var rel = C.relJoin(shelfRel, b.name), rec = books['dav:' + rel];
-      var meta = (rec ? '读到第 <b>' + ((rec.index | 0) + 1) + '</b> 页 · ' : '') + (b.size != null ? fmtSize(b.size) : '');
-      html += '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="nm">' + esc(b.name) + '</span><span class="meta">' + meta + '</span></button>';
+    var withProg = bs.map(function (b, i) { return { b: b, i: i, r: progOf('dav:' + C.relJoin(shelfRel, b.name)) }; });
+    withProg.sort(function (x, y) {                                /* 读过的在前（最近的最前），其余保持名字顺序 */
+      if (!!x.r !== !!y.r) return x.r ? -1 : 1;
+      return x.r ? (y.r.at || 0) - (x.r.at || 0) : x.i - y.i;
+    });
+    withProg.forEach(function (x) {
+      var b = x.b, rel = C.relJoin(shelfRel, b.name), r = x.r;
+      var meta = (r ? progLabel(r) + ' · ' : '') + (b.size != null ? fmtSize(b.size) : '');
+      html += '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="main"><span class="nm">' + esc(b.name) + '</span>' +
+        (r ? progBar(r) : '') + '</span><span class="meta">' + meta + '</span></button>';
     });
     if (!html) shelfMsg(q ? '没有匹配「' + esc(q) + '」的项目。' : '这个文件夹里没有 epub / cbz / zip，也没有子文件夹。');
     else $('#shelfList').innerHTML = html;
@@ -3275,6 +3386,12 @@
   detectBackend().then(function () {
     if (/^https?:$/.test(location.protocol) && !BE.on) document.body.classList.add('has-dav');
     return applyLaunchHash();
+  }).then(function (opened) {
+    /* Reader 式首页：已经存过账号、没有启动链接、没有打开书 → 直接显示书架（含「继续阅读」）；可在书架里关掉 */
+    if (opened || location.hash || !document.body.classList.contains('has-dav') || !$('#start') || $('#start').classList.contains('hidden')) return;
+    var on = true; try { on = localStorage.getItem(LS_HOME) !== '0'; } catch (e) { on = true; }
+    if (!on) return;
+    return davEnsure().then(function (cfg) { if (cfg && !anyModal()) openShelf(); });
   })['catch'](function (e) { toast('启动链接处理失败：' + ((e && e.message) || e)); });
   window.addEventListener('hashchange', function () {
     applyLaunchHash()['catch'](function (e) { toast('启动链接处理失败：' + ((e && e.message) || e)); });
@@ -3297,6 +3414,11 @@
     var b = e.target.closest ? e.target.closest('button[data-rel]') : null;
     if (b) { $('#shelfFilter').value = ''; loadShelf(b.getAttribute('data-rel')); }
   });
+  $('#shelfRecent').addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('.shelf-row[data-book]') : null;
+    if (b) openShelfBook(b.getAttribute('data-book'));
+  });
+  $('#shelfHome').addEventListener('change', function () { try { localStorage.setItem(LS_HOME, this.checked ? '1' : '0'); } catch (e) { /* 忽略 */ } });
   $('#shelfList').addEventListener('click', function (e) {
     var b = e.target.closest ? e.target.closest('.shelf-row') : null;
     if (!b) return;

@@ -233,7 +233,19 @@ function startIvServer(books) {
         const a = req.headers.authorization;
         let code = 200, body = '';
         if (a !== basic('writer', 'w pass') && a !== basic(S.user, S.pass)) code = 401;
-        else if (a === basic(S.user, S.pass) && req.method !== 'GET') code = 403;
+        else if (a === basic(S.user, S.pass) && req.method !== 'GET' && req.method !== 'PROPFIND') code = 403;
+        else if (req.method === 'PROPFIND') {
+          const dirp = '/users/gary/iv-progress';
+          if (p.replace(/\/+$/, '') !== dirp) code = 404;
+          else if (!S.progDir) code = 404;
+          else {
+            code = 207;
+            body = '<?xml version="1.0"?><D:multistatus xmlns:D="DAV:"><D:response><D:href>' + dirp + '/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>' +
+              Object.keys(S.prog).map((k, i) => '<D:response><D:href>' + k + '</D:href><D:propstat><D:prop><D:resourcetype/><D:getcontentlength>' + S.prog[k].length +
+                '</D:getcontentlength><D:getlastmodified>' + new Date((S.progMtime && S.progMtime[k]) || Date.now() - i * 1000).toUTCString() + '</D:getlastmodified></D:prop></D:propstat></D:response>').join('') +
+              '</D:multistatus>';
+          }
+        }
         else if (req.method === 'MKCOL') { if (p === '/users/gary/iv-progress') S.progDir = true; code = 201; }
         else if (req.method === 'PUT') { if (!S.progDir) code = 409; else { S.prog[p] = ent.body; code = 201; } }
         else if (req.method === 'GET') { if (S.prog[p] === undefined) code = 404; else body = S.prog[p]; }
@@ -1132,7 +1144,7 @@ function check(name, ok, detail) {
       const enc = encodeURIComponent;
       const hashFor = (rel, extra) => '#open=' + enc(rel) + '&src=dav&bid=' + enc('remote:' + rel) + (extra || '');
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source:
-        "window.__csp=[];document.addEventListener('securitypolicyviolation',function(e){window.__csp.push(e.violatedDirective+' '+e.blockedURI)});" });
+        "window.__csp=[];document.addEventListener('securitypolicyviolation',function(e){window.__csp.push(e.violatedDirective+' '+e.blockedURI)});try{if(!sessionStorage.getItem('iv.e2e.home'))localStorage.setItem('iv.home.shelf.v1','0')}catch(e){}" });
       async function fresh(u) {
         await cdp.send('Page.navigate', { url: 'about:blank' }); await sleep(250);
         await cdp.send('Page.navigate', { url: u }); await sleep(1300);
@@ -1462,7 +1474,7 @@ function check(name, ok, detail) {
       await cdp.eval(`document.querySelector('#btnShelf').click(); return 1;`);
       await waitFor(`${shelfOpenExpr} && document.querySelector('#shelfList .shelf-row[data-book]')`, 8000);
       const shelfAgain = await rowsOf();
-      check('再开书架：停在上次的目录，读过的书标出「读到第 N 页」', shelfAgain.length >= 1 && /读到第 3 页/.test(shelfAgain[0].meta), shelfAgain);
+      check('再开书架：停在上次的目录，读过的书标出「读到第 N 页」', shelfAgain.length >= 1 && /第 3 \/ 5 页/.test(shelfAgain[0].meta), shelfAgain);
       /* 名字带冒号的文件夹 / 书：书架能进、能打开 */
       await cdp.eval(`document.querySelector('#shelfCrumbs button[data-rel=""]').click(); return 1;`);
       await waitFor(`document.querySelector('#shelfList .shelf-row[data-dir="Re:Zero"]')`, 8000);
@@ -1496,6 +1508,46 @@ function check(name, ok, detail) {
       await cdp.eval(`document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true })); return 1;`);
       check('快捷键 L 打开书架', !!(await waitFor(shelfOpenExpr, 3000)));
       await cdp.eval(`document.querySelector('#shelf [data-close]').click(); return 1;`);
+
+      /* ---- 8d) Reader 式首页：启动自动显示书架 + 「继续阅读」（云端进度）+ 书上的进度条 ---- */
+      {
+        const HOMEKEY = 'dav:' + RELE;
+        await fresh(IVURL);
+        const h1 = await cdp.eval(`return IVCore.hash53(${JSON.stringify(HOMEKEY)});`);
+        iv.progDir = true;
+        for (const k of Object.keys(iv.prog)) delete iv.prog[k];
+        iv.prog['/users/gary/iv-progress/' + h1 + '.json'] = JSON.stringify({ v: 1, key: HOMEKEY, at: Date.now() - 3600e3 - 5000, index: 3, chapter: 0, total: 5,
+          direction: 'rtl', title: 'sample_comic.epub', dev: '手机/平板' });
+        iv.prog['/users/gary/iv-progress/ffffffffffffff.json'] = 'not json';          // 坏文件：不能让「继续阅读」崩
+        await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress', syncUser: 'writer', syncPass: 'w pass' }`));
+        await cdp.eval(`sessionStorage.setItem('iv.e2e.home', '1'); localStorage.removeItem('iv.home.shelf.v1'); localStorage.removeItem('iv.books.v1'); localStorage.removeItem('iv.shelf.dir.v1'); return 1;`);
+        await fresh(IVURL);                                    // 新设备：本地没有任何进度
+        const auto = await waitFor(`${shelfOpenExpr} && document.querySelector('#shelfRecent .shelf-row')`, 10000);
+        check('启动页自动显示书架（账号已存、无启动链接）', !!auto);
+        const rec = await cdp.eval(`const r = document.querySelector('#shelfRecent .shelf-row'); return r ? { t: r.querySelector('.nm').textContent, meta: r.querySelector('.meta').innerHTML, bar: !!r.querySelector('.shelf-bar i'), n: document.querySelectorAll('#shelfRecent .shelf-row').length, head: document.querySelector('#shelfRecent .shelf-h').textContent } : null;`);
+        check('「继续阅读」来自云端进度：书名 / 第 4 / 5 页 / 1 小时前 / 进度条；坏文件被忽略', rec && rec.t === 'sample_comic.epub' && /第 <b>4<\/b> \/ 5 页/.test(rec.meta) && /1 小时前/.test(rec.meta) && rec.bar && rec.n === 1 && rec.head === '继续阅读', rec);
+        await cdp.eval(`document.querySelector('#shelfRecent .shelf-row').click(); return 1;`);
+        await waitFor(`window.__IV.state().total === 5 && window.__IV.state().bookKey === ${JSON.stringify(HOMEKEY)}`, 10000);
+        check('点「继续阅读」→ 打开并接上云端页码（第 4 页）', (await stateOf()).index === 3, (await stateOf()).index);
+        // 目录视图：这本书带进度条，读过的排在前面
+        await cdp.eval(`localStorage.setItem('iv.shelf.dir.v1', '小说'); window.__IV.openShelf(); return 1;`);
+        await waitFor(`document.querySelector('#shelfList .shelf-row[data-book] .shelf-bar')`, 8000);
+        const first = await cdp.eval(`const r = document.querySelector('#shelfList .shelf-row[data-book]'); return { t: r.querySelector('.nm').textContent, meta: r.querySelector('.meta').textContent };`);
+        check('书架里读过的书带进度条和「读到第 N / M 页」', first.t === 'sample_comic.epub' && /读到第 \d+ \/ 5 页/.test(first.meta), first);
+        // 关掉「启动时显示」→ 下次不再自动弹出
+        await cdp.eval(`document.querySelector('#shelfHome').click(); return 1;`);
+        check('「启动时显示」可以关掉并被记住', await cdp.eval(`return localStorage.getItem('iv.home.shelf.v1') === '0';`));
+        await fresh(IVURL);
+        await sleep(700);
+        check('关掉之后启动不再自动显示书架', await cdp.eval(`return document.querySelector('#shelf').classList.contains('hidden');`));
+        // 带启动链接时（来自 PyReader 的跳转）不能被书架打断
+        await cdp.eval(`localStorage.removeItem('iv.home.shelf.v1'); return 1;`);
+        await fresh(IVURL + hashFor(RELE));
+        await waitFor(`window.__IV.state().total === 5`, 10000);
+        check('带 #open= 启动链接时直接开书，不弹书架', await cdp.eval(`return document.querySelector('#shelf').classList.contains('hidden');`));
+        await cdp.eval(`sessionStorage.removeItem('iv.e2e.home'); localStorage.setItem('iv.home.shelf.v1', '0'); return 1;`);
+        await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress' }`));
+      }
 
       /* ---- 9) 忘记此设备；返回键 ---- */
       await fresh(IVURL);
