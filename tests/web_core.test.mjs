@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import url from 'node:url';
+import http from 'node:http';
+import zlib from 'node:zlib';
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 const html = fs.readFileSync(path.join(HERE, '..', 'image-viewer.html'), 'utf8');
@@ -271,4 +273,331 @@ test('epub：页序按 spine、去重、丢弃 spine 外图片', () => {
   const have = new Set(['img/a.png', 'img/b.png', 'img/direct.png', 'img/unused.png']);
   const order = C.epubPageOrder('content.opf', opf, (p) => (p in texts ? texts[p] : null), (p) => (have.has(p) ? p : null));
   assert.deepEqual(order, ['img/a.png', 'img/direct.png', 'img/b.png']);
+});
+
+/* ====================== P3：远程 Range 源 / 启动链接 ====================== */
+
+/** 本地 Range 测试服务器。o: {data, auth:'user:pass', ignoreRange, noContentRange, delayMs, badStart} */
+function startServer(o) {
+  const st = { requests: [], inflight: 0, maxInflight: 0, bytesSent: 0 };
+  const srv = http.createServer((req, res) => {
+    st.requests.push({ method: req.method, url: req.url, range: req.headers.range || null,
+      authorization: req.headers.authorization || null });
+    if (o.auth) {
+      const want = 'Basic ' + Buffer.from(o.auth).toString('base64');
+      if (req.headers.authorization !== want) {
+        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="x"' }); res.end('no'); return;
+      }
+    }
+    st.inflight++; st.maxInflight = Math.max(st.maxInflight, st.inflight);
+    const done = () => { st.inflight--; };
+    setTimeout(() => {
+      const data = o.data;
+      const m = /^bytes=(\d+)-(\d+)$/.exec(req.headers.range || '');
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 'Content-Length': data.length, 'Accept-Ranges': 'bytes' }); res.end(); done(); return;
+      }
+      if (!m || o.ignoreRange) {
+        res.writeHead(200, { 'Content-Length': data.length }); st.bytesSent += data.length; res.end(data); done(); return;
+      }
+      let a = +m[1], b = Math.min(+m[2], data.length - 1);
+      if (o.badStart) a = Math.max(0, a - 1);          // 故意回错位的分段
+      const body = data.subarray(a, b + 1);
+      const h = { 'Content-Length': body.length };
+      if (!o.noContentRange) h['Content-Range'] = `bytes ${a}-${b}/${data.length}`;
+      res.writeHead(206, h); st.bytesSent += body.length; res.end(body); done();
+    }, o.delayMs || 0);
+  });
+  return new Promise((resolve) => srv.listen(0, '127.0.0.1', () => {
+    resolve({ url: `http://127.0.0.1:${srv.address().port}/book.epub`, st, close: () => new Promise((r) => srv.close(r)) });
+  }));
+}
+function memSource(buf) {
+  return { size: buf.length, read: async (off, len) => buf.subarray(off, off + len) };
+}
+const epubFixture = fixtures('sample_comic.epub');
+const synthetic = Buffer.alloc(300000);
+for (let i = 0; i < synthetic.length; i++) synthetic[i] = (i * 31 + (i >> 8)) & 0xff;
+
+test('UrlRangeSource：大小来自 Content-Range，读到的字节与原文件一致，每次都带 Authorization', async () => {
+  const s = await startServer({ data: synthetic, auth: 'viewer:pä ss' });
+  try {
+    const hdr = C.basicAuth('viewer', 'pä ss');
+    assert.equal(hdr, 'Basic ' + Buffer.from('viewer:pä ss', 'utf8').toString('base64'));   // UTF-8，不是 latin1
+    const src = new C.UrlRangeSource(s.url, { authHeader: hdr });
+    await src.init();
+    assert.equal(src.size, synthetic.length);
+    for (const [off, len] of [[0, 10], [12345, 4000], [synthetic.length - 7, 7], [100, 0]]) {
+      const got = await src.read(off, len);
+      assert.deepEqual(Buffer.from(got), synthetic.subarray(off, off + len), `${off}+${len}`);
+    }
+    assert.equal((await src.read(synthetic.length - 3, 99)).length, 3);          // 越界按文件尾截断
+    assert.equal((await src.read(synthetic.length + 5, 9)).length, 0);
+    assert.ok(s.st.requests.length >= 4);
+    assert.ok(s.st.requests.every((r) => r.authorization === hdr), '每个请求都带 Authorization');
+    assert.ok(s.st.requests.every((r) => r.range && /^bytes=\d+-\d+$/.test(r.range)), '都是 Range 请求');
+    assert.ok(s.st.requests.every((r) => !/viewer|ss/.test(r.url)), '账号不进 URL');
+  } finally { await s.close(); }
+});
+
+test('UrlRangeSource：authHeader 可以是函数（重新输入密码后立刻生效）', async () => {
+  const s = await startServer({ data: synthetic, auth: 'u:p2' });
+  try {
+    let cur = C.basicAuth('u', 'p1');
+    const src = new C.UrlRangeSource(s.url, { authHeader: () => cur });
+    await assert.rejects(src.init(), (e) => e.status === 401);
+    cur = C.basicAuth('u', 'p2');
+    await src.init();
+    assert.equal(src.size, synthetic.length);
+  } finally { await s.close(); }
+});
+
+test('UrlRangeSource：401 -> status=401 + code=auth + 触发 onAuthFail', async () => {
+  const s = await startServer({ data: synthetic, auth: 'u:p' });
+  try {
+    let called = 0;
+    const src = new C.UrlRangeSource(s.url, { authHeader: C.basicAuth('u', 'wrong'), onAuthFail: () => { called++; } });
+    await assert.rejects(src.init(), (e) => e.status === 401 && e.code === 'auth');
+    assert.equal(called, 1);
+    const none = new C.UrlRangeSource(s.url, {});
+    await assert.rejects(none.init(), (e) => e.status === 401);
+    // 读取阶段遇到 401（比如密码被改）也一样
+    const src2 = new C.UrlRangeSource(s.url, { authHeader: C.basicAuth('u', 'p'), onAuthFail: () => { called++; } });
+    await src2.init();
+    src2.authHeader = C.basicAuth('u', 'changed');
+    await assert.rejects(src2.read(0, 10), (e) => e.status === 401);
+    assert.equal(called, 2);
+  } finally { await s.close(); }
+});
+
+test('UrlRangeSource：服务器忽略 Range（200）-> 硬失败，不静默整本下载', async () => {
+  const big = Buffer.alloc(3 * 1024 * 1024, 7);
+  const s = await startServer({ data: big, ignoreRange: true });
+  try {
+    const src = new C.UrlRangeSource(s.url, {});
+    await assert.rejects(src.init(), (e) => e.code === 'norange' && /server ignores Range/.test(e.message));
+    assert.equal(s.st.requests.length, 1, 'init 失败后不再发别的请求');
+    // size 已知时的读取阶段同样不接受 200
+    const src2 = new C.UrlRangeSource(s.url, {});
+    src2.size = big.length;
+    await assert.rejects(src2.read(10, 10), (e) => e.code === 'norange');
+    assert.equal(src2.size, big.length);
+  } finally { await s.close(); }
+});
+
+test('UrlRangeSource：没有 Content-Range 时用 HEAD 的 Content-Length；错位分段 / 404 都报错', async () => {
+  const s = await startServer({ data: synthetic, noContentRange: true });
+  try {
+    const src = new C.UrlRangeSource(s.url, {});
+    await src.init();
+    assert.equal(src.size, synthetic.length);
+    assert.ok(s.st.requests.some((r) => r.method === 'HEAD'));
+    assert.deepEqual(Buffer.from(await src.read(500, 100)), synthetic.subarray(500, 600));
+  } finally { await s.close(); }
+  const bad = await startServer({ data: synthetic, badStart: true });
+  try {
+    const src = new C.UrlRangeSource(bad.url, {});
+    src.size = synthetic.length;
+    await assert.rejects(src.read(1000, 50), (e) => e.code === 'range');
+  } finally { await bad.close(); }
+  const nf = new C.UrlRangeSource(bad.url.replace('book.epub', 'x') + '', {});
+  await assert.rejects(nf.init());   // 服务器已关：网络错误
+});
+
+test('UrlRangeSource：并发读结果正确，且同时在途不超过 maxParallel（默认 4）', async () => {
+  const s = await startServer({ data: synthetic, delayMs: 25 });
+  try {
+    const src = new C.UrlRangeSource(s.url, {});
+    await src.init();
+    const spans = [];
+    for (let i = 0; i < 24; i++) spans.push([i * 9000 + 17, 7000 + (i % 5) * 111]);
+    const got = await Promise.all(spans.map(([o, l]) => src.read(o, l)));
+    got.forEach((g, i) => assert.deepEqual(Buffer.from(g), synthetic.subarray(spans[i][0], spans[i][0] + spans[i][1]), 'span ' + i));
+    assert.ok(s.st.maxInflight > 1, '确实并行了：' + s.st.maxInflight);
+    assert.ok(s.st.maxInflight <= 4, '并发被限制在 4：' + s.st.maxInflight);
+    const one = new C.UrlRangeSource(s.url, { maxParallel: 1 });
+    await one.init();
+    s.st.maxInflight = 0;
+    await Promise.all(spans.slice(0, 6).map(([o, l]) => one.read(o, l)));
+    assert.equal(s.st.maxInflight, 1);
+  } finally { await s.close(); }
+});
+
+test('UrlRangeSource：页面读优先于排队的缩略图读（低优先级读不挡页面，也不会饿死）', async () => {
+  for (const maxParallel of [4, 1]) {
+    const s = await startServer({ data: synthetic, delayMs: 30 });
+    try {
+      const src = new C.UrlRangeSource(s.url, { maxParallel });
+      await src.init();
+      s.st.requests.length = 0; s.st.maxInflight = 0;
+      const order = [];
+      const lows = [];
+      for (let i = 0; i < 10; i++) {
+        lows.push(src.read(1000 + i * 1000, 500, true).then((b) => { order.push('low' + i); return b; }));
+      }
+      await new Promise((r) => setTimeout(r, 5));                 // 缩略图读已经占满了它们能占的名额，其余在排队
+      const page = src.read(200000, 500).then((b) => { order.push('page'); return b; });
+      const got = await Promise.all([page, ...lows]);
+      assert.deepEqual(Buffer.from(got[0]), synthetic.subarray(200000, 200500));
+      lows.forEach((_, i) => assert.deepEqual(Buffer.from(got[i + 1]), synthetic.subarray(1000 + i * 1000, 1500 + i * 1000), 'low ' + i));   // 没饿死、字节对
+      const firstQueuedLow = maxParallel === 4 ? 3 : 1;           // 缩略图最多占 maxParallel-1 个名额（至少 1 个）：之后的都是「排队中」的
+      const pagePos = order.indexOf('page');
+      assert.ok(pagePos >= 0 && pagePos <= (maxParallel === 4 ? 3 : 1),
+        `maxParallel=${maxParallel}：页面读应排在所有排队中的缩略图读之前完成：${order.join(',')}`);
+      assert.ok(order.slice(pagePos + 1).length >= 10 - firstQueuedLow, order.join(','));
+      const rangeIdx = (a) => s.st.requests.findIndex((r) => r.range === `bytes=${a}-${a + 499}`);
+      const pageReq = rangeIdx(200000);
+      for (let i = firstQueuedLow; i < 10; i++) assert.ok(pageReq < rangeIdx(1000 + i * 1000), `页面请求先于排队中的 low${i} 发出`);
+      assert.ok(s.st.maxInflight <= maxParallel, s.st.maxInflight);
+    } finally { await s.close(); }
+  }
+});
+
+test('ZipReader.extract(entry, low)：低优先级标记传到每一次 src.read（本地头 + 数据）；不传就是页面读', async () => {
+  const files = [{ name: 'a.png', data: Buffer.alloc(300, 7) }];
+  const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x800, 6);
+  lh.writeUInt32LE(300, 18); lh.writeUInt32LE(300, 22); lh.writeUInt16LE(5, 26);
+  const nb = Buffer.from('a.png');
+  const cd = Buffer.alloc(46); cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(0x800, 8);
+  cd.writeUInt32LE(300, 20); cd.writeUInt32LE(300, 24); cd.writeUInt16LE(5, 28);
+  const body = Buffer.concat([lh, nb, files[0].data]);
+  const cdb = Buffer.concat([cd, nb]);
+  const eocd = Buffer.alloc(22); eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(1, 8); eocd.writeUInt16LE(1, 10);
+  eocd.writeUInt32LE(cdb.length, 12); eocd.writeUInt32LE(body.length, 16);
+  const zip = Buffer.concat([body, cdb, eocd]);
+  const calls = [];
+  const src = { size: zip.length, read: async (off, len, low) => { calls.push(!!low); return zip.subarray(off, off + len); } };
+  const zr = await new C.ZipReader(src).open();
+  calls.length = 0;
+  assert.deepEqual(Buffer.from(await zr.extract(zr.entries[0], true)), files[0].data);
+  assert.deepEqual(calls, [true, true]);
+  calls.length = 0;
+  await zr.extract(zr.entries[0]);
+  assert.deepEqual(calls, [false, false]);
+});
+
+test('UrlRangeSource + ZipReader：与内存源解出同样的条目 / 字节；尾部那块只取一次', { skip: !epubFixture }, async () => {
+  const s = await startServer({ data: epubFixture });
+  try {
+    const src = new C.UrlRangeSource(s.url, {});
+    await src.init();
+    const remote = await new C.ZipReader(src).open();
+    const local = await new C.ZipReader(memSource(epubFixture)).open();
+    assert.deepEqual(remote.entries.map((e) => e.name), local.entries.map((e) => e.name));
+    const afterOpen = s.st.requests.length;
+    assert.ok(afterOpen <= 2, 'init(1) + 尾部(1)，中央目录在尾部里不再单独请求：' + afterOpen);
+    for (const en of local.entries.filter((e) => !e.dir)) {
+      const a = await remote.extract(remote.entries.find((e) => e.name === en.name));
+      const b = await local.extract(en);
+      assert.deepEqual(Buffer.from(a), Buffer.from(b), en.name);
+    }
+  } finally { await s.close(); }
+});
+
+test('UrlRangeSource + ZipReader：大于 64KB 的 zip 也只按需取字节（中央目录在尾部块里，页面逐个 Range）', async () => {
+  const files = [];
+  for (let i = 0; i < 6; i++) {
+    const d = Buffer.alloc(40000 + i * 777);
+    for (let k = 0; k < d.length; k++) d[k] = (k * (i + 3) + i) & 0xff;
+    files.push({ name: `p${i + 1}.png`, data: d });
+  }
+  const parts = [], cds = []; let off = 0;
+  for (const f of files) {
+    const nb = Buffer.from(f.name), crc = zlib.crc32(f.data);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x800, 6); lh.writeUInt16LE(0, 8);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(f.data.length, 18); lh.writeUInt32LE(f.data.length, 22); lh.writeUInt16LE(nb.length, 26);
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(0x800, 8);
+    cd.writeUInt32LE(crc, 16); cd.writeUInt32LE(f.data.length, 20); cd.writeUInt32LE(f.data.length, 24);
+    cd.writeUInt16LE(nb.length, 28); cd.writeUInt32LE(off, 42);
+    parts.push(lh, nb, f.data); cds.push(Buffer.concat([cd, nb]));
+    off += lh.length + nb.length + f.data.length;
+  }
+  const cdBuf = Buffer.concat(cds), eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(off, 16);
+  const zip = Buffer.concat([...parts, cdBuf, eocd]);
+  assert.ok(zip.length > 200000);
+  const s = await startServer({ data: zip, auth: 'u:p' });
+  try {
+    const src = new C.UrlRangeSource(s.url, { authHeader: C.basicAuth('u', 'p') });
+    await src.init();
+    const zr = await new C.ZipReader(src).open();
+    assert.equal(zr.entries.length, 6);
+    assert.equal(s.st.requests.length, 2, 'init + 尾部块；中央目录不再单独请求');
+    const got = await Promise.all(zr.entries.map((en) => zr.extract(en)));
+    got.forEach((g, i) => assert.deepEqual(Buffer.from(g), files[i].data, files[i].name));
+    // 每页 2 个请求（本地头 + 数据）；落在尾部缓存块里的页（最后一两页）不需要请求
+    assert.ok(s.st.requests.length > 2 + 6 && s.st.requests.length <= 2 + 6 * 2, '请求数：' + s.st.requests.length);
+    assert.ok(s.st.bytesSent < zip.length + 4 * 65558, '没有把整个 zip 反复下载：' + s.st.bytesSent);
+    assert.ok(s.st.maxInflight <= 4);
+  } finally { await s.close(); }
+});
+
+test('parseLaunchHash：正常链接（中文 / 编码 / + / 空格 / #）', () => {
+  const rel = '小说/チ。-关于地球的运动- - 卷01.epub';
+  const h = '#open=' + encodeURIComponent(rel) + '&src=dav&bid=' + encodeURIComponent('remote:' + rel) + '&dir=rtl&back=%2Freader%2F';
+  const p = C.parseLaunchHash(h);
+  assert.equal(p.ok, true);
+  assert.equal(p.rel, rel);
+  assert.equal(p.title, 'チ。-关于地球的运动- - 卷01.epub');
+  assert.equal(p.src, 'dav'); assert.equal(p.dir, 'rtl'); assert.equal(p.back, '/reader/'); assert.equal(p.bid, 'remote:' + rel);
+  // 没有 # / 参数顺序不同 / 多余参数 / 默认 src
+  const q = C.parseLaunchHash('x=1&open=a%2Fb%20c.cbz&zzz');
+  assert.equal(q.ok, true); assert.equal(q.rel, 'a/b c.cbz'); assert.equal(q.dir, null); assert.equal(q.back, null); assert.equal(q.src, 'dav');
+  // '+' 是文件名里的加号，不是空格（URLSearchParams 会弄错）
+  assert.equal(C.parseLaunchHash('#open=a+b.cbz').rel, 'a+b.cbz');
+  assert.equal(C.parseLaunchHash('#open=' + encodeURIComponent('a+b #1.cbz')).rel, 'a+b #1.cbz');
+  // 同名参数以第一个为准；非法 dir 被忽略但不影响打开
+  assert.equal(C.parseLaunchHash('#open=a.cbz&open=b.cbz').rel, 'a.cbz');
+  assert.equal(C.parseLaunchHash('#open=a.cbz&dir=up').dir, null);
+  // 不是启动链接
+  for (const h2 of ['', '#', '#/read/1', '#foo=bar', null, undefined]) assert.equal(C.parseLaunchHash(h2), null, String(h2));
+});
+
+test('parseLaunchHash：恶意 / 非法输入一律拒绝', () => {
+  const bad = [
+    '#open=..%2F..%2Fetc%2Fpasswd', '#open=a%2F..%2Fb.cbz', '#open=%2E%2E%2Fx.cbz', '#open=a%2F..', '#open=..',
+    '#open=.%2Fa.cbz', '#open=a%2F%2Fb.cbz', '#open=a%2F', '#open=%2Fetc%2Fpasswd',
+    '#open=http%3A%2F%2Fevil.example%2Fa.cbz', '#open=https%3A%2F%2Fevil.example%2Fa.cbz', '#open=%2F%2Fevil.example%2Fa.cbz',
+    '#open=javascript%3Aalert(1)', '#open=data%3Atext%2Fhtml%2Cx', '#open=file%3A%2F%2F%2Fc%3A%2Fx', '#open=c%3A%2Fwindows%2Fx.cbz',
+    '#open=a%5Cb.cbz', '#open=..%5C..%5Cx.cbz', '#open=a%00b.cbz', '#open=a%0Ab.cbz', '#open=%E0%A4%A',   // 坏的 % 编码
+    '#open=', '#open=' + 'a'.repeat(1100),
+    '#open=a.cbz&src=ftp', '#open=a.cbz&src=',
+  ];
+  for (const h of bad) {
+    const p = C.parseLaunchHash(h);
+    assert.ok(p && p.ok === false && p.error, h.slice(0, 60) + ' => ' + JSON.stringify(p));
+  }
+  // 双重编码：解一次后 ..  不是 '..' 段（会被当字面名字再编码一次发给服务器，不能穿越）
+  const dbl = C.parseLaunchHash('#open=%252e%252e%2Fa.cbz');
+  assert.equal(dbl.ok, true); assert.equal(dbl.rel, '%2e%2e/a.cbz');
+  assert.equal(C.davBookUrl('https://h', 'library', dbl.rel), 'https://h/library/%252e%252e/a.cbz');
+});
+
+test('parseLaunchHash：back 只接受同源路径', () => {
+  const back = (b) => C.parseLaunchHash('#open=a.cbz&back=' + encodeURIComponent(b)).back;
+  assert.equal(back('/reader/'), '/reader/');
+  assert.equal(back('/reader/#/read/1'), '/reader/#/read/1');
+  for (const b of ['//evil.example/x', '/\\evil.example', 'https://evil.example/', 'http://evil.example', 'reader/', 'javascript:alert(1)',
+    '/a\\b', '/a\nb', '', '/' + 'x'.repeat(600)]) {
+    assert.equal(back(b), null, JSON.stringify(b).slice(0, 40));
+  }
+  // back 非法只是不显示「返回」，不影响打开
+  assert.equal(C.parseLaunchHash('#open=a.cbz&back=%2F%2Fevil').ok, true);
+});
+
+test('normalizeDavBase / davBookUrl', () => {
+  const o = 'https://h.example';
+  assert.equal(C.normalizeDavBase('', o), o);
+  assert.equal(C.normalizeDavBase('/', o), o);
+  assert.equal(C.normalizeDavBase('/dav/', o), o + '/dav');
+  assert.equal(C.normalizeDavBase('https://h.example/dav//', o), o + '/dav');
+  for (const b of ['https://evil.example/', 'http://h.example/', '//evil.example', 'https://u:p@h.example/', 'javascript:alert(1)']) {
+    assert.equal(C.normalizeDavBase(b, o), null, b);
+  }
+  assert.equal(C.davBookUrl(o, 'library', '小说/a b#1.epub'), o + '/library/%E5%B0%8F%E8%AF%B4/a%20b%231.epub');
+  assert.equal(C.davBookUrl(o + '/dav', '/lib/sub/', 'x.cbz'), o + '/dav/lib/sub/x.cbz');
+  assert.equal(C.davBookUrl(o, '', 'x.cbz'), o + '/x.cbz');
 });
