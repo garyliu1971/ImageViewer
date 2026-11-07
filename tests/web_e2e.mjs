@@ -37,9 +37,10 @@ function findChrome() {
 /* ------------------------- 最小 CDP 客户端 ------------------------- */
 class CDP {
   constructor(ws) {
-    this.ws = ws; this.id = 0; this.pending = new Map();
+    this.ws = ws; this.id = 0; this.pending = new Map(); this.listeners = [];
     ws.addEventListener('message', (ev) => {
       const msg = JSON.parse(ev.data);
+      if (msg.method) for (const l of this.listeners) l(msg);          // 事件（带 sessionId 的是 worker 等子目标的）
       if (msg.id && this.pending.has(msg.id)) {
         const { res, rej } = this.pending.get(msg.id);
         this.pending.delete(msg.id);
@@ -47,11 +48,11 @@ class CDP {
       }
     });
   }
-  send(method, params = {}) {
+  send(method, params = {}, sessionId) {
     const id = ++this.id;
     return new Promise((res, rej) => {
       this.pending.set(id, { res, rej });
-      this.ws.send(JSON.stringify({ id, method, params }));
+      this.ws.send(JSON.stringify(sessionId ? { id, method, params, sessionId } : { id, method, params }));
     });
   }
   async eval(body, tries = 3) {
@@ -141,6 +142,63 @@ function pngBytes(w, h, hex) {
     chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
 }
 
+/* ------------------------- Node 侧造 PDF（pdf.js 读取 / 按需取字节测试用）-------------------------
+   页面种类：text（Helvetica + ZapfDingbats 非嵌入标准字体 + 黑块）/ image（RGB 图 XObject）/
+            cjk（Type0 非嵌入 STSong-Light + UniGB-UCS2-H，逼 pdf.js 取 cmap）/
+            scan（页面自带一张 scanKB 大小的整页灰度图，像扫描书：只有读到这一页才需要它那段字节）。
+   纸张：w / h（pt）、rot（/Rotate）。classic xref 表在文件末尾，不是线性化、也不是 object stream。
+   interleave=false：所有页面对象排在最前面、各页的图像在后面（紧凑：打开 / 翻页只碰开头、结尾和这页自己的图）；
+   interleave=true ：每页的图像紧跟在这页后面（pdf.js 走平铺页树找第 N 页时会碰到前面几乎所有页，只能保证「没有 200、不重复下载」）。
+   图像内容是常量灰 + 顶部一条深色带（大小靠「不压缩存储」撑起来，渲染和 JPEG 编码都很便宜）。
+   encrypt=true 带一个对不上密码的 /Encrypt（应报「需要密码」）；rtl=true 声明 /ViewerPreferences /Direction /R2L。 */
+function buildPdf(o) {
+  const pages = o.pages, N = pages.length, scanBytes = (o.scanKB || 140) * 1024, SCAN_W = 1024;
+  const parts = []; let len = 0; const offs = [];
+  const add = (b) => { parts.push(b); len += b.length; };
+  const obj = (n, body) => { offs[n] = len; add(Buffer.from(n + ' 0 obj\n')); add(Buffer.isBuffer(body) ? body : Buffer.from(body, 'latin1')); add(Buffer.from('\nendobj\n')); };
+  const stream = (dict, data) => Buffer.concat([Buffer.from('<< ' + dict + ' /Length ' + data.length + ' >>\nstream\n', 'latin1'), data, Buffer.from('\nendstream')]);
+  const firstPage = 10, scanId = {}; let nextId = firstPage + 2 * N;
+  pages.forEach((p, i) => { if (p.kind === 'scan') scanId[i] = nextId++; });
+  const encId = nextId, maxId = o.encrypt ? encId : encId - 1;
+  const scanImg = () => {
+    const b = Buffer.alloc(scanBytes, 0xc0); b.fill(0x20, 0, SCAN_W * 20);
+    return stream('/Type /XObject /Subtype /Image /Width ' + SCAN_W + ' /Height ' + (scanBytes / SCAN_W) + ' /ColorSpace /DeviceGray /BitsPerComponent 8', b);
+  };
+  add(Buffer.from('%PDF-1.5\n%\xE2\xE3\xCF\xD3\n', 'latin1'));
+  obj(1, '<< /Type /Catalog /Pages 2 0 R /PageLayout /SinglePage' + (o.rtl ? ' /ViewerPreferences << /Direction /R2L >>' : '') + ' >>');
+  obj(2, '<< /Type /Pages /Kids [' + pages.map((_, i) => (firstPage + 2 * i) + ' 0 R').join(' ') + '] /Count ' + N + ' >>');
+  obj(3, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  obj(4, '<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light-UniGB-UCS2-H /Encoding /UniGB-UCS2-H /DescendantFonts [5 0 R] >>');
+  obj(5, '<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> /FontDescriptor 6 0 R /DW 1000 >>');
+  obj(6, '<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 /FontBBox [-25 -254 1000 880] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 93 >>');
+  const img = Buffer.alloc(64 * 64 * 3);
+  for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) { const q = (y * 64 + x) * 3; img[q] = x * 4; img[q + 1] = 40; img[q + 2] = y * 4; }
+  obj(7, stream('/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB /BitsPerComponent 8', img));
+  obj(8, '<< /Font << /F1 3 0 R /F2 4 0 R /F3 9 0 R >> /XObject << /Im1 7 0 R >> >>');
+  obj(9, '<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>');
+  for (let i = 0; i < N; i++) {
+    const pg = pages[i], w = pg.w || 612, h = pg.h || 792, n = i + 1;
+    let c, res = '/Resources 8 0 R';
+    if (pg.kind === 'image') c = 'q 200 0 0 200 72 ' + (h - 320) + ' cm /Im1 Do Q BT /F1 18 Tf 72 ' + (h - 340) + ' Td (image page ' + n + ') Tj ET';
+    else if (pg.kind === 'cjk') c = 'BT /F2 28 Tf 72 ' + (h - 100) + ' Td <4E2D65876D4B8BD5> Tj ET 0 0 0 rg 72 ' + (h - 200) + ' 200 40 re f';
+    else if (pg.kind === 'scan') {
+      c = 'q ' + w + ' 0 0 ' + h + ' 0 0 cm /Im1 Do Q BT /F1 20 Tf 72 ' + (h / 2) + ' Td (Scan page ' + n + ') Tj ET';
+      res = '/Resources << /Font << /F1 3 0 R >> /XObject << /Im1 ' + scanId[i] + ' 0 R >> >>';
+    } else c = 'BT /F1 36 Tf 72 ' + (h - 100) + ' Td (Hello PDF page ' + n + ') Tj ET BT /F3 24 Tf 72 ' + (h - 140) + ' Td (abc) Tj ET 0 0 0 rg 72 ' + (h - 220) + ' 200 40 re f';
+    obj(firstPage + 2 * i, '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + w + ' ' + h + '] ' + (pg.rot ? '/Rotate ' + pg.rot + ' ' : '') + res + ' /Contents ' + (firstPage + 2 * i + 1) + ' 0 R >>');
+    obj(firstPage + 2 * i + 1, stream('', Buffer.from(c, 'latin1')));
+    if (o.interleave && pg.kind === 'scan') obj(scanId[i], scanImg());
+  }
+  if (!o.interleave) pages.forEach((p, i) => { if (p.kind === 'scan') obj(scanId[i], scanImg()); });
+  if (o.encrypt) obj(encId, '<< /Filter /Standard /V 1 /R 2 /O <' + 'ab'.repeat(32) + '> /U <' + 'cd'.repeat(32) + '> /P -4 >>');
+  const xref = len;
+  let x = 'xref\n0 ' + (maxId + 1) + '\n0000000000 65535 f \n';
+  for (let n = 1; n <= maxId; n++) x += String(offs[n]).padStart(10, '0') + ' 00000 n \n';
+  x += 'trailer\n<< /Size ' + (maxId + 1) + ' /Root 1 0 R' + (o.encrypt ? ' /Encrypt ' + encId + ' 0 R /ID [<00112233445566778899aabbccddeeff> <00112233445566778899aabbccddeeff>]' : '') + ' >>\nstartxref\n' + xref + '\n%%EOF\n';
+  add(Buffer.from(x, 'latin1'));
+  return Buffer.concat(parts);
+}
+
 /* ------------------------- /iv/ 同源测试服务器（模拟 Caddy + SFTPGo WebDAV）-------------------------
    /iv/…      页面 / manifest / sw.js / 图标，带 deploy/Caddyfile.iv.snippet 里同一条 CSP
    /library/… 书库：Basic 认证 + 真 Range（206）；/library/ignore/… 故意忽略 Range 回 200
@@ -155,7 +213,7 @@ function startIvServer(books) {
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').replace('__BUILD__', 'e2e');
   const manifest = fs.readFileSync(path.join(ROOT, 'manifest.webmanifest'));
   const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [], slow: {}, prog: {}, progLog: [], progDir: false,   // slow: 相对路径 -> 每个请求的延迟 ms（默认 15）
-    virtual: {}, listSlow: {}, denyList: false };
+    virtual: {}, listSlow: {}, denyList: false, vendor: [] };
   const xesc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const hrefOf = (rel, dir) => '/library/' + rel.split('/').filter(Boolean).map(encodeURIComponent).join('/') + (dir && rel ? '/' : '');
   /** dirRel 这一层的孩子：Map(名字 -> {dir, size})；目录不存在返回 null */
@@ -198,6 +256,14 @@ function startIvServer(books) {
     if (p.startsWith('/iv/icons/')) {
       const f = path.join(ROOT, 'icons', path.basename(p));
       return fs.existsSync(f) ? send(200, 'image/png', fs.readFileSync(f)) : send(404, 'text/plain', 'no');
+    }
+    if (p.startsWith('/iv/vendor/')) {      // pdf.js 本体 + cmaps + 标准字体（真实部署里同样是 /iv/ 下的静态文件，带同一条 CSP；不带也不该带账号头）
+      const f = path.normalize(path.join(ROOT, p.slice('/iv/'.length)));
+      const ok = f.startsWith(path.join(ROOT, 'vendor') + path.sep) && fs.existsSync(f) && fs.statSync(f).isFile();
+      S.vendor.push({ path: p, status: ok ? 200 : 404, auth: !!req.headers.authorization, range: !!req.headers.range });
+      if (!ok) return send(404, 'text/plain', 'nf');
+      return send(200, /\.js$/.test(f) ? 'text/javascript' : 'application/octet-stream', fs.readFileSync(f),
+        { 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff' });
     }
     if (p === '/reader/') return send(200, 'text/html; charset=utf-8', '<title>reader</title>reader');
     if (p.startsWith('/library/')) {
@@ -1785,9 +1851,10 @@ function check(name, ok, detail) {
       await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/old.cbr'))}); return 1;`);
       await sleep(400);
       check('#open= 指向 cbr 同样解释，同样没请求这个文件', /这是 cbr.*cbz/.test(await toastText()) && iv.log.slice(gRar).every((e) => !/old\.cbr/.test(e.path)), await toastText());
+      await cdp.eval(`window.__IV.setDavPdfHook(null); return 1;`);      // 默认就接了真的 pdf 阅读器（见 [23e]）；这里测钩子没接上时的行为
       await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/doc.pdf'))}); return 1;`);
       await sleep(400);
-      check('#open= 指向 pdf（还没接 pdf 阅读器）→「暂不支持 PDF」，没请求这个文件', /暂不支持 PDF/.test(await toastText()) && iv.log.slice(gRar).every((e) => !/doc\.pdf/.test(e.path)), await toastText());
+      check('#open= 指向 pdf（钩子没接上）→「暂不支持 PDF」，没请求这个文件', /暂不支持 PDF/.test(await toastText()) && iv.log.slice(gRar).every((e) => !/doc\.pdf/.test(e.path)), await toastText());
       await cdp.eval(`window.__pdf = []; window.__IV.setDavPdfHook((p, ctx) => { window.__pdf.push({ rel: p.rel, url: ctx.url, key: ctx.key,
         auth: typeof ctx.authHeader === 'function' && /^Basic /.test(ctx.authHeader()) }); return Promise.resolve(true); }); return 1;`);
       await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/doc.pdf'))}); return 1;`);
@@ -1795,7 +1862,7 @@ function check(name, ok, detail) {
       const pdfCalls = await cdp.eval(`return window.__pdf;`);
       check('pdf 钩子接上之后：调用钩子（相对路径 / URL / key / 带账号头）', pdfCalls.length === 1 && pdfCalls[0].rel === 'lib/doc.pdf' &&
         pdfCalls[0].url === iv.origin + '/library/lib/doc.pdf' && pdfCalls[0].key === 'dav:lib/doc.pdf' && pdfCalls[0].auth, pdfCalls);
-      await cdp.eval(`window.__IV.setDavPdfHook(null); return 1;`);
+      await cdp.eval(`window.__IV.setDavPdfHook('default'); return 1;`);
       check('换书 / 打开全程 CSP 零违规', (await cdp.eval(`return window.__csp || [];`)).length === 0, await cdp.eval(`return window.__csp || [];`));
       await fresh(IVURL);
       {
@@ -2003,6 +2070,318 @@ function check(name, ok, detail) {
           inView: e.right <= innerWidth && e.left >= 0, vpTop: parseFloat(document.querySelector('#viewport').style.top), tb: document.querySelector('#toolbar').offsetHeight };`);
       check('桌面宽度不变：没有换书条，工具栏里的「下一本」照旧可见，图片区顶部 = 工具栏高度', dk.bar === 'none' && dk.btn !== 'none' && dk.inView && dk.vpTop === dk.tb, dk);
       await fresh(IVURL);
+      }
+      {   // [23e] 用块作用域：这一节的 const 很多（s1 / w1 …），别和前面的重名
+      /* ======== [23e] PDF（pdf.js）：按需取字节（Range）/ 渲染进现有页面管线 / CSP / 面积上限 / 401 / 加密 / 损坏 ======== */
+      log('\n[23e] PDF：只发 Range、懒读（>100 页）、页面管线（适配 / 旋转 / 双页 / 裁边 / 缩略图 / 进度）、手机面积上限、CSP 零违规、401 重输、加密 / 损坏');
+      const pdfKinds = (n) => Array.from({ length: n }, (_, i) => {
+        const k = i + 1;
+        if (k === 1) return { kind: 'text' };
+        if (k === 2) return { kind: 'image' };
+        if (k === 3) return { kind: 'cjk' };
+        if (k === 4) return { kind: 'text', rot: 90 };                       // /Rotate 90：竖版纸张，显示时是横的
+        if (k === 5) return { kind: 'text', w: 792, h: 612 };                // 横版纸张
+        if (k === 6) return { kind: 'text', w: 300, h: 400 };
+        if (k === 7) return { kind: 'text', w: 5000, h: 5000 };              // 超大纸张：必须被面积上限压住
+        return { kind: 'scan' };                                             // 第 8 页起：每页自带一张整页扫描图
+      });
+      const PDF_PAGES = 150;
+      bookBufs['pdf/big.pdf'] = buildPdf({ pages: pdfKinds(PDF_PAGES), scanKB: 140 });                                    // 约 20MB，页面对象紧凑排在前面、各页的扫描图在后面
+      bookBufs['pdf/inter.pdf'] = buildPdf({ pages: pdfKinds(120), scanKB: 100, interleave: true });                         // 页面对象和扫描图交错
+      bookBufs['pdf/small.pdf'] = buildPdf({ pages: pdfKinds(12).map((p, i) => (i === 6 ? { kind: 'text' } : p)), scanKB: 60 });
+      bookBufs['pdf/rtl.pdf'] = buildPdf({ pages: pdfKinds(3), rtl: true });
+      bookBufs['pdf/locked.pdf'] = buildPdf({ pages: pdfKinds(2), encrypt: true });
+      bookBufs['pdf/broken.pdf'] = Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.from('this is not a pdf body '.repeat(200))]);
+      const BIG = bookBufs['pdf/big.pdf'].length;
+      log('    big.pdf ' + (BIG / 1048576).toFixed(1) + ' MB，' + PDF_PAGES + ' 页；inter.pdf ' + (bookBufs['pdf/inter.pdf'].length / 1048576).toFixed(1) + ' MB');
+
+      /* CDP：worker 里的 CSP 违规不会到页面的 securitypolicyviolation 监听 → 自动挂上 worker 目标，收它们的 Log / 异常 */
+      /* 缩略图条在桌面默认是开的：每张缩略图都要读那一页的扫描图，会盖住「只取需要的字节」的断言 → 这一节先关掉，缩略图单独测 */
+      const noThumbs = (await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: "try{localStorage.setItem('iv.ui.v1',JSON.stringify({thumbs:false}))}catch(e){}" })).identifier;
+      const wlog = [], liveWorkers = new Set(); let nWorkers = 0;
+      cdp.listeners.push((m) => {
+        if (m.method === 'Target.detachedFromTarget') liveWorkers.delete(m.params.sessionId);
+        if (m.method === 'Target.attachedToTarget' && /^(worker|service_worker)$/.test(m.params.targetInfo.type)) {
+          const sid = m.params.sessionId;
+          if (m.params.targetInfo.type === 'worker') { nWorkers++; liveWorkers.add(sid); }
+          cdp.send('Log.enable', {}, sid).catch(() => {});
+          cdp.send('Runtime.enable', {}, sid).catch(() => {});
+          cdp.send('Runtime.runIfWaitingForDebugger', {}, sid).catch(() => {});
+        } else if (m.method === 'Log.entryAdded') wlog.push((m.params.entry.source || '') + ': ' + m.params.entry.text);
+        else if (m.method === 'Runtime.exceptionThrown') wlog.push('exception: ' + ((m.params.exceptionDetails.exception || {}).description || m.params.exceptionDetails.text));
+        else if (m.method === 'Runtime.consoleAPICalled' && /error|warning/.test(m.params.type)) wlog.push('console.' + m.params.type + ': ' + m.params.args.map((a) => a.value || a.description || '').join(' '));
+      });
+      await cdp.send('Log.enable');
+      await cdp.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: true, flatten: true });
+      const bigLog = (since) => iv.log.slice(since || 0).filter((e) => /\/library\/pdf\/big\.pdf$/.test(e.path));
+      const sumBytes = (arr) => arr.reduce((a, e) => a + (e.bytes || 0), 0);
+      const pdfOpen = async (rel, total) => {
+        await fresh(IVURL + hashFor(rel));
+        return waitFor(`window.__IV.state().total === ${total} && window.__IV.state().decoded[0] && window.__IV.state().decoded[0].w > 0 && document.querySelector('#pageBox img')`, 25000);
+      };
+      /** 当前显示的第一张图：天然尺寸 + 深色像素数（证明真的画了字，不是白纸） */
+      const shot = () => cdp.eval(`const im = document.querySelector('#pageBox .page img'); if (!im) return null;
+        await new Promise((r) => (im.complete ? r() : (im.onload = r)));
+        const cv = document.createElement('canvas'); cv.width = Math.min(im.naturalWidth, 800); cv.height = Math.round(cv.width * im.naturalHeight / im.naturalWidth);
+        const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(im, 0, 0, cv.width, cv.height);
+        const d = g.getImageData(0, 0, cv.width, cv.height).data; let dark = 0, color = 0;
+        for (let i = 0; i < d.length; i += 4) { if (d[i] < 100 && d[i + 1] < 100 && d[i + 2] < 100) dark++; if (Math.abs(d[i] - d[i + 2]) > 60) color++; }
+        return { w: im.naturalWidth, h: im.naturalHeight, dark, color };`);
+      const gotoPage = async (i) => { await cdp.eval(`window.__IV.showPage(${i}); return 1;`);
+        await waitFor(`window.__IV.state().index === ${i} && window.__IV.state().pair[0] && window.__IV.state().pair[0].endsWith('第 ${i + 1} 页') && (() => { const m = document.querySelector('#pageBox .page img'); return m && m.complete && m.naturalWidth > 0; })()`, 25000); await sleep(150); };
+      const pdfLog0 = iv.log.length, vend0 = iv.vendor.length;
+
+      /* ---- 1) 懒读：打开 150 页 / 20MB 的 PDF，只取开头 + 结尾，不下整本，没有 200 ---- */
+      const okOpen = await pdfOpen('pdf/big.pdf', PDF_PAGES);
+      check('云端 PDF 打开：150 页、书 key = dav:pdf/big.pdf、标题 big', !!okOpen && (await stateOf()).total === PDF_PAGES && (await stateOf()).bookKey === 'dav:pdf/big.pdf' && (await stateOf()).bookTitle === 'big.pdf', await stateOf());
+      await sleep(1500);
+      const L1 = bigLog(pdfLog0);
+      const b1 = sumBytes(L1);
+      check('打开 + 画出第 1 页，累计只取 ' + (b1 / 1024).toFixed(0) + ' KB（< 文件 ' + (BIG / 1048576).toFixed(1) + 'MB 的 20%，且 < 2MB）', b1 < BIG * 0.2 && b1 < 2 * 1048576 && b1 > 0, { b1, BIG, n: L1.length });
+      check('每个 PDF 请求都是 Range（GET bytes=…，没有无 Range 的 GET）、都带 Authorization、没有一个 200', L1.length > 0 && L1.every((e) => e.range && /^bytes=\d+-\d+$/.test(e.range) && e.auth && e.status === 206 && e.method === 'GET'), L1.filter((e) => !(e.range && e.auth && e.status === 206)).slice(0, 3));
+      check('PDF 地址不带账号 / 查询串（凭据只在 Authorization 头里）', L1.every((e) => e.path === '/library/pdf/big.pdf'), L1.slice(0, 2).map((e) => e.path));
+      check('同时在途的请求不超过 4 个', iv.maxInflight <= 4, iv.maxInflight);
+      const s1 = await shot();
+      check('第 1 页真的画出来了（有黑色文字 / 黑块像素，不是白纸）', !!s1 && s1.dark > 300 && s1.w > 1000, s1);
+      const i1 = await cdp.eval(`return window.__IV.pdfInfo();`);
+      check('渲染完共用 canvas 立刻清零（Safari 不泄漏），没有致命错误', i1 && i1.canvasPx === 0 && !i1.fatal && i1.renders >= 1, i1);
+      const stA = await stateOf();
+      check('PDF 页进了普通页面管线：一个章节、页名「big · 第 N 页」，书架 / 上一本下一本可用', !stA.chapters && stA.decoded[0].name === 'big · 第 1 页' && stA.decoded[149].path === 'big#0150', { ch: stA.chapters, n0: stA.decoded[0].name, p: stA.decoded[149].path });
+      check('第一次打开的 PDF：默认按页宽适配 + 单页（手机上字才看得清）', stA.fitMode === 'width' && stA.S.spread === false && stA.pair.length === 1, { fit: stA.fitMode, spread: stA.S.spread });
+      const topY = await cdp.eval(`return Math.round(document.querySelector('#pageBox .page').getBoundingClientRect().top);`);
+      check('按页宽显示 → 从页面顶部开始读（不是从中间）：panY > 0，页面顶边在窗口顶部附近', stA.panY > 0 && topY >= -2 && topY < 100, { panY: stA.panY, topY });
+      const w1 = iv.vendor.slice(vend0);
+      check('pdf.js 从 /iv/vendor/pdfjs/ 同源加载：主文件 + worker，全部 200，没有带 Authorization / Range', w1.some((v) => /pdf\.min\.js$/.test(v.path)) && w1.some((v) => /pdf\.worker\.min\.js$/.test(v.path)) && w1.every((v) => v.status === 200 && !v.auth && !v.range), w1.slice(0, 4));
+      const fontFetch = await cdp.eval(`const r = await fetch(new URL('vendor/pdfjs/standard_fonts/LiberationSans-Regular.ttf', document.baseURI)); const b = await r.arrayBuffer(); const r2 = await fetch(new URL('vendor/pdfjs/cmaps/UniGB-UCS2-H.bcmap', document.baseURI)); return { st: r.status, n: b.byteLength, st2: r2.status };`);
+      check('standard_fonts / cmaps 目录随包发布、同源可取（pdf.js 按需读；Windows / macOS 上 Helvetica 会走系统字体，所以这里不依赖它被请求）', fontFetch.st === 200 && fontFetch.n > 100000 && fontFetch.st2 === 200, fontFetch);
+
+      /* ---- 2) 空闲后不再有请求（disableAutoFetch：不会后台下完整本） ---- */
+      const idle0 = sumBytes(bigLog(pdfLog0)), n0 = bigLog(pdfLog0).length;
+      await sleep(3000);
+      check('空闲 3 秒：没有任何新的 PDF 请求（不会后台把整本下完）', sumBytes(bigLog(pdfLog0)) === idle0 && bigLog(pdfLog0).length === n0, { idle0, now: sumBytes(bigLog(pdfLog0)) });
+
+      /* ---- 3) 翻页 / 各种页：图片页、CJK（cmap）、/Rotate、横版、超大纸张 ---- */
+      await gotoPage(1);
+      const s2 = await shot();
+      check('第 2 页（RGB 图像）：画出了图像（有彩色像素）', !!s2 && s2.color > 500, s2);
+      await gotoPage(2);
+      const s3 = await shot();
+      const w3 = iv.vendor.slice(vend0);
+      check('第 3 页（中文，非嵌入 STSong + UniGB-UCS2-H）：pdf.js 按需取了 cmaps/UniGB-UCS2-H.bcmap，画出了字', w3.some((v) => /cmaps\/UniGB-UCS2-H\.bcmap$/.test(v.path) && v.status === 200 && !v.auth) && !!s3 && s3.dark > 300, { s3, cm: w3.filter((v) => /cmaps/.test(v.path)).map((v) => v.path) });
+      await gotoPage(3);
+      const stR = await stateOf();
+      const dR = stR.decoded[3];
+      check('第 4 页（/Rotate 90 的竖版纸张）：显示尺寸是横的（宽 > 高），探测值 = 真实图片尺寸', dR.w > dR.h && (await shot()).w === dR.w && (await shot()).h === dR.h, { dR, s: await shot() });
+      await gotoPage(4);
+      const stL = await stateOf();
+      check('第 5 页（横版 792×612）：宽 > 高', stL.decoded[4].w > stL.decoded[4].h, stL.decoded[4]);
+      await gotoPage(6);
+      const stH = await stateOf(), hi = await cdp.eval(`return window.__IV.pdfInfo();`), dH = stH.decoded[6];
+      check('第 7 页（5000×5000pt 超大纸张）：像素数 ≤ 面积上限（桌面 1200 万）、最长边 ≤ 4000，不是 25M 像素', dH.w * dH.h <= hi.areaCap && Math.max(dH.w, dH.h) <= 4000 && dH.w * dH.h < 13e6, { dH, cap: hi.areaCap });
+      const sH = await shot();
+      check('超大纸张：真实图片尺寸 = 探测尺寸，且画出了字', !!sH && sH.w === dH.w && sH.h === dH.h && sH.dark > 100, { sH, dH });
+      check('渲染中用过的最大 canvas ≤ 面积上限；渲染完 canvas 仍为 0×0', hi.maxCanvas <= hi.areaCap && hi.canvasPx === 0, hi);
+
+      /* ---- 4) 逐页翻 12 页：URL 缓存不超过 8 个；翻页只发需要的请求 ---- */
+      for (let i = 7; i < 14; i++) await gotoPage(i);
+      const stU = await stateOf();
+      check('连续翻到第 14 页：objectURL 缓存 ≤ 8（旧页的位图被释放）', stU.urls <= 8, stU.urls);
+      const pinfo = await cdp.eval(`return window.__IV.pdfInfo();`);
+      check('翻页队列清空、没有致命错误、没有 unhandled', pinfo.queue === 0 && !pinfo.fatal && !(await cdp.eval(`return (window.__errs || []).length;`)), pinfo);
+
+      /* ---- 5) 跳到很后面的页（页面对象紧凑）：额外只取一小段 ---- */
+      const bBefore = sumBytes(bigLog(pdfLog0));
+      await gotoPage(139);
+      const bAfter = sumBytes(bigLog(pdfLog0));
+      check('跳到第 140 页：额外只取 ' + ((bAfter - bBefore) / 1024).toFixed(0) + ' KB（< 文件 10%），累计 < 20%', bAfter - bBefore < BIG * 0.1 && bAfter < BIG * 0.2, { add: bAfter - bBefore, total: bAfter });
+      const s140 = await shot();
+      check('第 140 页画出来了', !!s140 && s140.dark > 300, s140);
+      await sleep(1500);
+      check('整个过程里 big.pdf 没有一个 200、没有一次整本下载', bigLog(pdfLog0).every((e) => e.status === 206) && sumBytes(bigLog(pdfLog0)) < BIG, { total: sumBytes(bigLog(pdfLog0)) });
+
+      /* ---- 6) 适配 / 缩放 / 旋转 / 双页 / 裁白边 / 跳页 / 进度 ---- */
+      await gotoPage(7);
+      await cdp.eval(`window.__IV.rotateBy(90); return 1;`); await sleep(150);
+      check('旋转 90°：rotation = 90（沿用图片管线）', (await stateOf()).rotation === 90, (await stateOf()).rotation);
+      await cdp.eval(`window.__IV.zoomBy(1.5); window.__IV.applyFit('window'); return 1;`); await sleep(150);
+      const stF = await stateOf();
+      check('适应窗口 / 缩放：图整张在窗口内（zoom 合理）', stF.fitMode === 'window' && stF.zoom > 0 && stF.zoom < 1, { fit: stF.fitMode, zoom: stF.zoom });
+      /* 双页：横屏窗口 + 打开双页 */
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 600, deviceScaleFactor: 1, mobile: false });
+      await sleep(400);
+      await cdp.eval(`window.__IV.showPage(7); return 1;`); await sleep(300);
+      await cdp.eval(`window.__force('spread', true); return 1;`); await sleep(300);
+      await waitFor(`window.__IV.state().pair.length === 2`, 15000);
+      const stS = await stateOf();
+      check('横屏 + 双页开：两张竖版 PDF 页并排（第 8、9 页）', stS.pair.length === 2 && /第 8 页/.test(stS.pair[0]) && /第 9 页/.test(stS.pair[1]), stS.pair);
+      await cdp.eval(`window.__IV.showPage(4); return 1;`);
+      await waitFor(`window.__IV.state().index === 4 && window.__IV.state().pair.length >= 1`, 15000); await sleep(400);
+      const stS2 = await stateOf();
+      check('当前是横版页（第 5 页）：单页显示，不并排；下一页没有为了判断去解码（只靠页面尺寸探测，也不渲染成图再看）', stS2.pair.length === 1 && stS2.decoded[5].w === 0, { pair: stS2.pair, next: stS2.decoded[5] });
+      await cdp.eval(`window.__force('spread', false); return 1;`);
+      await cdp.send('Emulation.clearDeviceMetricsOverride');
+      await sleep(300);
+      /* 裁白边 */
+      await gotoPage(0);
+      await cdp.eval(`window.__force('trim', true); return 1;`);
+      await waitFor(`window.__IV.state().crop`, 15000);
+      const stT = await stateOf();
+      check('裁白边开：PDF 渲染成图后量到了页边空白（第 1 页 crop 非空，左 > 0 且小于整页）', !!stT.crop && stT.crop.l > 0 && stT.crop.r < stT.decoded[0].w, stT.crop);
+      await cdp.eval(`window.__force('trim', false); return 1;`); await sleep(400);
+      check('裁白边关：crop 清掉，页面尺寸恢复探测值', !(await stateOf()).crop && (await stateOf()).decoded[0].w > 0);
+      /* 缩略图：展开缩略图条，滚到可见的缩略图会按小尺寸渲染（不是整页大图） */
+      if (!(await stateOf()).S.thumbs) { await cdp.eval(`document.querySelector('#btnThumbs').click(); return 1;`); await sleep(300); }
+      const th = await waitFor(`document.querySelectorAll('#thumbs .thumb canvas').length >= 3`, 20000);
+      check('缩略图：展开后滚到可见的页按小尺寸渲染出缩略图 canvas（高 80px）', !!th && await cdp.eval(`return Array.from(document.querySelectorAll('#thumbs .thumb canvas')).every((c) => c.height === 80);`), await cdp.eval(`return document.querySelectorAll('#thumbs .thumb canvas').length;`));
+      /* 进度：跳到第 20 页，刷新后续读 */
+      await gotoPage(19);
+      await cdp.eval(`window.__IV.saveProgress(); return 1;`);
+      await fresh(IVURL + hashFor('pdf/big.pdf'));
+      await waitFor(`window.__IV.state().total === ${PDF_PAGES} && window.__IV.state().index === 19`, 20000);
+      check('进度按书记住：重新打开同一本 PDF 回到第 20 页', (await stateOf()).index === 19 && (await stateOf()).bookKey === 'dav:pdf/big.pdf', { idx: (await stateOf()).index });
+
+      /* ---- 7) CSP：页面和 worker 里零违规 ---- */
+      const cspPage = await cdp.eval(`return window.__csp || [];`);
+      const badLog = wlog.filter((t) => /Refused|Content Security Policy|violat|EvalError|unsafe-eval/i.test(t));
+      check('CSP 零违规：页面（securitypolicyviolation）+ worker（CDP Log / 异常）；用的是 Caddy 片段里的同一条 CSP', cspPage.length === 0 && badLog.length === 0, { cspPage, badLog: badLog.slice(0, 4), allWorkerLogs: wlog.slice(0, 5) });
+      check('worker 是 /iv/vendor/pdfjs/pdf.worker.min.js 同源的 module worker（CDP 挂上了它，所以上面的「worker 零违规」不是空转）', nWorkers >= 1 && iv.vendor.some((v) => /pdf\.worker\.min\.js$/.test(v.path)), { nWorkers });
+
+      /* ---- 8) 页面对象交错的 PDF：只保证「没有 200、不超过文件大小、空闲后不再请求」 ---- */
+      const interLog0 = iv.log.length;
+      await fresh(IVURL + hashFor('pdf/inter.pdf'));
+      await waitFor(`window.__IV.state().total === 120 && document.querySelector('#pageBox img')`, 25000);
+      await gotoPage(100);
+      const IL = iv.log.slice(interLog0).filter((e) => /inter\.pdf$/.test(e.path));
+      const INTER = bookBufs['pdf/inter.pdf'].length, ib = sumBytes(IL);
+      await sleep(2000);
+      const ib2 = sumBytes(iv.log.slice(interLog0).filter((e) => /inter\.pdf$/.test(e.path)));
+      check('交错布局：翻到第 101 页也全是 206 Range，总取量 ' + (ib / 1048576).toFixed(1) + 'MB ≤ 文件大小（容许 1% 重叠）' + (INTER / 1048576).toFixed(1) + 'MB，空闲后不再增加', IL.every((e) => e.status === 206 && e.range) && ib <= INTER * 1.01 && ib2 === ib, { ib, ib2, INTER });
+
+      /* ---- 9) 小 PDF：几乎整本在开头那块里；方向、书库流程 ---- */
+      const smallLog0 = iv.log.length;
+      await pdfOpen('pdf/small.pdf', 12);
+      const SL = iv.log.slice(smallLog0).filter((e) => /small\.pdf$/.test(e.path));
+      check('小 PDF 能打开，全是 206', (await stateOf()).total === 12 && SL.every((e) => e.status === 206), SL.map((e) => e.status));
+      await pdfOpen('pdf/rtl.pdf', 3);
+      check('PDF 自己声明从右到左（/ViewerPreferences /Direction /R2L）→ 阅读方向初值 rtl', (await stateOf()).S.direction === 'rtl', (await stateOf()).S);
+      await cdp.eval(`window.__force('direction', false); return 1;`);
+      /* PDF 的临时默认值（按页宽 + 单页）不能带到下一本书：再开一本从没读过的漫画，回到打开 PDF 之前的值 */
+      bookBufs['pdfx/fresh.cbz'] = mkCbz(['336699', '993366']);
+      bookBufs['pdfx/new.pdf'] = bookBufs['pdf/small.pdf'];            // 从没打开过的 PDF（打开过的会用它自己保存的模式）
+      await pdfOpen('pdfx/new.pdf', 12);
+      const bf = await stateOf();
+      await cdp.eval(`location.hash = '#open=' + encodeURIComponent('pdfx/fresh.cbz'); return 1;`);
+      await waitFor(`window.__IV.state().bookKey === 'dav:pdfx/fresh.cbz' && window.__IV.state().total === 2`, 15000);
+      const af = await stateOf();
+      check('PDF 的临时默认值（按页宽 + 单页）不带到下一本：PDF 里 width / 单页，接着开漫画回到 window / 双页', bf.fitMode === 'width' && bf.S.spread === false && af.fitMode === 'window' && af.S.spread === true, { bf: [bf.fitMode, bf.S.spread], af: [af.fitMode, af.S.spread] });
+
+      /* ---- 10) 从云端书架点开 PDF（钩子默认就是 pdf 阅读器；书架和换书共用 LIB_OPEN_KINDS）；上一本 / 下一本跨 PDF 与 cbz ---- */
+      await fresh(IVURL);
+      await cdp.eval(`localStorage.setItem('iv.shelf.dir.v1', 'pdf'); document.querySelector('#startShelf').click(); return 1;`);
+      await waitFor(shelfIs('pdf'), 8000);
+      const pdfRows = await rowsOf();
+      check('书架里 PDF 列出来、可以点开（有 data-book，没有变灰）', pdfRows.filter((r) => /\.pdf$/.test(r.t) && !r.dir).length >= 5, pdfRows.map((r) => r.t));
+      check('书架页脚不再把 pdf 算进「暂不支持」', !/pdf/i.test(await cdp.eval(`return document.querySelector('#shelfInfo').textContent;`)), await cdp.eval(`return document.querySelector('#shelfInfo').textContent;`));
+      await cdp.eval(`document.querySelector('#shelfList .shelf-row[data-book="pdf/small.pdf"]').click(); return 1;`);
+      await waitFor(`window.__IV.state().bookKey === 'dav:pdf/small.pdf' && window.__IV.state().total === 12 && document.querySelector('#pageBox img')`, 20000);
+      check('点书架里的 PDF → 打开，书架收起', (await stateOf()).total === 12 && (await cdp.eval(`return ${shelfOpenExpr} === false;`)));
+      const tb = await cdp.eval(`return { next: getComputedStyle(document.querySelector('#btnVolNext')).display, prev: getComputedStyle(document.querySelector('#btnVolPrev')).display };`);
+      check('读 PDF 时「上一本 / 下一本」按钮可见（同一文件夹相邻的书）', tb.next !== 'none' || tb.prev !== 'none', tb);
+      await cdp.eval(`window.__IV.volStep(-1); return 1;`);
+      await waitFor(`window.__IV.state().bookKey === 'dav:pdf/rtl.pdf' && window.__IV.state().total === 3 && document.querySelector('#pageBox img')`, 20000);
+      await sleep(600);
+      await sleep(800);
+      check('「上一本」从 PDF 换到相邻的另一本 PDF（rtl.pdf，3 页）：新书能画出来', (await stateOf()).bookKey === 'dav:pdf/rtl.pdf' && (await cdp.eval(`return window.__IV.pdfInfo().pages;`)) === 3 && (await shot()).dark > 100, (await stateOf()).bookKey);
+      check('换书后上一本 PDF 的 worker 被终止（活着的 pdf.js worker 只剩 1 个，不会越开越多）', liveWorkers.size === 1, { live: liveWorkers.size, attached: nWorkers });
+
+      /* ---- 11) 加密 / 损坏 / 404 / 服务器忽略 Range ---- */
+      await fresh(IVURL + hashFor('pdf/locked.pdf'));
+      await waitFor(`/密码|加密/.test(document.querySelector('#toast').textContent)`, 15000);
+      check('加密的 PDF → 明确提示「有密码（已加密），暂不支持」', /密码.*暂不支持/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
+      await fresh(IVURL + hashFor('pdf/broken.pdf'));
+      await waitFor(`/PDF 打开失败/.test(document.querySelector('#toast').textContent)`, 15000);
+      check('损坏的 PDF → 可读的错误（PDF 打开失败：…损坏或不是有效的 PDF），没打开任何书', /PDF 打开失败.*(损坏|无效|不是)/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
+      await fresh(IVURL + hashFor('pdf/none.pdf'));
+      await waitFor(`/404/.test(document.querySelector('#toast').textContent)`, 10000);
+      check('PDF 不存在 → 提示找不到（HTTP 404）', /404/.test(await toastText()), await toastText());
+      const ig0 = iv.log.length;
+      await fresh(IVURL + hashFor('ignore/pdf/small.pdf'));
+      await sleep(1500);
+      const IG = iv.log.slice(ig0).filter((e) => /ignore/.test(e.path));
+      check('服务器忽略 Range（回 200）→ 和 zip 一样硬失败：提示 server ignores Range，没有打开书', /Range/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
+      check('忽略 Range 的服务器：只发了一次探测请求（bytes=0-0）就中止，没有整本下载', IG.length >= 1 && IG.length <= 2 && IG.every((e) => e.bytes <= bookBufs['pdf/small.pdf'].length), IG.map((e) => e.range));
+
+      /* ---- 11b) 打开阶段就遇到 401（密码错）：弹账号框，输入后自动重新打开，不是报错 ---- */
+      iv.pass = 'changed0';
+      await fresh(IVURL + hashFor('pdf/small.pdf'));
+      const d0 = await waitFor(`${dlgOpen} && /401/.test(document.querySelector('#davMsg').textContent)`, 15000);
+      check('打开 PDF 时账号不对（401）→ 弹出账号框并提示', !!d0 && (await stateOf()).total === 0);
+      await cdp.eval(`document.querySelector('#davPass').value = 'changed0'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`window.__IV.state().total === 12 && document.querySelector('#pageBox img')`, 20000);
+      check('输入新密码后自动重新打开这本 PDF（不用再点一次）', (await stateOf()).total === 12 && (await stateOf()).bookKey === 'dav:pdf/small.pdf', await toastText());
+
+      /* ---- 12) 打开之后密码被改：翻到没读过的地方 → 401 → 弹账号框 → 输入新密码后继续渲染（不用重新打开） ---- */
+      await pdfOpen('pdf/big.pdf', PDF_PAGES);
+      iv.pass = 'changed';        // 页面里此刻存的是 changed0
+      await cdp.eval(`window.__IV.showPage(90); return 1;`);
+      const d401 = await waitFor(`${dlgOpen} && /401/.test(document.querySelector('#davMsg').textContent)`, 15000);
+      check('已打开的 PDF 翻到没读过的页遇到 401 → 自动弹出账号框', !!d401);
+      await cdp.eval(`document.querySelector('#davPass').value = 'changed'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`window.__IV.state().index === 90 && document.querySelector('#pageBox img') && window.__IV.pdfInfo() && !window.__IV.pdfInfo().busy && window.__IV.pdfInfo().queue === 0`, 25000);
+      const s90 = await shot(), i90 = await cdp.eval(`return window.__IV.pdfInfo();`);
+      check('输入新密码后自动重试：第 91 页画出来了，没有重新打开，没有致命错误', !!s90 && s90.dark > 300 && !i90.fatal && i90.authGen === 1, { s90, i90 });
+      check('重试用的是新密码（服务器端最后一个 big.pdf 请求是 206，不是 401），账号框已关', !(await cdp.eval(`return ${dlgOpen};`)) && bigLog(0).slice(-1)[0].status === 206, bigLog(0).slice(-1));
+      /* 取消账号框 → 整本停下并提示（不会永远转圈），已画出的页仍在 */
+      iv.pass = 'changed2';
+      await cdp.eval(`window.__IV.showPage(120); return 1;`);
+      await waitFor(`${dlgOpen}`, 15000);
+      await cdp.eval(`document.querySelector('#davCancel').click(); return 1;`);
+      await waitFor(`window.__IV.pdfInfo() && window.__IV.pdfInfo().fatal`, 15000);
+      const tf = await toastText();
+      check('账号框取消 → 这本 PDF 停止读取，并提示「没有有效的书库账号 / 重新打开」（不是无限等待）', /书库账号|重新打开/.test(tf) && (await cdp.eval(`return window.__IV.pdfInfo().fatal;`)) && (await cdp.eval(`return window.__IV.pdfInfo().queue;`)) === 0, tf);
+      iv.pass = 'changed';        // 页面里存着刚输入的新密码：后面的步骤沿用它（服务器端改回去，浏览器里的账号才对得上）
+
+      /* ---- 13) 手机：触屏小窗（390 宽）：面积上限 600 万像素；宽度不溢出 ---- */
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 3, mobile: true });
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true });
+      await pdfOpen('pdf/small.pdf', 12);
+      const ph = await cdp.eval(`const st = window.__IV.state(), i = window.__IV.pdfInfo();
+        return { cap: i.areaCap, w0: st.decoded[0].w, h0: st.decoded[0].h, docSw: document.documentElement.scrollWidth, iw: innerWidth, fit: st.fitMode, spread: st.S.spread, zoom: st.zoom };`);
+      check('手机（触屏 / 窄屏）：面积上限 600 万像素，Letter 页 = ' + ph.w0 + '×' + ph.h0 + '（≈250dpi，≤ 6M，≤ 4000 边）', ph.cap === 6e6 && ph.w0 * ph.h0 <= 6e6 && ph.w0 * ph.h0 > 4e6 && Math.max(ph.w0, ph.h0) <= 4000, ph);
+      check('手机：页面没有横向滚动，按页宽适配（zoom = 窗口宽 / 页宽）', ph.docSw <= ph.iw && ph.fit === 'width', ph);
+      await gotoPage(5);
+      const phh = await cdp.eval(`const d = window.__IV.state().decoded[5], i = window.__IV.pdfInfo(); return { w: d.w, h: d.h, cap: i.areaCap, max: i.maxCanvas };`);
+      check('手机：第 6 页（小开本 300×400pt）放大到 4 倍封顶 = 1200×1600；最大 canvas ≤ 600 万', phh.w === 1200 && phh.h === 1600 && phh.max <= 6e6, phh);
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      await cdp.send('Emulation.clearDeviceMetricsOverride');
+      await fresh(IVURL);
+
+      /* ---- 14) Service Worker：不预缓存 pdf.js，用到才缓存，绝不存 WebDAV ---- */
+      const swc = await cdp.eval(`const keys = await caches.keys(); let urls = [];
+        for (const k of keys) { const c = await caches.open(k); urls = urls.concat((await c.keys()).map((r) => new URL(r.url).pathname)); }
+        return { keys, urls };`);
+      check('Service Worker 缓存：名字都以 iv- 开头；pdf.js 主文件 / worker 是用到才缓存的（版本号命名的独立缓存）', swc.keys.every((k) => /^iv-/.test(k)) && swc.keys.some((k) => /^iv-vendor-pdfjs-4\.10\.38$/.test(k)) && swc.urls.some((u) => /vendor\/pdfjs\/pdf\.worker\.min\.js$/.test(u)), swc);
+      check('缓存里没有任何 /library 的内容（书本数据 / Range / 带账号的请求绝不缓存），也没有预缓存的全部 cmap / 字体', swc.urls.every((u) => !/\/library\//.test(u)) && swc.urls.filter((u) => /cmaps\//.test(u)).length < 5 && swc.urls.filter((u) => /standard_fonts\//.test(u)).length < 5, swc.urls.length);
+      check('PDF 全程 CSP 零违规（含书库路径 / 401 / 手机）', (await cdp.eval(`return window.__csp || [];`)).length === 0 && wlog.filter((t) => /Refused|Content Security Policy|violat/i.test(t)).length === 0, wlog.slice(0, 4));
+      await cdp.send('Target.setAutoAttach', { autoAttach: false, waitForDebuggerOnStart: false, flatten: true }).catch(() => {});
+      await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: noThumbs });
+
+      /* ---- 15) 本地 PDF（📦 压缩包按钮选文件；http 页面）：同一条渲染路径，不发任何 /library 请求；file:// 页面给出明确提示 ---- */
+      const localPdf = path.join(HERE, 'fixtures', 'sample_rich.pdf');          // 入库的小样本（tests/make_web_fixtures.py 的 rich_pdf 生成，8 页）
+      if (!fs.existsSync(localPdf)) check('本地 PDF', 'skip', '没有 tests/fixtures/sample_rich.pdf（先跑 python tests/make_web_fixtures.py）');
+      else {
+      await fresh(IVURL);
+      const lib0 = iv.log.length;
+      await setInputFiles('#zipInput', [localPdf]);
+      await waitFor(`window.__IV.state().total === 8 && document.querySelector('#pageBox img')`, 20000);
+      const sLoc = await shot();
+      check('本地选 PDF（入库的 sample_rich.pdf）：打开 8 页、画出第 1 页，进度 key 是本地书（不是 dav:），没有任何 /library 请求', (await stateOf()).total === 8 && !!sLoc && sLoc.dark > 100 && !/^dav:/.test((await stateOf()).bookKey) && iv.log.length === lib0, { key: (await stateOf()).bookKey, n: iv.log.length - lib0 });
+      check('选文件的 accept 里有 .pdf（手机选择器能选到）', /\.pdf/.test(await cdp.eval(`return document.querySelector('#zipInput').accept;`)));
+      await fresh(url.pathToFileURL(PAGE).href);
+      await setInputFiles('#zipInput', [localPdf]);
+      await sleep(600);
+      check('file:// 页面选 PDF：提示要通过网址（http / https）打开，不会卡住', /http/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
+      }
       }
       iv.close();
     }

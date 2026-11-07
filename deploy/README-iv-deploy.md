@@ -2,7 +2,7 @@
 
 目标：在已有的 Caddy + SFTPGo（WebDAV）那台 VM 上，加一个 `https://<host>/iv/`，
 手机 / 平板浏览器打开 `https://<host>/iv/#open=<书的相对路径>` 就能按需读取 WebDAV 书库里的 zip / cbz / epub 漫画
-（只发 HTTP Range 请求，翻到哪页取哪页；不整本下载）。
+（只发 HTTP Range 请求，翻到哪页取哪页；不整本下载）；pdf 同样按需取字节（见第 7d 节）。
 
 > 这份文档和 `deploy/` 下的文件只是**部署材料**，仓库里没有任何东西会自动部署。下面每一步都在你的机器 / VM 上手动执行。
 > 文中 `<...>` 都是占位符；账号、密码、令牌不要写进任何文件，也不要贴进聊天。
@@ -24,7 +24,8 @@ python deploy/build_iv_static.py            # -> dist/iv-static/ 和 dist/iv-sta
 ```
 
 目录内容：`index.html`（= `image-viewer.html` 改名）、`manifest.webmanifest`、`sw.js`（`__BUILD__` 已换成内容哈希）、
-`icons/*.png`。图标是 `deploy/make_pwa_icons.py` 生成并已提交的，平时不用重跑。
+`icons/*.png`、`vendor/pdfjs/`（pdf.js 4.10.38 legacy 构建 + cmaps + 标准字体 + 许可证，共 188 个文件约 3.6MB，**原样字节**拷贝，
+不做换行转换；来源和 SHA-256 见仓库里的 `vendor/pdfjs/README.md` / `SHA256SUMS`）。图标是 `deploy/make_pwa_icons.py` 生成并已提交的，平时不用重跑。
 `--out <目录>` 只接受不存在的新目录、空目录，或本脚本上次生成的目录（里面有 `.iv-static-build` 标记，不会进 .tgz）；
 别的有内容的目录（例如仓库里的 `deploy/`、`tests/`）会被拒绝，什么都不删。build 号只看内容，不受 CRLF / LF 检出影响。
 
@@ -180,13 +181,43 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
 ## 7c. 读书时「上一本 / 下一本」
 
 在云端书架（📚 云端书架，快捷键 `L`）里点开的书、或 `#open=` 链接打开的书，读书时工具栏出现「« 上一本 / 下一本 »」（快捷键 `P` / `N`；手机宽度下工具栏放不下，改在工具栏下面单独一条换书条里），
-切到**同一文件夹里**按名字自然排序相邻的书（顺序和书架不同：书架把读过的书排到前面，换书始终按名字）（只认 epub / cbz / zip，跳过打不开的）；每本书各自的页码 / 方向照旧记住。读到最后一页会出现「下一本：xxx »」浮层。
+切到**同一文件夹里**按名字自然排序相邻的书（顺序和书架不同：书架把读过的书排到前面，换书始终按名字）（只认 epub / cbz / zip / pdf，跳过打不开的）；每本书各自的页码 / 方向照旧记住。读到最后一页会出现「下一本：xxx »」浮层。
 
 - **不用改 SFTPGo / Caddy / CSP**：目录列表就是书架那一次 `PROPFIND`（Depth:1，只要 `/library` 的 list 权限），书架列过的文件夹直接缓存复用，不再发请求。
   用 `#open=` 链接打开的书，第一次用到（按钮 / 读到最后一页）才去列它的父文件夹（一个 PROPFIND）。换账号 / 忘记账号 / 点书架「刷新」会清掉这份缓存（换之前还在路上的列目录请求，回来也会被丢掉，不会把旧账号的目录写回缓存）。
 - **rar / cbr 不能打开**：浏览器没法随机读取 rar，`#open=` 指向 rar 会提示「请先转成 cbz 再上传」（目前没有现成的转换工具；rar 支持是另一件事，还没做）。
-- **pdf**：`#open=` 指向 pdf 时走 `openDavBook` 里的扩展名分流，调用 `__IV.setDavPdfHook(fn)` 挂上的阅读器；没挂时提示「暂不支持 PDF」。书架列表目前只列 epub / cbz / zip。
+- **pdf**：书架里会列出，点开就读（pdf.js，见第 7d 节）；`#open=` 指向 pdf 时走 `openDavBook` 里的扩展名分流，进度条 / 云端续读 / 401 重输账号和 zip 完全一样。
 - 只在 http(s) 的 `/iv/` 页面、且没连本地后端（`web_backend.py`）时出现；`file://` 和后端模式下按钮不显示，原有流程不变。
+
+## 7d. 读 PDF（pdf.js，同样只发 Range）
+
+- **部署**：只多了 `/iv/vendor/pdfjs/` 这一棵静态文件（build 脚本自动带上，第 1 步）；**不需要改 SFTPGo，也不需要改 Caddy 的 CSP**。
+  `pdf.min.js` / `pdf.worker.min.js` 是同源的 ES module：主文件用 `import()`、worker 用 `new Worker(url, {type:'module'})`，
+  正好落在现有的 `script-src 'self'` / `worker-src 'self'` 里；cmap 和标准字体由 worker 同源 `fetch`（`connect-src 'self'`）；
+  渲染结果是 `blob:` 图片（`img-src blob:`）。`/iv/vendor/` 下的 `.js` 必须以 JavaScript 的 MIME 发出（Caddy `file_server` 默认就是）。
+  第一次读 PDF 才会加载它们（约 0.4MB + 1.4MB，没有 `encode`，不压缩）；之后 service worker 把用到的文件存进
+  `iv-vendor-pdfjs-4.10.38` 缓存（**不预缓存**，没读过 PDF 的设备一个字节都不会下；WebDAV / Range / 带账号的请求仍然绝不缓存）。
+  升级 pdf.js 时改 `sw.js` 里的 `PDFJS_VER`，旧版本的缓存会在新 service worker 激活时被删。
+- **按需取字节**：不是用 pdf.js 自带的下载（它遇到服务器忽略 Range 会悄悄下完整本），而是页面自己实现区间读取：
+  先取开头 256KB，之后 pdf.js 要哪一段（256KB 对齐的块）才取哪一段，翻页时只取那一页用到的对象；关闭了后台预取（`disableAutoFetch`）。
+  每个请求都是 `Range` + `Authorization` 头，服务器回 `200` 就报「server ignores Range」并中止，和 zip 一样。
+  所以第 6 步的 Range 验证对 pdf 同样适用（同时在途 ≤ 4 个）。账号只在主线程的 `fetch` 头里，worker 里没有。
+- **取多少取决于 PDF 本身**：线性化 / 对象流（PDF 1.5+）的 PDF，打开 + 读第一页通常几百 KB；老式「平铺页树」的 PDF（页对象和大图交错），
+  翻到后面的页时 pdf.js 要先读前面页的对象，最坏接近整本，但每个字节最多取一次。缩略图条展开时每张缩略图也要读那一页的内容（和 zip 一样，所以手机默认收起）。
+- **手机内存**：每页渲染成一张 JPEG（共用一个 canvas，渲染完立刻清零）；面积上限 触屏 / 小屏 600 万像素（A4 约 250dpi）、低内存设备 400 万、桌面 1200 万，
+  最长边 ≤ 4000。比例只由页面尺寸决定，窗口旋转 / 缩放不会让已渲染的页作废。pdf.js 的 worker 会按文件大小分配缓冲，
+  手机上超过约 300MB 的 PDF 会给出内存提示。
+- **CSP 取舍（唯一可选的放宽，默认不做）**：JPEG2000（`JPXDecode`）图片的解码器是内嵌在 worker 里的 WebAssembly，
+  需要 `script-src` 里有 `'wasm-unsafe-eval'`；没有它这类图片会显示空白，**其余内容（文字 / JPEG / 扫描页里的普通图）都不受影响**。
+  JPX 常见于 archive.org 一类的扫描书，别处很少见。如果你真的遇到：把 `Caddyfile.iv.snippet` 里的
+  `script-src 'self' 'unsafe-inline'` 改成 `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'`（`tests/web_e2e.mjs` 的 CSP 直接读这个文件，会同步）。
+  代价：这个来源可以编译 WebAssembly（不是 JS 的 `eval`）；页面本来就允许内联脚本，所以实际多出的攻击面很小；
+  不认识这个关键字的旧浏览器会忽略它（JPX 仍然空白）。pdf.js 还以 `isEvalSupported:false` 打开，不会用 `new Function`。
+- **兼容**：用的是 pdf.js 的 *legacy* 构建（内含 `Promise.withResolvers` 的 polyfill），旧 iPhone / 旧内核的国产浏览器也能跑；
+  需要 module worker（iOS Safari 15+、Chrome 80+）；更旧的浏览器 pdf.js 会退到主线程，慢但能读。读不了时会提示「PDF 阅读组件加载失败」。
+- **加密 PDF** 提示「暂不支持」；**损坏的 PDF** 提示「PDF 文件损坏或不是有效的 PDF」。读到一半网络 / 账号出问题：提示后这本书停止读取（不会卡住转圈），重新打开即可；
+  密码被改了会像 zip 一样弹账号框，输入后自动继续。
+- 本地 PDF（📦 按钮 / 拖进来）也能读，同一条渲染路径；`file://` 直接双击打开的页面读不了 PDF（浏览器不让 `file://` 加载 module / worker），会提示。
 
 ## 8. 回滚 / 下线
 

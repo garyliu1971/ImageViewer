@@ -932,3 +932,132 @@ test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（r
   assert.equal(C.nextBook(full, 'c.cbz').name, 'd.cbz');
 
 });
+
+/* ====================== PDF：渲染比例 / 区间适配器（pdf.js 本体不在 Node 里跑，在 web_e2e 里用真浏览器测） ====================== */
+
+test('isPdfName：只认 .pdf 结尾（不分大小写）', () => {
+  for (const n of ['a.pdf', 'A.PDF', '小说/书 1.Pdf']) assert.equal(C.isPdfName(n), true, n);
+  for (const n of ['a.pdf.zip', 'pdf', 'a.pdfx', '', null, undefined]) assert.equal(C.isPdfName(n), false, String(n));
+});
+
+test('pdfAreaCap：桌面 1200 万 / 手机小屏 600 万 / 低内存 400 万', () => {
+  assert.equal(C.pdfAreaCap({}), 12e6);
+  assert.equal(C.pdfAreaCap({ small: true }), 6e6);
+  assert.equal(C.pdfAreaCap({ small: true, deviceMemory: 2 }), 4e6);
+  assert.equal(C.pdfAreaCap({ small: false, deviceMemory: 1 }), 4e6);
+  assert.equal(C.pdfAreaCap({ small: true, deviceMemory: 8 }), 6e6);
+  assert.equal(C.pdfAreaCap(), 12e6);
+});
+
+test('pdfScale：A4 手机约 3.46；A0 小于 1；小页封顶 4 倍；最长边 ≤ 4000、面积 ≤ 上限；0 / NaN 不炸', () => {
+  const sA4 = C.pdfScale(595, 842, { areaCap: 6e6, maxSide: 4000 });
+  assert.ok(Math.abs(sA4 - 3.46) < 0.01, String(sA4));
+  const z = C.pdfPixelSize(595, 842, sA4);
+  assert.ok(z.w * z.h <= 6e6 && z.w * z.h > 5.9e6, JSON.stringify(z));            // 面积用满上限（向下取整，所以不会超）
+  const sA0 = C.pdfScale(2384, 3370, { areaCap: 6e6, maxSide: 4000 });
+  assert.ok(sA0 < 1 && sA0 > 0.5, String(sA0));
+  assert.equal(C.pdfScale(100, 100, { areaCap: 6e6, maxSide: 4000 }), 4);            // 小页：4 倍封顶
+  assert.equal(C.pdfScale(10, 10, { areaCap: 12e6 }), 4);
+  // 细长页：最长边约束先起作用（5000x50pt 的横幅）
+  const sBan = C.pdfScale(5000, 50, { areaCap: 12e6, maxSide: 4000 });
+  assert.ok(Math.abs(sBan - 0.8) < 1e-9, String(sBan));
+  for (const [w, h] of [[612, 792], [5000, 5000], [300, 400], [841.89, 1190.55], [1, 20000], [20000, 1]]) {
+    for (const cap of [4e6, 6e6, 12e6]) {
+      const s = C.pdfScale(w, h, { areaCap: cap, maxSide: 4000 });
+      const p = C.pdfPixelSize(w, h, s);
+      assert.ok(p.w * p.h <= cap && Math.max(p.w, p.h) <= 4000 && p.w >= 1 && p.h >= 1, `${w}x${h} cap ${cap} -> ${JSON.stringify(p)}`);
+    }
+  }
+  for (const bad of [[0, 0], [0, 10], [NaN, 5], [5, Infinity], [-3, 4], [undefined, 4]]) assert.equal(C.pdfScale(bad[0], bad[1], {}), 1, String(bad));
+  assert.equal(C.pdfScale(612, 792), C.pdfScale(612, 792, {}));                   // 没传选项也行
+  // 比例只由页面尺寸决定：同一页多次算结果一样（旋转 / 改窗口大小不影响）
+  assert.equal(C.pdfScale(612, 792, { areaCap: 6e6, maxSide: 4000 }), C.pdfScale(612, 792, { areaCap: 6e6, maxSide: 4000 }));
+});
+
+test('pdfRangeAdapter：区间夹到文件大小、返回独立拷贝、统计字节', async () => {
+  const buf = Buffer.from(synthetic);
+  const src = memSource(buf);
+  const A = C.pdfRangeAdapter(src, buf.length, {});
+  const u8 = await A.requestRange(10, 20);
+  assert.deepEqual(Buffer.from(u8), buf.subarray(10, 20));
+  const tail = await A.requestRange(buf.length - 5, buf.length + 99999);              // 越界按文件尾截断
+  assert.equal(tail.length, 5);
+  assert.equal((await A.requestRange(50, 50)).length, 0);                            // 空区间 / 反向区间：空，不发读
+  assert.equal((await A.requestRange(60, 10)).length, 0);
+  assert.equal((await A.requestRange(-5, 3)).length, 3);                             // 负起点按 0
+  assert.equal(A.reads, 3);
+  assert.equal(A.bytes, 10 + 5 + 3);
+  // 拷贝：改返回值不会影响源缓冲（pdf.js 会 transfer 掉这块内存）
+  assert.notEqual(u8.buffer, buf.buffer);
+  assert.equal(u8.buffer.byteLength, u8.length);
+  u8.fill(0);
+  assert.notEqual(buf[10], 0);
+  assert.equal(A.fatal, null);
+});
+
+test('pdfRangeAdapter：读失败 -> 记 fatal、回调一次、之后的请求不再读（pdf.js 没有出错通道）', async () => {
+  let reads = 0, fatals = [];
+  const src = { size: 1000, read: async (off) => { reads++; if (off >= 500) { const e = new Error('boom'); e.status = 503; throw e; } return new Uint8Array(10); } };
+  const A = C.pdfRangeAdapter(src, 1000, { onFatal: (e) => fatals.push(e.message) });
+  await A.requestRange(0, 10);
+  await assert.rejects(A.requestRange(600, 610), /boom/);
+  assert.equal(A.fatal.message, 'boom');
+  assert.deepEqual(fatals, ['boom']);
+  await assert.rejects(A.requestRange(0, 10), /boom/);                               // 已经 fatal：直接拒绝
+  await assert.rejects(A.requestRange(700, 710), /boom/);
+  assert.equal(reads, 2, 'fatal 之后不再向源发读取');
+  assert.deepEqual(fatals, ['boom'], 'onFatal 只回调一次');
+  // 长度不对（短读）也是 fatal
+  const short = C.pdfRangeAdapter({ size: 100, read: async () => new Uint8Array(3) }, 100, {});
+  await assert.rejects(short.requestRange(0, 10), (e) => e.code === 'short');
+  assert.ok(short.fatal);
+});
+
+test('pdfRangeAdapter：401 -> 等 retryAuth（用户重新输入账号）-> true 就再读一次；false -> fatal', async () => {
+  let pass = 'old', gen = 0, asked = 0;
+  const src = { size: 100, read: async () => { if (pass !== 'new') { const e = new Error('401'); e.status = 401; throw e; } return new Uint8Array(4); } };
+  const A = C.pdfRangeAdapter(src, 100, {
+    gen: () => gen,
+    retryAuth: async (g) => { asked++; if (g !== gen) return true; pass = 'new'; gen++; return true; },
+  });
+  const u = await A.requestRange(0, 4);
+  assert.equal(u.length, 4);
+  assert.equal(asked, 1);
+  assert.equal(A.fatal, null);
+  // 用户取消（false）-> 401 变成 fatal
+  const src2 = { size: 100, read: async () => { const e = new Error('401'); e.status = 401; throw e; } };
+  const fa = [];
+  const B = C.pdfRangeAdapter(src2, 100, { retryAuth: async () => false, onFatal: (e) => fa.push(e.status) });
+  await assert.rejects(B.requestRange(0, 4), (e) => e.status === 401);
+  assert.deepEqual(fa, [401]);
+  // 没有 retryAuth -> 直接 fatal；重试最多 2 次，不会死循环
+  let n = 0;
+  const C3 = C.pdfRangeAdapter({ size: 100, read: async () => { n++; const e = new Error('401'); e.status = 401; throw e; } }, 100, { retryAuth: async () => true });
+  await assert.rejects(C3.requestRange(0, 4), (e) => e.status === 401);
+  assert.equal(n, 3, '首次 + 重试 2 次后放弃');
+});
+
+test('pdfRangeAdapter + UrlRangeSource：整条链 —— 只发 206 Range；服务器忽略 Range（200）-> fatal，不整本下载', async () => {
+  const big = Buffer.alloc(2 * 1024 * 1024, 5);
+  const ok = await startServer({ data: synthetic, auth: 'u:p' });
+  try {
+    const src = new C.UrlRangeSource(ok.url, { authHeader: C.basicAuth('u', 'p') });
+    await src.init();
+    const A = C.pdfRangeAdapter(src, src.size, {});
+    const got = await A.requestRange(1000, 1000 + 4096);
+    assert.deepEqual(Buffer.from(got), synthetic.subarray(1000, 5096));
+    const tail = await A.requestRange(synthetic.length - 65536, synthetic.length + 10);
+    assert.deepEqual(Buffer.from(tail), synthetic.subarray(synthetic.length - 65536));
+    assert.ok(ok.st.requests.every((r) => r.range && r.authorization), '全部带 Range 和账号头');
+    assert.ok(ok.st.requests.every((r) => !/u:p|Basic/.test(r.url)), '账号不进 URL');
+  } finally { await ok.close(); }
+  const bad = await startServer({ data: big, ignoreRange: true });
+  try {
+    const src = new C.UrlRangeSource(bad.url, {});
+    src.size = big.length;
+    const A = C.pdfRangeAdapter(src, big.length, {});
+    await assert.rejects(A.requestRange(0, 262144), (e) => e.code === 'norange');
+    assert.equal(A.fatal.code, 'norange');
+    assert.equal(bad.st.requests.length, 1, '只发了一次，没有重试、没有整本下载');
+  } finally { await bad.close(); }
+});

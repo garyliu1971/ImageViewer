@@ -10,6 +10,9 @@
 #         `encode gzip zstd`，请把它挪进 /reader/ 这样的 handle 里（或在 WebDAV 的 handle 里排除），
 #         见 README-iv-deploy.md 第 6 步的验证命令。
 # 注意 2：`/iv`（不带斜杠）不会被 handle_path /iv/* 匹配，所以先补一条跳转。
+# 注意 3：读 PDF 用的 pdf.js 放在 /iv/vendor/pdfjs/（同源 module 脚本 + module worker），已经被下面这条 CSP 覆盖，不用改。
+#         唯一的例外是 JPEG2000（JPXDecode）图片：它的解码器是 WebAssembly，要 script-src 加 'wasm-unsafe-eval' 才不空白。
+#         默认不加（安全优先）；要加的取舍见 README-iv-deploy.md 第 7c 节。
 
 	redir /iv /iv/ 308
 
