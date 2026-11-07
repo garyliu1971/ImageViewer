@@ -116,7 +116,7 @@
   }
   #toolbar::-webkit-scrollbar { display: none; }
   button, .btn, .thumb { touch-action: manipulation; }   /* 去掉触屏双击缩放的 300ms 等待，不影响 #viewport 的自定义手势 */
-  body.ui-hidden #toolbar, body.ui-hidden #chapterBar { transform: translateY(-200%); opacity: 0; }
+  body.ui-hidden #toolbar, body.ui-hidden #chapterBar, body.ui-hidden #volBar { transform: translateY(-200%); opacity: 0; }
   .toolbar-group { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
   .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; flex: 0 0 auto; }
   .btn {
@@ -356,6 +356,8 @@
   /* ---------- 读书时换书（云端书库里的书才出现）---------- */
   #btnVolPrev, #btnVolNext { display: none; }
   body.has-vol #btnVolPrev, body.has-vol #btnVolNext { display: inline-flex; }
+  /* 手机宽度：工具栏横向滚动，工具栏里的「下一本」在屏幕外 -> 改成工具栏下面单独一条（桌面宽度不出现） */
+  #volBar { display: none; }
   #volNext {
     position: fixed; left: 50%; bottom: 132px; transform: translateX(-50%); z-index: 45;
     display: none; max-width: 86vw; overflow: hidden; text-overflow: ellipsis;
@@ -392,6 +394,16 @@
   @media (max-width: 1420px) { #zoomSlider { display: none; } }
   @media (max-width: 1500px) { #fileInfo { display: none; } }   /* 状态栏已经有同样的信息 */
   @media (max-width: 820px) {
+    body.has-vol #btnVolPrev, body.has-vol #btnVolNext { display: none; }
+    body.has-vol #volBar {
+      position: fixed; top: 44px; left: 0; right: 0; z-index: 39; height: 44px; box-sizing: border-box;
+      display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+      background: var(--panel); border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      transition: transform .25s ease, opacity .25s ease;
+    }
+    #volBar .btn { flex: 1 1 0; justify-content: center; min-height: 36px; background: rgba(255,255,255,.06); font-size: 13.5px; }
+    body.has-vol #chapterBar { top: 88px; }
     #statusNote { display: none; }
     .btn { padding: 6px 8px; }
     #zoomSlider { display: none; }
@@ -470,6 +482,11 @@
   <select id="chapterSel"></select>
   <button class="btn icon" id="btnChNext" title="下一话">⏭</button>
   <span id="chapterPos"></span>
+</div>
+
+<div id="volBar">
+  <button class="btn" id="volBarPrev" title="同一文件夹里的上一本 (P)">« 上一本</button>
+  <button class="btn" id="volBarNext" title="同一文件夹里的下一本 (N)">下一本 »</button>
 </div>
 
 <button class="nav" id="navPrev" title="上一页">‹</button>
@@ -2206,7 +2223,7 @@
      隐藏 UI（单击中间 / 全屏沉浸式）时缩进归零，图片铺满窗口。 */
   function updateChrome() {
     var hidden = document.body.classList.contains('ui-hidden');
-    var top = hidden ? 0 : ($('#toolbar').offsetHeight || 0) +
+    var top = hidden ? 0 : ($('#toolbar').offsetHeight || 0) + ($('#volBar').offsetHeight || 0) +
       ($('#chapterBar').classList.contains('show') ? ($('#chapterBar').offsetHeight || 0) : 0);
     var bottom = hidden ? 0 : ($('#statusbar').offsetHeight || 0) +
       (S.thumbs && pages.length ? ($('#thumbs').offsetHeight || 0) : 0);
@@ -3315,6 +3332,7 @@
   }
   var launchSeq = 0;      // 每次有效的启动链接 +1：慢的旧链接打开完成时发现自己过期了，就丢掉结果（最新的链接说了算）
   /** 从 WebDAV 书库打开 p.rel；401 -> 弹账号框重输后再试。token = 发起时的 launchSeq，不等于当前值就是过期的 */
+  var davOpenErr = '';             // 最近一次 openDavBook 失败的原因（给「换书失败」的提示用）
   var openDavPdfHook = null;       // pdf 阅读器挂在这里：function (p, ctx) -> Promise<boolean>；没挂时点 pdf 只提示「暂不支持 PDF」
   function openDavBook(p, token) {
     function stale() { return token !== launchSeq; }
@@ -3367,7 +3385,8 @@
             return openDavBook(p, token);
           });
         }
-        toast('云端打开失败：' + ((e && e.message) || e));
+        davOpenErr = String((e && e.message) || e);
+        toast('云端打开失败：' + davOpenErr);
         return false;
       });
     });
@@ -3599,7 +3618,6 @@
   var dirCache = Object.create(null);     // 文件夹 rel -> {at, entries: [{name, rel, ext, size, isDir:false}]（只含书，已按自然顺序排好）}
   var sibFlight = null, sibFail = Object.create(null);
   function davAvailable() { return /^https?:$/.test(location.protocol) && !BE.on; }
-  function staleErr() { var e = new Error('stale'); e.stale = true; return e; }
   function noAccountErr() { var e = new Error('没有有效的书库账号'); e.noAccount = true; return e; }
   /** 书架 / 换书共用：把一个文件夹的 PROPFIND 结果登记进缓存（最多留 6 个文件夹），返回缓存的书列表 */
   function cacheDir(dirRel, split) {
@@ -3672,22 +3690,28 @@
   }
   function volRefresh() {
     var st = volState(), chip = $('#volNext'), show = false;
+    var hadVol = document.body.classList.contains('has-vol');
     document.body.classList.toggle('has-vol', !!st && davAvailable());
-    $('#btnVolPrev').disabled = !!(st && st.known && !st.prev);
-    $('#btnVolNext').disabled = !!(st && st.known && !st.next);
+    $('#btnVolPrev').disabled = $('#volBarPrev').disabled = !!(st && st.known && !st.prev);
+    $('#btnVolNext').disabled = $('#volBarNext').disabled = !!(st && st.known && !st.next);
     if (st && atBookEnd()) {
       if (!st.known) siblingsFor(st.rel, true).then(volRefresh, function () { /* 列不出来就不提示，按钮仍可手动点 */ });
       else if (st.next) { chip.textContent = '下一本：' + st.next.name + '  »'; show = true; }
     }
     chip.classList.toggle('show', show);
+    if (hadVol !== document.body.classList.contains('has-vol')) { updateChrome(); reflow(); }   // 手机宽度下 #volBar 出现 / 消失会改变顶部留白
   }
   function volEndHint() {
     var st = volState();
     if (st && st.known && st.next) toast('已经是最后一页。按 N 或点「下一本」继续：' + st.next.name, 3500);
   }
+  var volBusy = false;                // 正在换书（等列表 / 等新书打开）：这期间的上一本 / 下一本按键一律忽略，不会连跳也不会重复打开
   function volStep(step) {
     var rel = curDavRel();
     if (!rel) { toast('这本书不是从云端书库打开的，没有「上一本 / 下一本」'); return Promise.resolve(false); }
+    if (volBusy) return Promise.resolve(false);
+    volBusy = true;
+    function done(v) { volBusy = false; return v; }
     return siblingsFor(rel, false).then(function (list) {
       if (curDavRel() !== rel) return false;                  // 等列表的时候已经换了书
       volRefresh();
@@ -3696,11 +3720,15 @@
       if (!t) { toast(step > 0 ? '已经是这个文件夹的最后一本' : '已经是这个文件夹的第一本'); return false; }
       saveProgress();                                          // 当前这本的页码 / 方向先存好，回来能续上
       toast((step > 0 ? '下一本：' : '上一本：') + t.name);
-      return openVolBook(t.rel);
+      davOpenErr = '';
+      return openVolBook(t.rel).then(function (ok) {
+        /* 新书没打开：当前这本原封不动（页码、方向、进度都在），明确告诉用户停在哪 */
+        if (!ok && curDavRel() === rel) toast('打不开「' + t.name + '」' + (davOpenErr ? '（' + davOpenErr + '）' : '') + '，仍停在当前这本', 4000);
+        return ok;
+      });
     }, function (e) {
-      if (e && e.stale) return false;
       toast('读不了文件夹列表：' + ((e && e.message) || e)); return false;
-    });
+    }).then(done, function (e) { done(); throw e; });
   }
 
   /* ================= 启动 ================= */
@@ -3732,6 +3760,8 @@
   $('#startDav').addEventListener('click', function () { askDav(); });
   $('#btnVolPrev').addEventListener('click', function () { volStep(-1); });
   $('#btnVolNext').addEventListener('click', function () { volStep(1); });
+  $('#volBarPrev').addEventListener('click', function () { volStep(-1); });
+  $('#volBarNext').addEventListener('click', function () { volStep(1); });
   $('#volNext').addEventListener('click', function () { volStep(1); });
   $('#startShelf').addEventListener('click', openShelf);
   $('#btnShelf').addEventListener('click', openShelf);
