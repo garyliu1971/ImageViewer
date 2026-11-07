@@ -1061,3 +1061,24 @@ test('pdfRangeAdapter + UrlRangeSource：整条链 —— 只发 206 Range；服
     assert.equal(bad.st.requests.length, 1, '只发了一次，没有重试、没有整本下载');
   } finally { await bad.close(); }
 });
+
+test('UrlRangeSource：0 字节的文件 -> 明确的 empty 错误（各种服务器的空文件行为），不是「忽略 Range」/「取不到大小」', async () => {
+  const modes = {
+    cl0: (req, res) => { res.writeHead(200, { 'Content-Length': 0 }); res.end(); },                                   // 没做 Range：直接回 200 + 空
+    r416: (req, res) => { res.writeHead(416, { 'Content-Range': 'bytes */0', 'Content-Length': 0 }); res.end(); },    // Go http.ServeContent / Caddy / SFTPGo
+    head: (req, res) => {                                                                                              // 416 没带 Content-Range -> 退回 HEAD -> Content-Length: 0
+      if (req.method === 'HEAD') { res.writeHead(200, { 'Content-Length': 0 }); res.end(); return; }
+      res.writeHead(416, { 'Content-Length': 0 }); res.end();
+    }
+  };
+  for (const [mode, handler] of Object.entries(modes)) {
+    const reqs = [];
+    const srv = http.createServer((req, res) => { reqs.push(req.method + ' ' + (req.headers.range || '')); handler(req, res); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      const src = new C.UrlRangeSource('http://127.0.0.1:' + srv.address().port + '/e.pdf', {});
+      await assert.rejects(src.init(), (e) => e.code === 'empty' && /空/.test(e.message) && !/Range/.test(e.message), mode);
+      assert.ok(reqs.length <= 2, mode + ': 请求数 ' + reqs.length);
+    } finally { await new Promise((r) => srv.close(r)); }
+  }
+});
