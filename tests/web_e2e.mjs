@@ -157,6 +157,7 @@ function check(name, ok, detail) {
   log('浏览器：' + exe);
   const proc = spawn(exe, [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+    '--window-size=1280,820',   // 固定桌面尺寸：默认 800×600 会触发“窄屏默认关缩略图”的新默认值
     '--disable-extensions', '--mute-audio', '--user-data-dir=' + profile,
     '--remote-debugging-port=0', 'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -512,6 +513,10 @@ function check(name, ok, detail) {
       press('Escape'); out.helpClosed = document.querySelector('#help').classList.contains('hidden');
       press('t'); out.thumbsHidden = document.querySelector('#thumbs').classList.contains('hidden');
       press('t');
+      const sp0 = iv.state().S.spread, tr0 = iv.state().S.trim;
+      press('d', { ctrlKey:true }); press('c', { metaKey:true }); press('t', { altKey:true });
+      out.modKeysIgnored = iv.state().S.spread === sp0 && iv.state().S.trim === tr0 &&
+        !document.querySelector('#thumbs').classList.contains('hidden');
       press('n'); await __tick(); out.chapterKey = iv.state().chapterIndex;
       return out;
     `);
@@ -525,6 +530,21 @@ function check(name, ok, detail) {
     check('? 开帮助、Esc 关', keys.helpOpen && keys.helpClosed, keys);
     check('T 切缩略图条', keys.thumbsHidden === true, keys);
     check('单章节书按 N 不报错', keys.chapterKey === 0, keys);
+    check('Ctrl/Cmd/Alt 组合键不触发看图操作', keys.modKeysIgnored === true, keys);
+
+    log('\n[10b] 竖屏窄窗口不并排双页，横过来恢复');
+    const spreadGate = {};
+    for (const [label, w, h] of [['portrait', 390, 844], ['landscape', 1280, 820]]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+      spreadGate[label] = await cdp.eval(`
+        const iv = window.__IV;
+        await __force('spread', true); await __force('compare', false);
+        await new Promise(r => setTimeout(r, 150));
+        iv.showPage(0); await __tick();
+        return { spread: iv.state().S.spread, dom: __domPages() };`);
+    }
+    check('竖屏 390×844：S.spread 仍为开，但只渲染 1 页', spreadGate.portrait.spread === true && spreadGate.portrait.dom === 1, spreadGate);
+    check('横屏 1280×820：并排 2 页', spreadGate.landscape.dom === 2, spreadGate);
 
     log('\n[11] 鼠标 / 触控手势');
     const mouse = await cdp.eval(`
@@ -873,6 +893,25 @@ function check(name, ok, detail) {
       check('file:// 下 .cbr 提示「需要本地后端」', /需要本地后端/.test(rarHint.toast), rarHint);
       check('不会把 rar 当 zip 硬解（还是上一本书）', rarHint.total === 4 && /comic\.cbz/.test(rarHint.title), rarHint);
       check('canServeFile 在无后端时恒 false', rarHint.can === false && rarHint.on === false, rarHint);
+    }
+
+    log('\n[21c] 漫画 epub：页序按 OPF spine（文件名自然排序是错的）、rtl、svg 包图、丢弃 spine 外缩略图');
+    const epubSample = path.join(HERE, 'fixtures', 'sample_comic.epub');
+    if (!fs.existsSync(epubSample)) {
+      check('epub 页序', 'skip', '没有 tests/fixtures/sample_comic.epub（先跑 python tests/make_web_fixtures.py）');
+    } else {
+      await setInputFiles('#zipInput', [epubSample]);
+      await cdp.eval(`await window.__IV.wait(300); return 1;`);
+      const ep = await cdp.eval(`return window.__IV.state();`);
+      const epNames = (ep.decoded || []).map((d) => d.name).join('|');
+      check('epub 5 页（spine 外的 thumb.png 被丢弃）、单章节', ep.total === 5 && ep.chapters === null, ep);
+      check('页序 = spine：cover → p 2(svg,%20) → p3(#frag) → p10 → a_last',
+        epNames === 'zz_cover.png|p 2.png|p3.png|p10.png|a_last.png', epNames);
+      check('页路径改为顺序名 0001.png…', ep.decoded[0].path === '0001.png' && ep.decoded[4].path === '0005.png', ep.decoded.map((d) => d.path));
+      check('第 1 页是 101 宽的封面', ep.decoded[0].w === 101 && ep.decoded[0].h === 150, ep.decoded[0]);
+      check('OPF page-progression-direction=rtl -> 日漫方向', ep.S.direction === 'rtl', ep.S);
+      check('epub 书名用文件名', /sample_comic\.epub/.test(ep.bookTitle), ep.bookTitle);
+      await cdp.eval(`await __force('direction', false); return 1;`);   // 还原，避免影响后面依赖 ltr 的用例
     }
 
     log('\n[22] 多选图片（真实文件）/ 拖放');
