@@ -892,6 +892,21 @@ test('libClassify / libOpenable / libBooks', () => {
   assert.deepEqual(C.libBooks(mixed).map((e) => e.name), ['a.pdf', 'c.cbr', 'd.epub']);       // 文件夹和 txt 不算书
 });
 
+test('书架列出的书 = 换书能跳到的书（同一份「能打开」名单，不会出现书架有、换书却跳过）', () => {
+  const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak'];
+  const books = C.shelfSplit(names.map((name) => ({ name, isDir: false, size: 1 }))).books;
+  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip']);
+  const es = C.volEntries('', books);
+  for (const e of es) assert.equal(C.libOpenable(C.libClassify(e.ext)), true, e.name);          // 书架上的每本，换书默认都放行
+  assert.equal(C.nextBook(es, 'a.epub').name, 'b.CBZ');
+  assert.equal(C.nextBook(es, 'b.CBZ').name, 'c.zip');
+  // 反过来：libOpenable 放行的扩展名，书架一定列（两处不能各写各的）
+  for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other']) {
+    const listed = C.shelfSplit([{ name: 'x.' + k, isDir: false, size: 1 }]).books.length === 1;
+    assert.equal(listed, C.libOpenable(k), k);
+  }
+});
+
 test('libParentRel', () => {
   assert.equal(C.libParentRel('a/b/c.cbz'), 'a/b'); assert.equal(C.libParentRel('a/b'), 'a');
   assert.equal(C.libParentRel('a'), ''); assert.equal(C.libParentRel(''), ''); assert.equal(C.libParentRel('a/b/'), 'a');
