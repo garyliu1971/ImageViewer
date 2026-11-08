@@ -496,7 +496,7 @@
 <div id="statusbar">
   <span id="statusText">未打开</span>
   <span class="sp"></span>
-  <span id="statusNote">网页版只做图片 / 漫画；视频、PDF、网盘、投屏请用桌面版</span>
+  <span id="statusNote">网页版只做图片 / 漫画 / PDF；视频、网盘、投屏请用桌面版</span>
 </div>
 
 <div id="start">
@@ -519,7 +519,7 @@
     </p>
     <p class="start-note">
       纯本地单文件，不联网、不上传（只有部署成 /iv/ 页面、并填了「☁ 书库账号」时，才会向<b>你自己的</b> WebDAV 发只读的分段请求）。<br>
-      rar·cbr / PDF 需连本地后端（<code>python web_backend.py</code> 或双击
+      PDF 部署成 /iv/ 页面后可直接读（加密 PDF 除外）；rar·cbr 需连本地后端（<code>python web_backend.py</code> 或双击
       <code>启动网页版.bat</code>）；视频播放 / 实时字幕 / tif / 网盘 / 投屏
       仍需桌面版 <code>图片漫画浏览器.exe</code>（或 <code>python image_viewer.py</code>）。
     </p>
@@ -566,7 +566,8 @@
         （rar/cbz/pdf 都能用）。视频用手机 VLC 的「网络串流」：在网页版按 <kbd>I</kbd>
         详情里有可一键复制的播放列表链接（<code>/api/m3u</code>）。</td></tr>
       <tr><td>仍不支持</td><td>tif / heic（浏览器不解码）、视频与实时字幕、网盘、投屏 → 用桌面版；
-        rar / cbr / PDF 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）</td></tr>
+        rar / cbr 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）；
+        PDF 通过网址（http / https）打开本页就能直接读（📦 / 拖拽 / 云端书库），加密 PDF 除外</td></tr>
     </table>
   </div>
 </div>
@@ -1525,7 +1526,7 @@
   }
 
   global.IVCore = {
-    parsePropfind: parsePropfind, shelfSplit: shelfSplit, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
+    parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
     toRemoteProgress: toRemoteProgress, remoteIsNewer: remoteIsNewer,
     libClassify: libClassify, libOpenable: libOpenable, libBooks: libBooks, libParentRel: libParentRel, volEntries: volEntries, nextBook: nextBook, prevBook: prevBook,
@@ -3067,7 +3068,7 @@
       return ctx.open().then(function () {
         if (opts.stale && opts.stale()) { ctx.destroy(); return false; }
         var n = ctx.doc.numPages, w = Math.max(4, String(n).length), base = String(name).replace(/\.pdf$/i, '') || String(name);
-        if (!(n > 0)) { ctx.destroy(); toast('PDF 里没有页面（0 页），没法显示', 5000); return false; }       // 别落到 openItems 的「没有支持的图片格式」提示
+        if (!(n > 0)) { ctx.destroy(); if (opts.onFail) opts.onFail('PDF 里没有页面（0 页）'); toast('PDF 里没有页面（0 页），没法显示', 5000); return false; }       // 别落到 openItems 的「没有支持的图片格式」提示
         var items = [];
         for (var i = 1; i <= n; i++) {
           items.push({ kind: 'pdf', isImage: true, name: base + ' · 第 ' + i + ' 页', size: 0, pdf: ctx, pno: i,
@@ -3090,7 +3091,9 @@
     })['catch'](function (e) {
       if (ctx) ctx.destroy();
       if (opts.rethrow && e && e.status) throw e;          // 401 / 404 / 服务器忽略 Range：调用方自己处理（重输账号 / 提示）
-      toast('PDF 打开失败：' + pdfErrorMessage(e), 5000);
+      var why = pdfErrorMessage(e);
+      if (opts.onFail) opts.onFail(why);                   // 原因交给调用方（云端换书失败时 volStep 要把它带进「打不开」的提示）
+      toast('PDF 打开失败：' + why, 5000);
       return false;
     }).then(function (r) { if (own) pg.end(); return r; }, function (e) { if (own) pg.end(); throw e; });
   }
@@ -3112,7 +3115,7 @@
   }
   /** 书架 / #open= 的钩子（openDavBook 在 .pdf 上调用）：进度条、续读、401 重输账号都由 openDavBook 统一处理（和 zip 一样），这里只管开书 */
   function openDavPdf(p, c) {
-    return openPdfUrl(c.url, { title: p.title, key: c.key, dir: p.dir, rethrow: true, authHeader: c.authHeader, stale: c.stale, askDav: c.askDav, prog: c.prog });
+    return openPdfUrl(c.url, { title: p.title, key: c.key, dir: p.dir, rethrow: true, authHeader: c.authHeader, stale: c.stale, askDav: c.askDav, prog: c.prog, onFail: c.onFail });
   }
 
   /** 读 META-INF/container.xml -> OPF -> spine 各页 xhtml，返回按页序排好的图片条目；
@@ -3809,7 +3812,8 @@
         if (remote && C.remoteIsNewer(remote, books[key])) { applyRemoteProgress(key, remote); from = remote; }
         if (stale()) return false;
         var url = C.davBookUrl(cfg.base, cfg.library, p.rel);
-        if (kind === 'pdf') return openDavPdfHook(p, { url: url, key: key, stale: stale, authHeader: davAuthHeader, askDav: askDav, prog: pg });
+        if (kind === 'pdf') return openDavPdfHook(p, { url: url, key: key, stale: stale, authHeader: davAuthHeader, askDav: askDav, prog: pg,
+          onFail: function (why) { davOpenErr = why; } });     // PDF 的失败自己 toast 后返回 false（不抛）：原因记下来，volStep 的「打不开」提示要带上
         return openZipUrl(url, {
           title: p.title, key: key, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale, prog: pg,
           /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
@@ -4024,7 +4028,7 @@
       html += '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="main"><span class="nm">' + esc(b.name) + '</span>' +
         (r ? progBar(r) : '') + '</span><span class="meta">' + meta + '</span></button>';
     });
-    if (!html) shelfMsg(q ? '没有匹配「' + esc(q) + '」的项目。' : '这个文件夹里没有 epub / cbz / zip，也没有子文件夹。');
+    if (!html) shelfMsg(q ? '没有匹配「' + esc(q) + '」的项目。' : '这个文件夹里没有 ' + C.LIB_OPEN_KINDS.join(' / ') + '，也没有子文件夹。');
     else $('#shelfList').innerHTML = html;
     $('#shelfInfo').textContent = shelfData.dirs.length + ' 个文件夹 · ' + shelfData.books.length + ' 本书' +
       (shelfData.other ? ' · 另有 ' + shelfData.other + ' 个暂不支持的文件（rar / cbr 等）' : '');

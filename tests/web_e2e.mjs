@@ -2331,6 +2331,25 @@ function check(name, ok, detail) {
       check('「上一本」从 PDF 换到相邻的另一本 PDF（rtl.pdf，3 页）：新书能画出来', (await stateOf()).bookKey === 'dav:pdf/rtl.pdf' && (await cdp.eval(`return window.__IV.pdfInfo().pages;`)) === 3 && (await shot()).dark > 100, (await stateOf()).bookKey);
       check('换书后上一本 PDF 的 worker 被终止（活着的 pdf.js worker 只剩 1 个，不会越开越多）', liveWorkers.size === 1, { live: liveWorkers.size, attached: nWorkers });
 
+      /* ---- 10b) 下一本 / 上一本是打不开的 PDF（加密）：停在当前这本，提示里带着具体原因（PDF 失败不抛，原因靠 onFail 传给 volStep） ---- */
+      await cdp.eval(`window.__IV.saveProgress(); return 1;`);
+      const volBad = await cdp.eval(`document.querySelector('#toast').textContent = ''; await window.__IV.volStep(-1); await window.__IV.wait(150);
+        return { key: window.__IV.state().bookKey, total: window.__IV.state().total, toast: document.querySelector('#toast').textContent };`);
+      check('「上一本」是加密的 PDF（locked.pdf）→ 仍停在当前这本（rtl.pdf），提示带着原因「有密码」，不只是「打不开」',
+        volBad.key === 'dav:pdf/rtl.pdf' && volBad.total === 3 && /locked\.pdf/.test(volBad.toast) && /仍停在当前这本/.test(volBad.toast) && /密码/.test(volBad.toast), volBad);
+
+      /* ---- 10c) 空文件夹 / 没有可读的书：提示里的格式清单和书架实际能打开的一致（含 pdf） ---- */
+      iv.virtual['pdf/nothing'] = [{ name: 'notes.txt', size: 5 }];
+      await fresh(IVURL);
+      await cdp.eval(`localStorage.setItem('iv.shelf.dir.v1', 'pdf/nothing'); document.querySelector('#startShelf').click(); return 1;`);
+      await waitFor(shelfIs('pdf/nothing'), 8000);
+      await waitFor(`!/读取中/.test(document.querySelector('#shelfList').textContent)`, 5000);
+      const emptyMsg = await cdp.eval(`return document.querySelector('#shelfList').textContent;`);
+      check('书架里没有可读的书的文件夹：提示列出 epub / cbz / zip / pdf 全部格式（不再漏写 pdf）', /没有/.test(emptyMsg) && ['epub', 'cbz', 'zip', 'pdf'].every((k) => emptyMsg.includes(k)), emptyMsg);
+      const copy = await cdp.eval(`return { note: document.querySelector('#statusNote').textContent, start: document.querySelector('.start-note').textContent, help: document.querySelector('#help').textContent };`);
+      check('没有后端时：状态栏 / 起始页 / 帮助表不再说 PDF 要桌面版或本地后端，而是说 PDF 能直接读',
+        /PDF/.test(copy.note) && !/PDF[^；]*桌面版/.test(copy.note) && !/PDF\s*需连本地后端/.test(copy.start) && !/rar\s*\/\s*cbr\s*\/\s*PDF/.test(copy.help) && /PDF 通过网址/.test(copy.help), copy);
+
       /* ---- 11) 加密 / 损坏 / 404 / 服务器忽略 Range ---- */
       await fresh(IVURL + hashFor('pdf/locked.pdf'));
       await waitFor(`/密码|加密/.test(document.querySelector('#toast').textContent)`, 15000);
@@ -2452,6 +2471,17 @@ function check(name, ok, detail) {
       const sLoc = await shot();
       check('本地选 PDF（入库的 sample_rich.pdf）：打开 8 页、画出第 1 页，进度 key 是本地书（不是 dav:），没有任何 /library 请求', (await stateOf()).total === 8 && !!sLoc && sLoc.dark > 100 && !/^dav:/.test((await stateOf()).bookKey) && iv.log.length === lib0, { key: (await stateOf()).bookKey, n: iv.log.length - lib0 });
       check('选文件的 accept 里有 .pdf（手机选择器能选到）', /\.pdf/.test(await cdp.eval(`return document.querySelector('#zipInput').accept;`)));
+      const zeroDir = fs.mkdtempSync(path.join(os.tmpdir(), 'iv-zero-'));
+      const zeroPdf = path.join(zeroDir, 'empty.pdf');
+      fs.writeFileSync(zeroPdf, Buffer.alloc(0));
+      await fresh(IVURL);
+      const lib1 = iv.log.length;
+      await setInputFiles('#zipInput', [zeroPdf]);
+      await sleep(600);
+      const tZeroLocal = await toastText();
+      check('本地选 0 字节的 PDF → 明确提示「空文件（0 字节）」（不是 pdf.js 的泛泛错误），没打开任何书，也没发 /library 请求',
+        /空文件.*0 字节/.test(tZeroLocal) && /PDF 打开失败/.test(tZeroLocal) && (await stateOf()).total === 0 && iv.log.length === lib1, { toast: tZeroLocal, n: iv.log.length - lib1 });
+      try { fs.rmSync(zeroDir, { recursive: true, force: true }); } catch (e) { /* 临时目录，删不掉也无妨 */ }
       await fresh(url.pathToFileURL(PAGE).href);
       await setInputFiles('#zipInput', [localPdf]);
       await sleep(600);

@@ -83,7 +83,7 @@ curl -sI $HOST/iv               | head -n 5     # 308 -> /iv/
 ```
 
 浏览器里打开 `/iv/`：开发者工具 → Application → Service Workers 应看到 scope 为 `/iv/`，
-Cache Storage 里只有 `iv-shell-<hash>`；`/reader/` 的 `pyreader-web-*` 缓存不受影响。
+Cache Storage 里有 `iv-shell-<hash>`（这台设备读过 PDF 之后还会多一个 `iv-vendor-pdfjs-<版本>`，见 7d）；`/reader/` 的 `pyreader-web-*` 缓存不受影响。
 
 ## 5. 建只读 SFTPGo 账号（给 /iv/ 用）
 
