@@ -912,7 +912,7 @@
           }
         }
         out.push({ name: name, dir: /\/$/.test(name), flags: flags, method: method,
-          compSize: compSize, size: uncompSize, localOffset: lho });
+          compSize: compSize, size: uncompSize, localOffset: lho, nameLen: nameLen });
         o = next;
       }
       if (!out.length) throw new Error('压缩包里没有任何条目');
@@ -921,23 +921,88 @@
     });
   };
 
-  /** 解出条目字节：store 直接切，deflate 走原生 DecompressionStream('deflate-raw') */
-  ZipReader.prototype.extract = function (entry, low) {
-    if (entry.dir) return Promise.reject(new Error('目录条目'));
-    if (entry.flags & 1) return Promise.reject(new Error('压缩包已加密，请用桌面版'));
-    if (entry.method !== 0 && entry.method !== 8) return Promise.reject(new Error('不支持的压缩方式 ' + entry.method));
+  /* 远程读取按「请求数」算成本（每次 Range 往返几十到几百毫秒，几百个小条目的 epub 要等一分钟）：
+     - 本地头固定 30 字节 + 文件名 + extra，extra 一般不到 64 字节 —— 一次多取 LOCAL_SLACK 字节，头 + 数据一次请求拿到；
+     - 一批条目（epub 的几百个 xhtml）按文件里的位置排序，空隙 ≤ RUN_GAP 的并成一次请求，单次不超过 RUN_MAX。 */
+  var LOCAL_SLACK = 64, RUN_GAP = 65536, RUN_MAX = 1048576;
+  function entryError(entry) {
+    if (entry.dir) return new Error('目录条目');
+    if (entry.flags & 1) return new Error('压缩包已加密，请用桌面版');
+    if (entry.method !== 0 && entry.method !== 8) return new Error('不支持的压缩方式 ' + entry.method);
+    return null;
+  }
+  function estLen(entry) { return 30 + (entry.nameLen || 0) + LOCAL_SLACK + entry.compSize; }
+  /** buf 是文件里从 base 开始的一段；其中完整包含这个条目（头 + 数据）就返回压缩数据，否则 null（调用方按头里的真实长度补读） */
+  ZipReader.prototype._rawIn = function (entry, buf, base) {
+    var rel = entry.localOffset - base;
+    if (rel < 0 || rel + 30 > buf.length) return null;
+    var hdv = new DataView(buf.buffer, buf.byteOffset + rel, 30);
+    if (u32(hdv, 0) !== 0x04034b50) throw new Error('zip 本地文件头损坏');
+    var ds = rel + 30 + u16(hdv, 26) + u16(hdv, 28);
+    if (ds + entry.compSize > buf.length) return null;
+    return buf.subarray(ds, ds + entry.compSize);
+  };
+  /** _rawIn 取不到完整数据时：头在 buf 里就按头里的真实长度精确补读数据；头都不在 buf 里才整条重读 */
+  ZipReader.prototype._rawOr = function (entry, buf, base, low) {
+    var raw = this._rawIn(entry, buf, base), rel = entry.localOffset - base;
+    if (raw) return Promise.resolve(raw);
+    if (rel >= 0 && rel + 30 <= buf.length) {
+      var hdv = new DataView(buf.buffer, buf.byteOffset + rel, 30);
+      return this.src.read(entry.localOffset + 30 + u16(hdv, 26) + u16(hdv, 28), entry.compSize, low);
+    }
+    return this._readRaw(entry, low);
+  };
+  /** 取一个条目的压缩数据：通常 1 次请求；本地头的 extra 特别长（估计不够）才补第 2 次 */
+  ZipReader.prototype._readRaw = function (entry, low) {
     var self = this;
-    return this.src.read(entry.localOffset, 30, low).then(function (head) {
-      var hdv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-      if (u32(hdv, 0) !== 0x04034b50) throw new Error('zip 本地文件头损坏');
-      var dataStart = entry.localOffset + 30 + u16(hdv, 26) + u16(hdv, 28);
-      return self.src.read(dataStart, entry.compSize, low);
-    }).then(function (raw) {
-      if (entry.method === 0) return raw;
-      if (typeof DecompressionStream !== 'function') throw new Error('当前浏览器不支持 deflate-raw 解压');
-      var st = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-      return new Response(st).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+    return this.src.read(entry.localOffset, estLen(entry), low).then(function (buf) {
+      if (buf.length < 30) throw new Error('zip 本地文件头损坏');
+      return self._rawOr(entry, buf, entry.localOffset, low);
     });
+  };
+  /** store 直接用，deflate 走原生 DecompressionStream('deflate-raw') */
+  ZipReader.prototype._inflate = function (entry, raw) {
+    if (entry.method === 0) return Promise.resolve(raw);
+    if (typeof DecompressionStream !== 'function') return Promise.reject(new Error('当前浏览器不支持 deflate-raw 解压'));
+    var st = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(st).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+  };
+  /** 解出条目字节 */
+  ZipReader.prototype.extract = function (entry, low) {
+    var err = entryError(entry);
+    if (err) return Promise.reject(err);
+    var self = this;
+    return this._readRaw(entry, low).then(function (raw) { return self._inflate(entry, raw); });
+  };
+  /** 一批条目一起取：返回与 list 同序的数组；取不到 / 不支持 / 解压失败的位置是 null（单个失败不拖累整批）。
+      onEach(已完成, 总数) 每完成一个调一次。 */
+  ZipReader.prototype.extractMany = function (list, low, onEach) {
+    var self = this, out = new Array(list.length), done = 0, total = list.length, size = this.src.size;
+    function fin(i, data) {
+      out[i] = data || null; done++;
+      if (onEach) { try { onEach(done, total); } catch (e) { /* 进度回调出错不影响取数 */ } }
+    }
+    var idx = [];
+    list.forEach(function (en, i) { if (!en || entryError(en)) fin(i, null); else idx.push(i); });
+    idx.sort(function (a, b) { return list[a].localOffset - list[b].localOffset; });
+    var runs = [], cur = null;
+    idx.forEach(function (i) {
+      var en = list[i], end = Math.min(size, en.localOffset + estLen(en));
+      if (cur && en.localOffset - cur.end <= RUN_GAP && end - cur.start <= RUN_MAX) {
+        cur.items.push(i); if (end > cur.end) cur.end = end;
+      } else { cur = { start: en.localOffset, end: end, items: [i] }; runs.push(cur); }
+    });
+    return Promise.all(runs.map(function (run) {
+      return self.src.read(run.start, run.end - run.start, low).then(function (buf) {
+        return Promise.all(run.items.map(function (i) {
+          var en = list[i];
+          return Promise.resolve().then(function () {
+            return self._rawOr(en, buf, run.start, low);                       // 窗口没包全：精确补读
+          }).then(function (raw) { return self._inflate(en, raw); })
+            .then(function (d) { fin(i, d); }, function () { fin(i, null); });
+        }));
+      }, function () { run.items.forEach(function (i) { fin(i, null); }); });
+    })).then(function () { return out; });
   };
 
   /* ---------------- epub 漫画：按 OPF spine 取页序（纯逻辑，正则解析，Node 里也能跑） ---------------- */
@@ -2560,17 +2625,17 @@
         var opf = C.epubParseOpf(ox);
         var todo = C.epubSpineItems(opfPath, opf).filter(function (s) { return !/^image\//i.test(s.type); });
         var texts = {};
-        function batch(i) {   /* 小批并发读 xhtml，几百页也不会一次性起几百个读 */
-          if (i >= todo.length) return Promise.resolve();
-          return Promise.all(todo.slice(i, i + 8).map(function (s) {
-            return readText(s.path).then(function (t) { texts[s.path] = t; }, function () {});
-          })).then(function () {
-            if (onProgress) { try { onProgress(Math.min(i + 8, todo.length), todo.length); } catch (e) { /* 进度显示出错不影响开书 */ } }
-            return batch(i + 8);
+        /* 几百个 xhtml 一起取：挨在一起的并成一次 Range 请求（见 ZipReader.extractMany），单个读失败 = 当没有这页 */
+        function fetchTexts() {
+          var list = todo.map(function (s) { return ent[s.path] || entLower[String(s.path).toLowerCase()] || null; });
+          if (onProgress) { try { onProgress(0, todo.length); } catch (e) { /* 进度显示出错不影响开书 */ } }
+          return zf.extractMany(list, false, function (d, n) {
+            if (onProgress) { try { onProgress(d, n); } catch (e) { /* 同上 */ } }
+          }).then(function (bytes) {
+            todo.forEach(function (s, i) { if (bytes[i]) texts[s.path] = dec.decode(bytes[i]); });
           });
         }
-        if (onProgress) { try { onProgress(0, todo.length); } catch (e) { /* 同上 */ } }
-        return batch(0).then(function () {
+        return fetchTexts().then(function () {
           var order = C.epubPageOrder(opfPath, opf,
             function (p) { return texts[p] == null ? null : texts[p]; },
             function (p) {

@@ -1564,6 +1564,7 @@ function check(name, ok, detail) {
       /* ---- 8e) 打开云端书时的进度条（慢网络：每个 /library 请求慢 150ms） ---- */
       {
         await fresh(IVURL);
+        iv.log.length = 0;
         await cdp.eval(`window.__ops = []; window.__of = window.fetch;
           window.fetch = (u, i) => /\\/library\\//.test(String(u)) ? new Promise((r) => setTimeout(r, 150)).then(() => window.__of(u, i)) : window.__of(u, i);
           const e = document.querySelector('#openProg');
@@ -1577,6 +1578,9 @@ function check(name, ok, detail) {
         check('慢开书：进度条出现，标题 = 书名，显示「解析章节 N / M」+ 百分比 + 进度宽度',
           ops.some((s) => /^sample_comic\.epub\|/.test(s)) && ops.some((s) => /\|解析章节 \d+ \/ \d+ +\d+%\|\d/.test(s)), ops.slice(0, 12));
         check('书打开后进度条已收起', shownEarly === false, shownEarly);
+        const nReq = iv.log.filter((e) => e.status !== 401).length;
+        console.log('    （打开 5 页 epub 共 ' + nReq + ' 个 /library 请求）');
+        check('打开 epub 的请求数很少（头+数据合一、xhtml 合并读）：≤ 8', nReq <= 8, nReq);
         await cdp.eval(`window.fetch = window.__of; return 1;`);
         // 失败（云端没有这本书）也要收起，不能一直挂在屏幕上
         await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('不存在的书.epub'))}); return 1;`);

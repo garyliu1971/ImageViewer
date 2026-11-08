@@ -470,10 +470,129 @@ test('ZipReader.extract(entry, low)：低优先级标记传到每一次 src.read
   const zr = await new C.ZipReader(src).open();
   calls.length = 0;
   assert.deepEqual(Buffer.from(await zr.extract(zr.entries[0], true)), files[0].data);
-  assert.deepEqual(calls, [true, true]);
+  assert.deepEqual(calls, [true]);          // 头 + 数据合成一次读
   calls.length = 0;
   await zr.extract(zr.entries[0]);
-  assert.deepEqual(calls, [false, false]);
+  assert.deepEqual(calls, [false]);
+});
+
+/** 造 zip：files = [{name, data, deflate?, localExtra?（本地头 extra 字节数）, pad?（条目后面塞多少字节垃圾）}] */
+function buildZip(files) {
+  const parts = [], cds = []; let off = 0;
+  for (const f of files) {
+    const nb = Buffer.from(f.name), method = f.deflate ? 8 : 0;
+    const comp = f.deflate ? zlib.deflateRawSync(f.data) : f.data, crc = zlib.crc32(f.data);
+    const lx = Buffer.alloc(f.localExtra || 0, 0x5a);
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x800, 6); lh.writeUInt16LE(method, 8);
+    lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(f.data.length, 22);
+    lh.writeUInt16LE(nb.length, 26); lh.writeUInt16LE(lx.length, 28);
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(0x800, 8); cd.writeUInt16LE(method, 10);
+    cd.writeUInt32LE(crc, 16); cd.writeUInt32LE(comp.length, 20); cd.writeUInt32LE(f.data.length, 24);
+    cd.writeUInt16LE(nb.length, 28); cd.writeUInt32LE(off, 42);          // 中央目录里的 extra = 0，和本地头不一样（真实 zip 常见）
+    const pad = Buffer.alloc(f.pad || 0, 0x11);
+    parts.push(lh, nb, lx, comp, pad); cds.push(Buffer.concat([cd, nb]));
+    off += lh.length + nb.length + lx.length + comp.length + pad.length;
+  }
+  const cdBuf = Buffer.concat(cds), eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(off, 16);
+  return Buffer.concat([...parts, cdBuf, eocd]);
+}
+/** 数读次数的内存源 */
+function countingSource(zip, log) {
+  return { size: zip.length, read: async (off, len, low) => { log.push([off, len, !!low]); return zip.subarray(off, off + len); } };
+}
+const xhtml = (i) => Buffer.from(`<html><body><img src="img/${i}.png"/>${'x'.repeat(200 + (i % 7) * 31)}</body></html>`);
+
+test('ZipReader.extract：本地头 extra 在估计内 = 1 次读；超出估计（extra 很长）补第 2 次读，字节都对；store + deflate', async () => {
+  const data = (n, s) => { const b = Buffer.alloc(n); for (let i = 0; i < n; i++) b[i] = (i * s) & 0xff; return b; };
+  const files = [
+    { name: 'a.txt', data: data(500, 3), localExtra: 0 },
+    { name: 'b.txt', data: data(500, 5), localExtra: 40 },                  // 估计内
+    { name: 'c.txt', data: data(500, 7), localExtra: 300 },                 // 超出估计
+    { name: 'd.txt', data: data(4000, 11), deflate: true, localExtra: 28 },
+    { name: 'e.txt', data: data(4000, 13), deflate: true, localExtra: 500 },
+  ];
+  const zip = buildZip(files), log = [];
+  const zr = await new C.ZipReader(countingSource(zip, log)).open();
+  for (const [i, f] of files.entries()) {
+    log.length = 0;
+    const got = await zr.extract(zr.entries[i]);
+    assert.deepEqual(Buffer.from(got), f.data, f.name);
+    assert.equal(log.length, (f.localExtra || 0) > 64 ? 2 : 1, `${f.name} 读了 ${log.length} 次`);
+  }
+  assert.equal(zr.entries[0].nameLen, 5);
+});
+
+test('ZipReader.extractMany：挨着的条目并成一次读；结果与逐个 extract 一致且与 list 同序；进度回调', async () => {
+  const files = [];
+  for (let i = 0; i < 60; i++) files.push({ name: `OEBPS/p${String(i).padStart(3, '0')}.xhtml`, data: xhtml(i), deflate: i % 3 === 0, localExtra: i % 5 ? 0 : 28 });
+  const zip = buildZip(files), log = [];
+  const zr = await new C.ZipReader(countingSource(zip, log)).open();
+  const list = zr.entries.slice().reverse();                       // 故意倒序：结果要和传入顺序对应
+  log.length = 0;
+  const seen = [];
+  const got = await zr.extractMany(list, false, (d, n) => seen.push([d, n]));
+  assert.equal(log.length, 1, '60 个相邻小条目只该读 1 次：' + log.length);
+  list.forEach((en, i) => {
+    const want = files.find((f) => f.name === en.name).data;
+    assert.deepEqual(Buffer.from(got[i]), want, en.name);
+  });
+  assert.equal(seen.length, 60);
+  assert.deepEqual(seen[59], [60, 60]);
+  assert.ok(seen.every(([d, n], i) => n === 60 && d === i + 1), '进度单调 1..60');
+});
+
+test('ZipReader.extractMany：条目之间隔着大文件就拆成多次读（空隙 > 64KB），单次不超过 1MB；缺失 / 加密 / 目录 = null，不拖累别的', async () => {
+  const files = [
+    { name: 't1.xhtml', data: xhtml(1) }, { name: 't2.xhtml', data: xhtml(2) },
+    { name: 'big1.bin', data: Buffer.alloc(200000, 1) },                  // 把前后拉开
+    { name: 't3.xhtml', data: xhtml(3) }, { name: 't4.xhtml', data: xhtml(4) },
+    { name: 'big2.bin', data: Buffer.alloc(200000, 2) },
+    { name: 't5.xhtml', data: xhtml(5), deflate: true },
+  ];
+  const zip = buildZip(files), log = [];
+  const zr = await new C.ZipReader(countingSource(zip, log)).open();
+  const byName = (n) => zr.entries.find((e) => e.name === n);
+  const list = ['t1.xhtml', 't2.xhtml', 't3.xhtml', 't4.xhtml', 't5.xhtml'].map(byName);
+  log.length = 0;
+  const got = await zr.extractMany(list);
+  assert.equal(log.length, 3, '三段：t1+t2 / t3+t4 / t5：' + JSON.stringify(log));
+  assert.ok(log.every(([, len]) => len <= 1048576));
+  list.forEach((en, i) => assert.deepEqual(Buffer.from(got[i]), files.find((f) => f.name === en.name).data));
+  // 坏条目混在里面
+  const enc = { ...byName('t2.xhtml'), flags: 1 }, unk = { ...byName('t3.xhtml'), method: 12 };
+  const dir = { ...byName('t1.xhtml'), dir: true };
+  const mixed = await zr.extractMany([byName('t1.xhtml'), enc, null, unk, dir, byName('t4.xhtml')]);
+  assert.deepEqual(Buffer.from(mixed[0]), files[0].data);
+  assert.equal(mixed[1], null); assert.equal(mixed[2], null); assert.equal(mixed[3], null); assert.equal(mixed[4], null);
+  assert.deepEqual(Buffer.from(mixed[5]), files[4].data);
+  assert.deepEqual(await zr.extractMany([]), []);
+});
+
+test('ZipReader.extractMany：本地头 extra 比估计长 = 该条目补读，其余照常；读失败只让那一段变 null', async () => {
+  const files = [
+    { name: 'a.xhtml', data: xhtml(1) },
+    { name: 'c.xhtml', data: xhtml(3) },
+    { name: 'b.xhtml', data: xhtml(2), localExtra: 400 },              // 排在最后：合并窗口末尾不够长，只能补读
+  ];
+  const zip = buildZip(files), log = [];
+  const zr = await new C.ZipReader(countingSource(zip, log)).open();
+  log.length = 0;
+  const got = await zr.extractMany(zr.entries);
+  files.forEach((f, i) => assert.deepEqual(Buffer.from(got[i]), f.data, f.name));
+  assert.equal(log.length, 2, '合并读 1 次 + b 补读 1 次：' + JSON.stringify(log));
+  // 网络失败：第一段读炸 → 那一段全是 null，第二段正常
+  const spread = buildZip([{ name: 'x1.xhtml', data: xhtml(1) }, { name: 'gap.bin', data: Buffer.alloc(150000, 9) }, { name: 'x2.xhtml', data: xhtml(2) }]);
+  const flaky = { size: spread.length, read: async (off, len) => { if (off === 0) throw new Error('boom'); return spread.subarray(off, off + len); } };
+  const zr2 = await new C.ZipReader({ size: spread.length, read: async (o, l) => spread.subarray(o, o + l) }).open();
+  zr2.src = flaky;
+  const e1 = zr2.entries.find((e) => e.name === 'x1.xhtml'), e2 = zr2.entries.find((e) => e.name === 'x2.xhtml');
+  const r = await zr2.extractMany([e1, e2]);
+  assert.equal(r[0], null);
+  assert.deepEqual(Buffer.from(r[1]), xhtml(2));
 });
 
 test('UrlRangeSource + ZipReader：与内存源解出同样的条目 / 字节；尾部那块只取一次', { skip: !epubFixture }, async () => {
@@ -528,8 +647,8 @@ test('UrlRangeSource + ZipReader：大于 64KB 的 zip 也只按需取字节（�
     assert.equal(s.st.requests.length, 2, 'init + 尾部块；中央目录不再单独请求');
     const got = await Promise.all(zr.entries.map((en) => zr.extract(en)));
     got.forEach((g, i) => assert.deepEqual(Buffer.from(g), files[i].data, files[i].name));
-    // 每页 2 个请求（本地头 + 数据）；落在尾部缓存块里的页（最后一两页）不需要请求
-    assert.ok(s.st.requests.length > 2 + 6 && s.st.requests.length <= 2 + 6 * 2, '请求数：' + s.st.requests.length);
+    // 每页 1 个请求（本地头 + 数据合成一次）；落在尾部缓存块里的页（最后一两页）不需要请求
+    assert.ok(s.st.requests.length > 2 + 3 && s.st.requests.length <= 2 + 6, '请求数：' + s.st.requests.length);
     assert.ok(s.st.bytesSent < zip.length + 4 * 65558, '没有把整个 zip 反复下载：' + s.st.bytesSent);
     assert.ok(s.st.maxInflight <= 4);
   } finally { await s.close(); }
