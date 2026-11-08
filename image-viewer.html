@@ -426,7 +426,7 @@
     <button class="btn" id="btnBack" title="回到打开这本书的页面">← 返回</button>
     <button class="btn primary" id="btnFolder" title="打开文件夹（子目录自动识别为章节）">📂 文件夹</button>
     <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 图片</button>
-    <button class="btn" id="btnZip" title="打开压缩包 zip / cbz（连上本地后端后也支持 rar / cbr）">📦 压缩包</button>
+    <button class="btn" id="btnZip" title="打开压缩包 zip / cbz / epub 或 pdf（连上本地后端后也支持 rar / cbr）">📦 压缩包</button>
     <button class="btn" id="btnShelf" title="云端书架（L）：浏览书库目录">📚 书架</button>
     <button class="btn" id="btnDisk" title="按磁盘路径打开（目录 / rar·cbr / PDF，需本地后端）">🖧 磁盘路径</button>
   </div>
@@ -496,7 +496,7 @@
 <div id="statusbar">
   <span id="statusText">未打开</span>
   <span class="sp"></span>
-  <span id="statusNote">网页版只做图片 / 漫画；视频、PDF、网盘、投屏请用桌面版</span>
+  <span id="statusNote">网页版只做图片 / 漫画 / PDF；视频、网盘、投屏请用桌面版</span>
 </div>
 
 <div id="start">
@@ -519,7 +519,7 @@
     </p>
     <p class="start-note">
       纯本地单文件，不联网、不上传（只有部署成 /iv/ 页面、并填了「☁ 书库账号」时，才会向<b>你自己的</b> WebDAV 发只读的分段请求）。<br>
-      rar·cbr / PDF 需连本地后端（<code>python web_backend.py</code> 或双击
+      PDF 部署成 /iv/ 页面后可直接读（加密 PDF 除外）；rar·cbr 需连本地后端（<code>python web_backend.py</code> 或双击
       <code>启动网页版.bat</code>）；视频播放 / 实时字幕 / tif / 网盘 / 投屏
       仍需桌面版 <code>图片漫画浏览器.exe</code>（或 <code>python image_viewer.py</code>）。
     </p>
@@ -555,10 +555,10 @@
       <tr><td>📦 压缩包 / 拖拽（需本地后端）</td><td>选或拖 <code>.rar</code> <code>.cbr</code> <code>.pdf</code>
         也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
       <tr><td>☁ 云端书库（部署在 <code>/iv/</code> 时）</td><td>打开 <code>/iv/#open=书的相对路径</code>，第一次填一个<b>只读</b> WebDAV 账号；
-        zip / cbz / epub 只按需取用到的页（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。
+        zip / cbz / epub / pdf 只按需取用到的页或字节段（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。
         账号框里的「跨设备续读」可把读到哪页写到 WebDAV 的进度文件夹，换设备打开同一本书自动接上。
-        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip 就读；读书时
-        <kbd>N</kbd> / <kbd>P</kbd> 或「上一本 / 下一本」切到同一文件夹里相邻的书。rar / cbr 要先转成 cbz，pdf 暂未支持。</td></tr>
+        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip / pdf 就读；读书时
+        <kbd>N</kbd> / <kbd>P</kbd> 或「上一本 / 下一本」切到同一文件夹里相邻的书。rar / cbr 要先转成 cbz（浏览器不能随机读取 rar）；pdf 可直接读（每页渲染成图片，按页宽显示，字小可捏合放大）。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
@@ -566,7 +566,8 @@
         （rar/cbz/pdf 都能用）。视频用手机 VLC 的「网络串流」：在网页版按 <kbd>I</kbd>
         详情里有可一键复制的播放列表链接（<code>/api/m3u</code>）。</td></tr>
       <tr><td>仍不支持</td><td>tif / heic（浏览器不解码）、视频与实时字幕、网盘、投屏 → 用桌面版；
-        rar / cbr / PDF 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）</td></tr>
+        rar / cbr 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）；
+        PDF 通过网址（http / https）打开本页就能直接读（📦 / 拖拽 / 云端书库），加密 PDF 除外</td></tr>
     </table>
   </div>
 </div>
@@ -666,7 +667,7 @@
 <input type="file" id="folderInput" webkitdirectory multiple hidden>
 <input type="file" id="fileInput" multiple
        accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.jfif,.apng,.svg" hidden>
-<input type="file" id="zipInput" accept=".zip,.cbz,.epub,application/zip,application/epub+zip" hidden>
+<input type="file" id="zipInput" accept=".zip,.cbz,.epub,.pdf,application/zip,application/epub+zip,application/pdf" hidden>
 
 <script id="iv-core">
 /* ============================================================================
@@ -1163,6 +1164,7 @@
     if (st === 401 && this.onAuthFail) { try { this.onAuthFail(err); } catch (e) { /* 回调出错不影响主流程 */ } }
     return dropBody(res).then(function () { throw err; });
   };
+  function emptyFileError(status) { return httpError('云端这个文件是空的（0 字节），没有内容可读', status, 'empty'); }
   UrlRangeSource.prototype._noRange = function (res) {
     return dropBody(res).then(function () {
       throw httpError('server ignores Range（服务器忽略了 Range 头，返回了整个文件）：已中止，没有下载整个文件', res.status, 'norange');
@@ -1175,6 +1177,7 @@
       return self._req('HEAD', null).then(function (res) {
         if (res.status === 401 || res.status === 403 || res.status === 404) return self._fail(res);
         var n = parseInt(res.headers.get('content-length') || '', 10);
+        if (res.ok && n === 0) throw emptyFileError(res.status);
         if (!res.ok || !(n > 0)) throw httpError('取不到文件大小（HTTP ' + res.status + '）', res.status, 'size');
         self.size = n;
         return self;
@@ -1182,7 +1185,9 @@
     }
     return this._req('GET', 'bytes=0-0').then(function (res) {
       if (res.status === 401 || res.status === 403 || res.status === 404) return self._fail(res);
+      if (res.status === 200 && res.headers.get('content-length') === '0') return dropBody(res).then(function () { throw emptyFileError(200); });   // 0 字节的文件：不是「服务器忽略 Range」
       if (res.status === 200) return self._noRange(res);
+      if (res.status === 416 && /\*\/0\s*$/.test(res.headers.get('content-range') || '')) return dropBody(res).then(function () { throw emptyFileError(416); });   // 空文件上任何 Range 都「不可满足」，Content-Range: bytes */0
       if (res.status === 206) {
         var m = /bytes\s+\d+-\d+\/(\d+)/i.exec(res.headers.get('content-range') || '');
         return res.arrayBuffer().then(function () {
@@ -1400,10 +1405,10 @@
     }
     return out;
   }
-  /** 浏览器现在能直接读的书（Range 读 zip 系）。书架列哪些、换书跳不跳过，都从这一份名单来：接上新格式（pdf）只改这里 */
-  var LIB_OPEN_KINDS = ['zip', 'cbz', 'epub'];
+  /** 浏览器现在能直接读的书（Range 读 zip 系 + pdf.js 读 pdf）。书架列哪些、换书跳不跳过，都从这一份名单来：接上新格式只改这里 */
+  var LIB_OPEN_KINDS = ['zip', 'cbz', 'epub', 'pdf'];
   var SHELF_BOOK_RE = new RegExp('[.](' + LIB_OPEN_KINDS.join('|') + ')$', 'i');
-  /** 目录在前、书在后，各自自然排序；能打开的只有 LIB_OPEN_KINDS 里的，其余（rar / pdf …）只计数不列出 */
+  /** 目录在前、书在后，各自自然排序；能打开的只有 LIB_OPEN_KINDS 里的，其余（rar / cbr …）只计数不列出 */
   function shelfSplit(entries) {
     var dirs = [], bks = [], other = 0;
     (entries || []).forEach(function (e) {
@@ -1422,13 +1427,13 @@
   }
 
   /* ---------------- 读书时「上一本 / 下一本」：同一文件夹里相邻的书（纯函数，Node 可测）---------------- */
-  var LIB_BOOK_KINDS = LIB_OPEN_KINDS.concat(['pdf', 'rar', 'cbr']);
+  var LIB_BOOK_KINDS = LIB_OPEN_KINDS.concat(['rar', 'cbr']);
   /** 扩展名 -> 'zip'|'cbz'|'epub'|'pdf'|'rar'|'cbr'|'other' */
   function libClassify(ext) {
     var e = String(ext == null ? '' : ext).replace(/^\./, '').toLowerCase();
     return LIB_BOOK_KINDS.indexOf(e) >= 0 ? e : 'other';
   }
-  /** 浏览器现在能直接读的（Range 读 zip 系）；pdf / rar 另说 */
+  /** 浏览器现在能直接读的（Range 读 zip 系 / pdf.js 读 pdf）；rar / cbr 另说 */
   function libOpenable(kind) { return LIB_OPEN_KINDS.indexOf(kind) >= 0; }
   /** 书（非文件夹、受支持的类型），保持传入顺序 */
   function libBooks(entries) {
@@ -1442,7 +1447,7 @@
     });
   }
   function libParentRel(rel) { return String(rel || '').replace(/\/+$/, '').replace(/\/?[^\/]*$/, ''); }
-  /** 同一个文件夹里相邻的书：list 是该文件夹排好序的条目（要有 rel / ext）；canOpen(entry) 为假的（rar / 没接上的 pdf）跳过。找不到当前书返回 null */
+  /** 同一个文件夹里相邻的书：list 是该文件夹排好序的条目（要有 rel / ext）；canOpen(entry) 为假的（rar / cbr）跳过。找不到当前书返回 null */
   function libAdjacent(list, rel, step, canOpen) {
     var books = libBooks(list), i = -1, k;
     for (k = 0; k < books.length; k++) if (books[k].rel === rel) { i = k; break; }
@@ -1454,13 +1459,80 @@
   function nextBook(list, rel, canOpen) { return libAdjacent(list, rel, 1, canOpen); }
   function prevBook(list, rel, canOpen) { return libAdjacent(list, rel, -1, canOpen); }
 
+  /* ---------------- PDF 小工具（纯函数；pdf.js 本体在页面脚本里按需加载）----------------
+     思路：PDF 的一页 = 渲染成一张 JPEG 的普通「图片页」，所以缩放 / 旋转 / 双页 / 裁边 / 进度全部沿用图片那套。
+     下面是不依赖浏览器的部分：渲染比例（限制 canvas 面积，守住 iOS Safari 的上限）和「按字节区间读」的适配器。 */
+  function isPdfName(n) { return /\.pdf$/i.test(String(n == null ? '' : n)); }
+  /** 单页渲染面积上限（像素）。iOS Safari 单个 canvas 最多约 1677 万像素、总 canvas 内存更紧；手机 / 小屏取 600 万（A4 约 250dpi），
+      低内存设备（deviceMemory <= 2）400 万，桌面 1200 万。o = {small, deviceMemory} */
+  function pdfAreaCap(o) {
+    o = o || {};
+    if (o.deviceMemory > 0 && o.deviceMemory <= 2) return 4e6;
+    return o.small ? 6e6 : 12e6;
+  }
+  /** pw×ph = 该页 scale=1 时的尺寸（pt）。比例只由页面尺寸和面积上限决定（跟窗口 / DPR 无关）：
+      旋转、缩放窗口都不会让已渲染的页和已量好的裁边框失效。上限：maxScale 倍、最长边 maxSide 像素（对齐页面的 MAX_DIM，boxOf 不会再缩）。 */
+  function pdfScale(pw, ph, o) {
+    o = o || {};
+    var cap = o.areaCap > 0 ? o.areaCap : 6e6, side = o.maxSide > 0 ? o.maxSide : 4000, mx = o.maxScale > 0 ? o.maxScale : 4;
+    if (!(pw > 0) || !(ph > 0) || !isFinite(pw) || !isFinite(ph)) return 1;
+    return Math.min(mx, Math.sqrt(cap / (pw * ph)), side / Math.max(pw, ph));
+  }
+  /** 渲染尺寸：向下取整（保证 面积 <= 上限、最长边 <= maxSide），探测尺寸和真正渲染的 canvas 用同一个函数 → 完全一致 */
+  function pdfPixelSize(pw, ph, s) {
+    return { w: Math.max(1, Math.floor(pw * s)), h: Math.max(1, Math.floor(ph * s)) };
+  }
+  /**
+   * 把 {size, read(off, len)}（本地 File 切片 / UrlRangeSource）适配成 pdf.js 的 PDFDataRangeTransport 要的 requestRange(begin, end)。
+   * pdf.js 的区间传输没有「出错」通道：读失败如果只是丢掉，pdf.js 会永远等下去。所以这里记下第一个错误（fatal），
+   * 之后所有请求立刻失败（不再发网络请求），并回调 opts.onFatal 让页面把等待中的渲染全部叫停、提示用户。
+   * opts: onFatal(err)、gen()（当前账号版本号）、retryAuth(gen, err) -> Promise<boolean>（遇到 401 时等用户重新输入账号；true = 再读一次）
+   * 区间读必须拿到 206（UrlRangeSource 里 200 直接报 norange），所以绝不会悄悄把整个 PDF 下下来。
+   */
+  function pdfRangeAdapter(src, size, opts) {
+    opts = opts || {};
+    var A = { fatal: null, reads: 0, bytes: 0 };
+    function setFatal(e) {
+      if (!A.fatal) { A.fatal = e; if (opts.onFatal) { try { opts.onFatal(e); } catch (x) { /* 回调出错不影响主流程 */ } } }
+      return A.fatal;
+    }
+    function attempt(b, len, tries) {
+      var gen = opts.gen ? opts.gen() : 0;
+      return src.read(b, len, false).then(null, function (e) {
+        if (e && e.status === 401 && opts.retryAuth && tries < 2 && !A.fatal) {
+          return Promise.resolve(opts.retryAuth(gen, e)).then(function (ok) {
+            if (!ok) throw e;
+            return attempt(b, len, tries + 1);
+          });
+        }
+        throw e;
+      });
+    }
+    A.requestRange = function (begin, end) {
+      if (A.fatal) return Promise.reject(A.fatal);
+      begin = Math.max(0, Math.floor(Number(begin) || 0));
+      end = Math.min(size, Math.floor(Number(end) || 0));
+      if (!(end > begin)) return Promise.resolve(new Uint8Array(0));
+      A.reads++;
+      return attempt(begin, end - begin, 0).then(function (u8) {
+        if (A.fatal) throw A.fatal;
+        if (!u8 || u8.length !== end - begin) throw httpError('PDF 分段长度不对：要 ' + (end - begin) + ' 字节，收到 ' + (u8 ? u8.length : 0), 206, 'short');
+        A.bytes += u8.length;
+        /* 拷贝一份：pdf.js 会把它 transfer 给 worker（原数组会被清空），而 UrlRangeSource 的尾部缓存会把同一块内存再给别人 */
+        return new Uint8Array(u8);          // 一定是新分配的独立内存（Node 的 Buffer.slice 是视图，所以不用 slice）
+      }).then(null, function (e) { throw setFatal(e); });
+    };
+    return A;
+  }
+
   global.IVCore = {
-    parsePropfind: parsePropfind, shelfSplit: shelfSplit, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
+    parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
     toRemoteProgress: toRemoteProgress, remoteIsNewer: remoteIsNewer,
     libClassify: libClassify, libOpenable: libOpenable, libBooks: libBooks, libParentRel: libParentRel, volEntries: volEntries, nextBook: nextBook, prevBook: prevBook,
     basicAuth: basicAuth, UrlRangeSource: UrlRangeSource, parseLaunchHash: parseLaunchHash,
     relError: relError, backOk: backOk, normalizeDavBase: normalizeDavBase, davBookUrl: davBookUrl,
+    isPdfName: isPdfName, pdfAreaCap: pdfAreaCap, pdfScale: pdfScale, pdfPixelSize: pdfPixelSize, pdfRangeAdapter: pdfRangeAdapter,
     dirOf: dirOf, epubResolve: epubResolve, epubOpfPath: epubOpfPath, epubParseOpf: epubParseOpf,
     epubSpineItems: epubSpineItems, epubImageRefs: epubImageRefs, epubPageOrder: epubPageOrder,
     MIN_ZOOM: MIN_ZOOM, MAX_ZOOM: MAX_ZOOM, MIN_VISIBLE: MIN_VISIBLE,
@@ -1512,6 +1584,10 @@
   })();
   var S = { spread: true, direction: 'ltr', trim: false, book: false,
             compare: false, autoInterval: 3.0, thumbs: !SMALL_SCREEN };
+  /* 当前书是 PDF 时的「双页」有效值（书级覆盖）：PDF 默认单页，但绝不能改全局 S.spread——saveUI() 会把它写进 localStorage，
+     用户给漫画设的双页偏好就被一本 PDF 悄悄覆盖了。null = 不是 PDF，跟随 S.spread。显示 / 保存进度都用 spreadOn() */
+  var pdfSpread = null;
+  function spreadOn() { return pdfSpread === null ? S.spread : pdfSpread; }
   var autoOn = false;
 
   /* ================= 本地后端（web_backend.py）=================
@@ -1632,7 +1708,7 @@
     if (!bookKey || !pages.length || index < 0) return;
     var rec = books[bookKey] || {};
     rec.index = index; rec.chapter = chapterIndex; rec.total = pages.length;
-    rec.spread = S.spread; rec.direction = S.direction; rec.trim = S.trim;
+    rec.spread = spreadOn(); rec.direction = S.direction; rec.trim = S.trim;
     rec.book = S.book; rec.compare = S.compare;
     rec.fit = fitMode === 'custom' ? 'window' : fitMode;
     rec.title = bookTitle;
@@ -1715,10 +1791,11 @@
   var pageSeq = 0;
   function makePage(o) {
     return { id: ++pageSeq, name: o.name, path: o.path || o.name, size: o.size || 0,
-      kind: o.kind,                       /* 'file' | 'fsa' | 'zip' | 'url' */
+      kind: o.kind,                       /* 'file' | 'fsa' | 'zip' | 'url' | 'pdf' */
       file: o.file || null, handle: o.handle || null,
       zf: o.zf || null, entry: o.entry || null, url: o.url || null,
       spath: o.spath || null, sentry: o.sentry || null, isImage: !!o.isImage,
+      pdf: o.pdf || null, pno: o.pno || 0,         /* kind 'pdf'：所属 PDF 的运行时 + 第几页（从 1 开始） */
       bmpW: 0, bmpH: 0, crop: null, probeDone: false };
   }
 
@@ -1735,6 +1812,16 @@
       }, function (e) { if (p._bp === bp) p._bp = null; throw e; });
       p._bp = bp; p._bpLow = !!low;
       return bp;
+    }
+    if (p.kind === 'pdf') {                                  /* 渲染成 JPEG；同页在途共用，规则同 zip */
+      if (p._bp && (low || !p._bpLow)) return p._bp;
+      var pp = p.pdf.render(p).then(function (blob) {
+        if (p._bp === pp) p._bp = null;
+        if (!p._blob) p._blob = blob;
+        return p._blob;
+      }, function (e) { if (p._bp === pp) p._bp = null; throw e; });
+      p._bp = pp; p._bpLow = !!low;
+      return pp;
     }
     if (p.kind === 'fsa') {
       return p.handle.getFile().then(function (f) { p.size = f.size; return f; });
@@ -1861,7 +1948,7 @@
     }
     $('#start').classList.add('hidden');
     refreshChapterUI();
-    toast('已加载 ' + built.length + ' 张图片' + (multi ? ' · ' + chapters.length + ' 个章节' : ''));
+    toast('已加载 ' + built.length + (built[0].kind === 'pdf' ? ' 页' : ' 张图片') + (multi ? ' · ' + chapters.length + ' 个章节' : ''));
     reportSkipped();   /* 跳过提示放后面，盖在“已加载”上更醒目 */
   }
 
@@ -1873,6 +1960,12 @@
     urlMap.clear();
     probing.clear();
     tQueue.length = 0;
+    if (activePdf) { activePdf.destroy(); activePdf = null; }          /* 上一本是 PDF：终止它的 worker、清掉渲染队列 */
+    pdfSpread = null;                                                   /* PDF 的单页是书级覆盖，没碰过全局 S.spread，这里清掉就行 */
+    if (pdfDefaults) {                                                  /* 还原打开 PDF 时临时改的默认值：下一本（比如漫画）不该继承「按页宽」 */
+      if (fitMode === 'width') fitMode = pdfDefaults.fit;
+      pdfDefaults = null;
+    }
     pages = []; allPages = null; chapters = null; chapterIndex = 0; index = -1; lastPair = [];
     if (thumbsIO) thumbsIO.disconnect();
     thumbNodes = [];
@@ -1919,13 +2012,21 @@
     pages = list;
     setKeepWindow();
     var rec = bookKey ? books[bookKey] : null;
+    var isPdfBook = !!(pages[0] && pages[0].kind === 'pdf');
     if (rec) {
-      if (rec.spread !== undefined) S.spread = !!rec.spread;
+      if (rec.spread !== undefined && !isPdfBook) S.spread = !!rec.spread;
       if (rec.direction) S.direction = rec.direction === 'rtl' ? 'rtl' : 'ltr';
       if (rec.trim !== undefined) S.trim = !!rec.trim;
       if (rec.book !== undefined) S.book = !!rec.book;
       if (rec.compare !== undefined) S.compare = !!rec.compare;
       if (rec.fit && ['window', 'width', 'height', 'actual'].indexOf(rec.fit) >= 0) fitMode = rec.fit;
+    }
+    /* PDF：双页只在这本书里生效（pdfSpread），第一次打开默认单页（双页开关还在，横屏可以自己打开），已保存过的以保存的为准 */
+    pdfSpread = isPdfBook ? (rec && rec.spread !== undefined ? !!rec.spread : false) : null;
+    if (isPdfBook && !(rec && rec.fit)) {
+      /* 第一次打开的 PDF：手机上按页宽读才看得清字 */
+      if (!pdfDefaults) pdfDefaults = { fit: fitMode };
+      fitMode = 'width';
     }
     applyModeClasses();
     var start = 0;
@@ -1948,6 +2049,14 @@
     if (!p) return Promise.reject(new Error('没有这一页'));
     if (p.probeDone) return Promise.resolve(p);
     if (probing.has(p.id)) return probing.get(p.id);   /* 并发去重：同页只解一次 */
+    if (p.kind === 'pdf' && !S.trim) {
+      /* PDF 页只量页面尺寸、不渲染（双页判断、版面都先用得上）；渲染比例固定，所以之后真正渲染出来的图尺寸一定与这里一致。
+         裁白边开着时必须看到像素，走下面的图片路径 */
+      var pp = p.pdf.probe(p).then(function () { p.probeDone = true; probing.delete(p.id); return p; },
+                                   function (e) { probing.delete(p.id); throw e; });
+      probing.set(p.id, pp);
+      return pp;
+    }
     var pr = urlFor(p).then(function (url) {
       return new Promise(function (res, rej) {
         var im = new Image();
@@ -2022,7 +2131,7 @@
     var cur = pages[index], nxt = pages[index + 1];
     if (!cur) return Promise.resolve([]);
     return ensureDecoded(cur).then(function () {
-      if (!S.compare && (!S.spread || !spreadFits())) return [cur];
+      if (!S.compare && (!spreadOn() || !spreadFits())) return [cur];
       if (!nxt) return [cur];
       if (S.compare) return ensureDecoded(nxt).then(function () { return [cur, nxt]; }, function () { return [cur]; });
       if (!isPortrait(cur)) return [cur];
@@ -2044,6 +2153,8 @@
       return Promise.all(pair.map(urlFor)).then(function (urls) { paint(pair, urls, token); });
     })['catch'](function (e) {
       if (token !== loadToken) return;
+      if (e && e.cancelled) return;                                                  // PDF 渲染被取消（关书 / 翻走）：不是错误
+      if (e && e.ivToastAt && Date.now() - e.ivToastAt < 3000) return;              // PDF 读取失败时已经提示过了（更具体）
       toast('图片打开失败：' + (pages[index] ? pages[index].name : '') + '（' + ((e && e.message) || e) + '）');
     });
     updateInfo();
@@ -2076,6 +2187,7 @@
     });
     pageBox.insertBefore(frag, pageBox.firstChild);
     lastPair = pair;
+    pair.forEach(thumbForViewed);
     if (token !== loadToken) return;
     updateInfo();
     reflow();
@@ -2114,6 +2226,11 @@
     var rw = baseSize();
     zoom = C.computeZoom(mode, zoom, viewport.clientWidth, viewport.clientHeight, rw.w, rw.h);
     panX = 0; panY = 0;
+    var dp0 = displayPair()[0];
+    if (dp0 && dp0.kind === 'pdf' && rw.h * zoom > viewport.clientHeight) {
+      panY = (rw.h * zoom - viewport.clientHeight) / 2;     /* PDF 按页宽读时从页面顶部开始，不是从中间 */
+      clampPan();
+    }
     applyTransform();
     if (!quiet) saveProgress();
   }
@@ -2184,7 +2301,7 @@
   /* ================= 模式开关 ================= */
   function applyModeClasses() {
     document.body.classList.toggle('book-on', !!S.book);
-    $('#btnSpread').classList.toggle('on', S.spread);
+    $('#btnSpread').classList.toggle('on', spreadOn());
     $('#btnDir').classList.toggle('on', S.direction === 'rtl');
     $('#btnDir').textContent = S.direction === 'rtl' ? '日漫' : '常规';
     $('#btnTrim').classList.toggle('on', S.trim);
@@ -2192,6 +2309,7 @@
     $('#btnCompare').classList.toggle('on', S.compare);
     $('#btnAuto').classList.toggle('on', autoOn);
     $('#btnThumbs').classList.toggle('on', S.thumbs);
+    $('#btnThumbs').title = pdfThumbsOff() ? '缩略图 (T)：云端 PDF 默认只显示页码、翻过的页才有图；关掉再打开可为整本生成（会多用流量）' : '缩略图 (T)';
     thumbsEl.classList.toggle('hidden', !S.thumbs);
     updateChrome();
   }
@@ -2204,14 +2322,15 @@
   }
   function toggleMode(key, label) {
     if (key === 'compare' && !S.compare && pages.length < 2) { toast('至少两张图片才能对比'); return; }
-    S[key] = !S[key];
+    if (key === 'spread' && pdfSpread !== null) pdfSpread = !pdfSpread;     /* PDF：只改这本书的双页，不动全局偏好 */
+    else S[key] = !S[key];
     /* 对比与双页互相独立（和桌面版一样），渲染时对比优先 */
     if (key === 'trim') pages.forEach(function (p) { p.crop = null; p._trimChecked = false; p.probeDone = false; });
     applyModeClasses(); saveUI(); saveProgress();
     rerender();
     updateInfo();
-    toast(label + (S[key] ? ' 开' : ' 关') +
-      (key === 'spread' && S.spread && !spreadFits() ? '（当前屏幕偏竖，横过来才会并排）' : ''));
+    toast(label + ((key === 'spread' ? spreadOn() : S[key]) ? ' 开' : ' 关') +
+      (key === 'spread' && spreadOn() && !spreadFits() ? '（当前屏幕偏竖，横过来才会并排）' : ''));
   }
   function toggleDirection() {
     S.direction = S.direction === 'ltr' ? 'rtl' : 'ltr';
@@ -2286,7 +2405,7 @@
 
   function showDetails() {
     var p = pages[index];
-    var kindLabel = { dir: '本地文件夹', zip: '压缩包 (zip/cbz)', files: '多选文件' }[bookKind] || bookKind;
+    var kindLabel = { dir: '本地文件夹', zip: '压缩包 (zip/cbz)', files: '多选文件', pdf: 'PDF（pdf.js 按页渲染）' }[bookKind] || bookKind;
     function on(v) { return v ? '开' : '关'; }
     var size = p && isKnown(p) ? pageSize(displayPair()) : null;
     var rows = [
@@ -2304,7 +2423,7 @@
       ['旋转', rotation + '°'],
       ['章节', chapters && chapters.length > 1
         ? (chapterIndex + 1) + ' / ' + chapters.length + ' · ' + chapters[chapterIndex].title : '单章节'],
-      ['模式', ['双页 ' + on(S.spread), '对比 ' + on(S.compare),
+      ['模式', ['双页 ' + on(spreadOn()), '对比 ' + on(S.compare),
         '方向 ' + (S.direction === 'rtl' ? '右→左' : '左→右'), '裁白边 ' + on(S.trim),
         '纸质 ' + on(S.book), '自动翻页 ' + on(autoOn) + (autoOn ? ' ' + S.autoInterval + 's' : '')].join(' · ')],
       ['进度 key', bookKey || '—'],
@@ -2341,16 +2460,30 @@
           if (!io.isIntersecting) return;
           var t = thumbNodes[+io.target.dataset.i];
           if (t && !S.thumbs && isRemotePage(t.page)) return;   /* 缩略图条收起时，远程书不生成：每张缩略图都是一整页的下载 */
+          if (t && thumbGated(t.page)) return;                  /* 云端 PDF：没开缩略图的话只留编号占位，滚动缩略图条也不去取页面 */
           if (t && !t.made) { t.made = true; enqueueThumb(t); }
         });
       }, { root: thumbsEl, rootMargin: '400px 0px' });
       thumbNodes.forEach(function (t) { thumbsIO.observe(t.el); });
     } else {
-      thumbNodes.forEach(function (t) { if (S.thumbs || !isRemotePage(t.page)) { t.made = true; enqueueThumb(t); } });
+      thumbNodes.forEach(function (t) { if ((S.thumbs || !isRemotePage(t.page)) && !thumbGated(t.page)) { t.made = true; enqueueThumb(t); } });
     }
     highlightThumb();
   }
-  function isRemotePage(p) { return !!(p && p.zf && p.zf.src instanceof C.UrlRangeSource); }
+  /** 云端 PDF 的缩略图默认不自动生成（opt-in）：扫描版 PDF 每张缩略图都要把那一页的整张图下回来（实测打开就下 ~30%、滚一遍缩略图条下整本）。
+      放行的只有两种：这一页用户真的看过（图已经在内存里，pdf.js 不会再取）、或用户为这本书明确开了缩略图（toggleThumbs）。本地 PDF 没有流量问题，照旧自动。 */
+  function thumbGated(p) { return !!(p && p.kind === 'pdf' && p.pdf && p.pdf.remote && !p.pdf.thumbsOptIn && !p._viewed); }
+  /** 当前书是「还没开缩略图」的云端 PDF */
+  function pdfThumbsOff() { var pp = pages[0]; return !!(pp && pp.kind === 'pdf' && pp.pdf && pp.pdf.remote && !pp.pdf.thumbsOptIn); }
+  /** 翻到过的页：补出它的缩略图（只有被 thumbGated 拦着的才需要，其余的由 IntersectionObserver 负责） */
+  function thumbForViewed(p) {
+    if (!p || p.kind !== 'pdf' || !p.pdf || !p.pdf.remote || p.pdf.thumbsOptIn) return;
+    p._viewed = true;
+    if (!S.thumbs) return;
+    var t = thumbNodes[pages.indexOf(p)];
+    if (t && t.page === p && !t.made) { t.made = true; enqueueThumb(t); }
+  }
+  function isRemotePage(p) { return !!(p && ((p.zf && p.zf.src instanceof C.UrlRangeSource) || (p.kind === 'pdf' && p.pdf && p.pdf.remote))); }
   var tQueue = [], tBusy = 0, T_CONC = 2, T_CONC_REMOTE = 1;   /* 远程书的缩略图 = 整页下载：同时只做 1 张，且读取排在页面读后面（低优先级） */
   /* 后端模式下缩略图交给服务端出图（不用把整本大图都拉回浏览器） */
   function thumbUrlFor(p) {
@@ -2371,7 +2504,7 @@
       if (t.done) continue;
       tBusy++;
       (function (t) {
-        Promise.resolve(thumbUrlFor(t.page) || urlFor(t.page, true)).then(function (url) {
+        (t.page.kind === 'pdf' ? t.page.pdf.thumb(t.page) : Promise.resolve(thumbUrlFor(t.page) || urlFor(t.page, true)).then(function (url) {
           return new Promise(function (res, rej) {
             var im = new Image();
             im.onload = function () {
@@ -2385,7 +2518,7 @@
             };
             im.onerror = rej; im.src = url;
           });
-        }).then(function (cv) {
+        })).then(function (cv) {
           if (t.el.parentNode === thumbsEl) { t.el.textContent = ''; t.el.appendChild(cv); }
         })['catch'](function () {})
           .then(function () { t.done = true; tBusy--; setTimeout(pumpThumbs, 0); });
@@ -2679,6 +2812,312 @@
     return openZipSource(src, opts.title || C.baseName(url.split('?')[0]), opts);
   }
 
+  /* ================= PDF（pdf.js，第一次读 PDF 时才加载）=================
+     一页 PDF = 渲染成 JPEG 的一张「图片页」（kind 'pdf'），所以适配窗口 / 缩放 / 旋转 / 双页 / 裁边 / 跳页 / 进度都沿用图片那套。
+     • 云端的 PDF 只发 HTTP Range（走 UrlRangeSource：只认 206，服务器回 200 就报错中止；账号头每次现取，401 弹账号框）。
+       不用 pdf.js 自带的网络层：它遇到 200 会悄悄把整本下完，而且 Authorization 要在 getDocument 时固定、拷进 worker。
+       这里自己实现 PDFDataRangeTransport，pdf.js 要哪一段字节才取哪一段（主线程发请求，worker 里没有账号）。
+     • 一个共用 canvas、严格串行渲染（手机内存）；离当前页近的先渲染，翻走了的页直接取消；每页渲染完立刻清空 canvas（Safari 不清会泄漏）。
+     • 渲染面积有上限（C.pdfScale / pdfAreaCap），比例只由页面尺寸决定，不随窗口变 → 缓存的图和裁边框不会失效。
+     • CSP（deploy/Caddyfile.iv.snippet）不用放宽：同源 module 脚本 / module worker / blob: 图片都在现有策略里；
+       只有 JPEG2000（JPXDecode）图片要 wasm，会是空白，其余内容正常（见 README-iv-deploy.md）。 */
+  var pdfjsP = null;       // import() 的 Promise（失败会清掉，下次再试）
+  var activePdf = null;    // 当前书的 pdf 上下文：换书 / 关书时销毁（终止 worker）
+  var pdfDefaults = null;  // 第一次打开 PDF 时临时把「双页」关掉；关书时还原（用户自己改过就不动）
+  var PDF_CHUNK = 262144;  // 区间读取块大小：太小的话手机广域网上来回太多次
+  function pdfBase() { return new URL('vendor/pdfjs/', document.baseURI).href; }
+  function loadPdfjs() {
+    if (pdfjsP) return pdfjsP;
+    var base = pdfBase();
+    pdfjsP = import(base + 'pdf.min.js').then(function (lib) {
+      if (!lib || !lib.getDocument || !lib.PDFDataRangeTransport || !lib.GlobalWorkerOptions) throw new Error('pdf.js 不完整');
+      lib.GlobalWorkerOptions.workerSrc = base + 'pdf.worker.min.js';
+      return lib;
+    }).then(null, function (e) {
+      pdfjsP = null;
+      throw new Error('PDF 阅读组件加载失败（' + ((e && e.message) || e) + '）：旧浏览器可能不支持，或网络不通');
+    });
+    return pdfjsP;
+  }
+  function pdfCancelled(msg) { var e = new Error(msg || '已取消'); e.cancelled = true; return e; }
+  function pdfErrorMessage(e) {
+    var n = e && e.name, m = (e && e.message) || String(e);
+    if (n === 'PasswordException') return '这个 PDF 有密码（已加密），暂不支持打开加密的 PDF';
+    if (n === 'InvalidPDFException') return 'PDF 文件损坏或不是有效的 PDF（' + m + '）';
+    if (n === 'MissingPDFException') return 'PDF 文件不存在或为空';
+    return m;
+  }
+
+  /** 一本 PDF 的运行时：文档、串行渲染队列、共用 canvas、致命错误（读取失败后整本停下并提示，不会卡死） */
+  function makePdfBook(lib, src, opts) {
+    var ctx = { src: src, size: src.size, remote: src instanceof C.UrlRangeSource, doc: null, task: null, transport: null, adapter: null,
+      fatal: null, closed: false, opening: true, queue: [], busy: false, canvas: null, curTask: null,
+      authGen: 0, authAsk: null, renders: 0, thumbs: 0, maxCanvas: 0,
+      areaCap: C.pdfAreaCap({ small: SMALL_SCREEN, deviceMemory: navigator.deviceMemory }) };
+    var fatalRej;
+    ctx.fatalPromise = new Promise(function (_, rej) { fatalRej = rej; });
+    ctx.fatalPromise['catch'](function () {});            // 没人在等的时候别报 unhandled rejection
+
+    function drain(err) { var q = ctx.queue; ctx.queue = []; q.forEach(function (j) { j.rej(err); }); }
+    /** 读取失败（pdf.js 的区间传输没有出错通道）：记下、让所有等待的渲染立刻失败、停掉 worker、提示一次 */
+    ctx.fail = function (err) {
+      if (ctx.fatal || ctx.closed) return;
+      ctx.fatal = err;
+      fatalRej(err);
+      drain(err);
+      try { if (ctx.curTask) ctx.curTask.cancel(); } catch (e) { /* 忽略 */ }
+      try { if (ctx.task) ctx.task.destroy(); } catch (e) { /* 忽略 */ }
+      if (!ctx.opening) {
+        if (err && typeof err === 'object') err.ivToastAt = Date.now();      // 页面层的「图片打开失败」提示别在 3 秒内盖掉这条更具体的
+        toast(err && err.status === 401 ? '没有有效的书库账号，PDF 读取已停止（重新打开这本书即可）'
+          : 'PDF 读取失败：' + ((err && err.message) || err) + '（重新打开这本书即可）', 5000);
+      }
+    };
+    ctx.retryAuth = function (gen) {
+      if (ctx.opening || !opts.askDav) return false;      // 打开阶段的 401 交给调用方统一弹框、重开
+      if (gen !== ctx.authGen) return true;               // 别的请求已经让用户重新输入过账号了：直接再读一次
+      if (!ctx.authAsk) {
+        ctx.authAsk = opts.askDav('账号或密码不对（HTTP 401），请重新输入').then(function (cfg) {
+          ctx.authAsk = null; if (cfg) ctx.authGen++; return !!cfg;
+        }, function () { ctx.authAsk = null; return false; });
+      }
+      return ctx.authAsk;
+    };
+    ctx.adapter = C.pdfRangeAdapter(src, src.size, { onFatal: ctx.fail, gen: function () { return ctx.authGen; }, retryAuth: ctx.retryAuth });
+
+    ctx.getPage = function (n) {
+      if (ctx.fatal) return Promise.reject(ctx.fatal);
+      if (ctx.closed) return Promise.reject(pdfCancelled('已关闭'));
+      return Promise.race([ctx.doc.getPage(n), ctx.fatalPromise]);
+    };
+    /** scale=1 的页面尺寸（已含 /Rotate）→ 渲染比例和像素尺寸；探测和渲染共用，所以两边一定一致 */
+    ctx.geom = function (pg) {
+      var v = pg.getViewport({ scale: 1 });
+      var s = C.pdfScale(v.width, v.height, { areaCap: ctx.areaCap, maxSide: MAX_DIM });
+      var z = C.pdfPixelSize(v.width, v.height, s);
+      return { s: s, w: z.w, h: z.h, pw: v.width, ph: v.height };
+    };
+    /** 只量尺寸、不渲染（双页判断 / 版面先用得上） */
+    ctx.probe = function (p) {
+      return ctx.getPage(p.pno).then(function (pg) {
+        var g = ctx.geom(pg);
+        p._rs = g.s; p.bmpW = g.w; p.bmpH = g.h;
+        return p;
+      });
+    };
+
+    /* ---- 渲染队列：一次一个；页面任务按离当前页的远近，缩略图任务排最后 ---- */
+    function curPno() { var c = pages[index]; return c && c.pdf === ctx ? c.pno : 1; }
+    function pick() {
+      var cur = curPno(), best = -1, bk = Infinity;
+      for (var i = ctx.queue.length - 1; i >= 0; i--) {              // 翻走了（离开保留窗）的页面任务不用做了
+        var j = ctx.queue[i];
+        if (j.type === 'page' && keepIds && !keepIds[j.p.id]) { ctx.queue.splice(i, 1); j.rej(pdfCancelled('页已离开')); }
+      }
+      for (i = 0; i < ctx.queue.length; i++) {
+        var q = ctx.queue[i], k = Math.abs(q.p.pno - cur) + (q.type === 'thumb' ? 1e6 : 0);
+        if (k < bk) { bk = k; best = i; }
+      }
+      return best < 0 ? null : ctx.queue.splice(best, 1)[0];
+    }
+    function pump() {
+      if (ctx.busy || ctx.closed) return;
+      var job = pick();
+      if (!job) return;
+      ctx.busy = true;
+      var run = job.type === 'thumb' ? renderThumb(job.p) : renderPage(job.p);
+      run.then(job.res, job.rej).then(function () { ctx.busy = false; pump(); });
+    }
+    function enqueue(type, p) {
+      return new Promise(function (res, rej) {
+        if (ctx.fatal) return rej(ctx.fatal);
+        if (ctx.closed) return rej(pdfCancelled('已关闭'));
+        ctx.queue.push({ type: type, p: p, res: res, rej: rej });
+        pump();
+      });
+    }
+    ctx.render = function (p) { return enqueue('page', p); };
+    ctx.thumb = function (p) { return enqueue('thumb', p); };
+
+    function toJpeg(cv) {
+      return new Promise(function (res, rej) {
+        try {
+          cv.toBlob(function (b) { b ? res(b) : rej(new Error('浏览器没能把这一页转成图片（内存不足？）')); }, 'image/jpeg', 0.92);
+        } catch (e) { rej(e); }
+      });
+    }
+    function afterPage(pg) {
+      try { pg.cleanup(); } catch (e) { /* 忽略 */ }
+      if (++ctx.renders % 20 === 0) {
+        /* doc.cleanup() 返回 Promise：文档已销毁（翻走 / 关书）时会 reject，不接住就是 unhandledrejection */
+        try { Promise.resolve(ctx.doc.cleanup()).then(null, function () { /* 忽略 */ }); } catch (e) { /* 忽略 */ }
+      }
+    }
+    function renderPage(p) {
+      var pg = null;
+      return ctx.getPage(p.pno).then(function (g) {
+        pg = g;
+        var geom = ctx.geom(pg);
+        p._rs = geom.s;
+        var vp = pg.getViewport({ scale: geom.s });
+        var cv = ctx.canvas || (ctx.canvas = document.createElement('canvas'));
+        cv.width = geom.w; cv.height = geom.h;
+        ctx.maxCanvas = Math.max(ctx.maxCanvas, geom.w * geom.h);
+        var g2 = cv.getContext('2d');
+        if (!g2) throw new Error('浏览器给不出这么大的画布（内存不足）：' + geom.w + '×' + geom.h);
+        g2.fillStyle = '#fff'; g2.fillRect(0, 0, geom.w, geom.h);       // pdf.js 在透明底上画：先铺白
+        var rt = pg.render({ canvasContext: g2, viewport: vp });
+        ctx.curTask = rt;
+        return Promise.race([rt.promise, ctx.fatalPromise]).then(function () {
+          ctx.curTask = null;
+          return toJpeg(cv);
+        }, function (e) { ctx.curTask = null; try { rt.cancel(); } catch (x) { /* 忽略 */ } throw e; });
+      }).then(function (blob) {
+        if (ctx.canvas) ctx.canvas.width = ctx.canvas.height = 0;          // 立刻释放 canvas 后备内存
+        if (pg) afterPage(pg);
+        return blob;
+      }, function (e) {
+        if (ctx.canvas) ctx.canvas.width = ctx.canvas.height = 0;
+        if (pg) afterPage(pg);
+        throw e;
+      });
+    }
+    /** 缩略图：按小尺寸单独渲染成一张 canvas（只有展开缩略图条、且该缩略图滚到可见时才会走到这里） */
+    function renderThumb(p) {
+      var pg = null;
+      return ctx.getPage(p.pno).then(function (g) {
+        pg = g;
+        var v = pg.getViewport({ scale: 1 }), sc = (THUMB_H * 2) / Math.max(1, v.height);
+        var vp = pg.getViewport({ scale: sc });
+        var big = document.createElement('canvas');
+        big.width = Math.max(1, Math.floor(vp.width)); big.height = Math.max(1, Math.floor(vp.height));
+        var g2 = big.getContext('2d');
+        g2.fillStyle = '#fff'; g2.fillRect(0, 0, big.width, big.height);
+        var rt = pg.render({ canvasContext: g2, viewport: vp });
+        ctx.curTask = rt;
+        return Promise.race([rt.promise, ctx.fatalPromise]).then(function () {
+          ctx.curTask = null;
+          var cv = document.createElement('canvas');
+          cv.height = THUMB_H; cv.width = Math.max(1, Math.round(THUMB_H * big.width / big.height));
+          var g3 = cv.getContext('2d');
+          g3.imageSmoothingQuality = 'medium';
+          g3.drawImage(big, 0, 0, cv.width, cv.height);
+          big.width = big.height = 0;
+          ctx.thumbs++;
+          return cv;
+        }, function (e) { ctx.curTask = null; big.width = big.height = 0; try { rt.cancel(); } catch (x) { /* 忽略 */ } throw e; });
+      }).then(function (cv) { if (pg) afterPage(pg); return cv; }, function (e) { if (pg) afterPage(pg); throw e; });
+    }
+
+    ctx.destroy = function () {
+      if (ctx.closed) return;
+      ctx.closed = true;
+      var e = pdfCancelled('已关闭');
+      fatalRej(e); drain(e);
+      try { if (ctx.curTask) ctx.curTask.cancel(); } catch (x) { /* 忽略 */ }
+      try { if (ctx.task) ctx.task.destroy(); } catch (x) { /* 忽略 */ }     // 会终止它的 worker
+      if (ctx.canvas) { ctx.canvas.width = ctx.canvas.height = 0; ctx.canvas = null; }
+    };
+
+    /** 打开文档：先取开头一块（线性化的 PDF 里就有第一页），之后 pdf.js 要什么字节区间才取什么（disableAutoFetch：绝不后台下完整本） */
+    ctx.open = function () {
+      var size = src.size;
+      return src.read(0, Math.min(size, PDF_CHUNK), false).then(function (head) {
+        var Transport = (function (Base) {
+          return class IvRangeTransport extends Base {
+            requestDataRange(begin, end) {
+              var self = this;
+              ctx.adapter.requestRange(begin, end).then(function (u8) {
+                if (ctx.closed) return;
+                try { self.onDataRange(begin, u8); } catch (e) { /* 对应的读取已被 pdf.js 放弃（翻走 / 销毁） */ }
+              }, function () { /* 已记入 ctx.fatal，由 ctx.fail 统一处理 */ });
+            }
+            abort() { /* 取消由 destroy 处理 */ }
+          };
+        })(lib.PDFDataRangeTransport);
+        ctx.transport = new Transport(size, new Uint8Array(head));
+        var base = pdfBase();
+        ctx.task = lib.getDocument({
+          range: ctx.transport, length: size, rangeChunkSize: PDF_CHUNK,
+          disableAutoFetch: true, disableStream: true, disableRange: false,
+          isEvalSupported: false, enableXfa: false, verbosity: 0,
+          cMapUrl: base + 'cmaps/', cMapPacked: true, standardFontDataUrl: base + 'standard_fonts/'
+        });
+        return Promise.race([ctx.task.promise, ctx.fatalPromise]);
+      }).then(function (doc) { ctx.doc = doc; ctx.opening = false; return ctx; },
+              function (e) { ctx.opening = false; ctx.destroy(); throw e; });
+    };
+    return ctx;
+  }
+
+  /** src = {size, read(offset, len)}（本地 File 和云端 UrlRangeSource 共用）。opts 同 openZipSource，另有 askDav（翻页中途 401 时用） */
+  function openPdfSource(src, name, opts) {
+    opts = opts || {};
+    var own = !opts.prog, pg = opts.prog || openProgBegin(name);   // 云端打开时由 openDavBook 统一管（和 zip 一样）；本地文件自己管
+    pg.set('读取 PDF…', null);
+    toast('正在读取 PDF…');
+    var libP = loadPdfjs();
+    libP['catch'](function () { /* 下面会处理；这里只是别报 unhandled */ });
+    var ctx = null;
+    return Promise.resolve(src.init ? src.init() : src).then(function () {
+      if (!(src.size > 0)) throw new Error('这个 PDF 是空文件（0 字节）');
+      return libP;
+    }).then(function (lib) {
+      if (opts.stale && opts.stale()) return false;
+      ctx = makePdfBook(lib, src, opts);
+      return ctx.open().then(function () {
+        if (opts.stale && opts.stale()) { ctx.destroy(); return false; }
+        var n = ctx.doc.numPages, w = Math.max(4, String(n).length), base = String(name).replace(/\.pdf$/i, '') || String(name);
+        if (!(n > 0)) { ctx.destroy(); if (opts.onFail) opts.onFail('PDF 里没有页面（0 页）'); toast('PDF 里没有页面（0 页），没法显示', 5000); return false; }       // 别落到 openItems 的「没有支持的图片格式」提示
+        var items = [];
+        for (var i = 1; i <= n; i++) {
+          items.push({ kind: 'pdf', isImage: true, name: base + ' · 第 ' + i + ' 页', size: 0, pdf: ctx, pno: i,
+            path: base + '#' + ('0000000' + i).slice(-w) });     // 补零：自然排序 = 页序，也不会被当成「目录」拆成多章
+        }
+        /* 阅读方向：PDF 自己声明了从右到左（ViewerPreferences/Direction）就当日漫；这本书保存过方向则以保存的为准（openItems 里判断） */
+        var dirP = ctx.doc.getViewerPreferences ? Promise.resolve(ctx.doc.getViewerPreferences()).then(function (v) {
+          return v && v.Direction === 'R2L' ? 'rtl' : null;
+        }, function () { return null; }) : Promise.resolve(null);
+        return dirP.then(function (d) {
+          if (opts.stale && opts.stale()) { ctx.destroy(); return false; }
+          var o = { kind: 'pdf', title: String(name), dir: opts.dir || d || null, keepRoot: true };
+          if (opts.key) o.key = opts.key;
+          openItems(items, o);                 // 里面的 closeBook 会销毁上一本的 pdf 上下文
+          activePdf = ctx;
+          if (src.size > 300 * 1048576 && SMALL_SCREEN) toast('这个 PDF 很大（' + fmtSize(src.size) + '），手机内存可能不够，卡顿或闪退请改用电脑', 6000);
+          return true;
+        });
+      });
+    })['catch'](function (e) {
+      if (ctx) ctx.destroy();
+      if (opts.rethrow && e && e.status) throw e;          // 401 / 404 / 服务器忽略 Range：调用方自己处理（重输账号 / 提示）
+      var why = pdfErrorMessage(e);
+      if (opts.onFail) opts.onFail(why);                   // 原因交给调用方（云端换书失败时 volStep 要把它带进「打不开」的提示）
+      toast('PDF 打开失败：' + why, 5000);
+      return false;
+    }).then(function (r) { if (own) pg.end(); return r; }, function (e) { if (own) pg.end(); throw e; });
+  }
+
+  function openPdfFile(file) {
+    if (!/^https?:$/.test(location.protocol)) { toast('读 PDF 要通过网址（http / https）打开本页，不能直接双击本地文件'); return Promise.resolve(false); }
+    return openPdfSource({
+      size: file.size,
+      read: function (offset, len) {
+        return file.slice(offset, offset + len).arrayBuffer().then(function (ab) { return new Uint8Array(ab); });
+      }
+    }, file.name);
+  }
+  /** 云端 PDF（同源 WebDAV）：只发 Range 请求，翻到哪页才取哪一段 */
+  function openPdfUrl(url, opts) {
+    opts = opts || {};
+    var src = new C.UrlRangeSource(url, { authHeader: opts.authHeader, fetch: opts.fetch });
+    return openPdfSource(src, opts.title || C.baseName(url.split('?')[0]), opts);
+  }
+  /** 书架 / #open= 的钩子（openDavBook 在 .pdf 上调用）：进度条、续读、401 重输账号都由 openDavBook 统一处理（和 zip 一样），这里只管开书 */
+  function openDavPdf(p, c) {
+    return openPdfUrl(c.url, { title: p.title, key: c.key, dir: p.dir, rethrow: true, authHeader: c.authHeader, stale: c.stale, askDav: c.askDav, prog: c.prog, onFail: c.onFail });
+  }
+
   /** 读 META-INF/container.xml -> OPF -> spine 各页 xhtml，返回按页序排好的图片条目；
       条目的 path 改成 0001.jpg 这类顺序名（spine 顺序 = 自然排序，且不会被图片目录拆成多章）。 */
   function epubReorder(zf, items, onProgress) {
@@ -2962,6 +3401,12 @@
         openViaBackend(served[0].file);
         return;
       }
+      var pdfs = entries.filter(function (e) { return e.file && /\.pdf$/i.test(e.name); });
+      if (pdfs.length && pdfs.length === entries.length && !BE.on) {      // 只拖了 PDF：浏览器里直接读（一次一本）
+        if (pdfs.length > 1) toast('PDF 一次只开一个，已打开第一个');
+        openPdfFile(pdfs[0].file);
+        return;
+      }
       var zips = entries.filter(function (e) { return C.ARCHIVE_EXTS.test(e.name) && e.file; });
       var imgs = entries.filter(function (e) { return !C.ARCHIVE_EXTS.test(e.name); });
       if (zips.length && !imgs.length) {
@@ -3017,6 +3462,10 @@
   }
   function toggleThumbs() {
     S.thumbs = !S.thumbs;
+    if (S.thumbs && pdfThumbsOff()) {
+      pages[0].pdf.thumbsOptIn = true;            /* 用户明确要缩略图：这本云端 PDF 才开始为每页生成（会多下载一些数据） */
+      toast('已开启这本 PDF 的缩略图（云端 PDF 要读每一页，会多用一些流量）', 4000);
+    }
     applyModeClasses(); saveUI(); updateChrome(); reflow();
     if (S.thumbs) { buildThumbs(); }
   }
@@ -3102,6 +3551,11 @@
     e.target.value = '';
     if (!f) return;
     if (canServeFile(f.name)) { openViaBackend(f); return; }
+    if (/\.pdf$/i.test(f.name)) {
+      if (BE.on) toast('后端没装 PyMuPDF，读不了 PDF（pip install pymupdf）');
+      else openPdfFile(f);
+      return;
+    }
     if (/\.(rar|cbr)$/i.test(f.name)) {
       toast(BE.on ? '后端没装 rarfile 或 7-Zip/WinRAR，读不了 rar/cbr'
                   : 'rar/cbr 需要本地后端：先跑 python web_backend.py（或双击 启动网页版.bat）');
@@ -3113,7 +3567,7 @@
     updateChrome(); reflow();
     /* 旋转手机/平板后单双页门槛可能翻转，需要重新配对 */
     var f = spreadFits();
-    if (f !== lastSpreadFit) { lastSpreadFit = f; if (pages.length && S.spread && !S.compare) showPage(index); }
+    if (f !== lastSpreadFit) { lastSpreadFit = f; if (pages.length && spreadOn() && !S.compare) showPage(index); }
   });
   document.addEventListener('fullscreenchange', function () {
     // Esc 退出全屏时浏览器不会走我们的按钮，这里补上菜单/布局
@@ -3335,7 +3789,7 @@
   var launchSeq = 0;      // 每次有效的启动链接 +1：慢的旧链接打开完成时发现自己过期了，就丢掉结果（最新的链接说了算）
   /** 从 WebDAV 书库打开 p.rel；401 -> 弹账号框重输后再试。token = 发起时的 launchSeq，不等于当前值就是过期的 */
   var davOpenErr = '';             // 最近一次 openDavBook 失败的原因（给「换书失败」的提示用）
-  var openDavPdfHook = null;       // pdf 阅读器挂在这里：function (p, ctx) -> Promise<boolean>；没挂时点 pdf 只提示「暂不支持 PDF」
+  var openDavPdfHook = openDavPdf;  // pdf 阅读器挂在这里：function (p, ctx) -> Promise<boolean>；设成 null 时点 pdf 只提示「暂不支持 PDF」（测试钩子 setDavPdfHook）
   function openDavBook(p, token) {
     function stale() { return token !== launchSeq; }
     /* 按扩展名分流：rar / cbr 浏览器没法随机读取（发布时转成 cbz）；pdf 走钩子；其余 zip 系走 Range 源 */
@@ -3344,16 +3798,7 @@
       toast('这是 ' + kind + '：浏览器不能随机读取，请先转成 cbz 再上传', 5000);
       return Promise.resolve(false);
     }
-    if (kind === 'pdf') {
-      if (!openDavPdfHook) { toast('暂不支持 PDF'); return Promise.resolve(false); }
-      return davEnsure().then(function (cfg) {
-        return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
-      }).then(function (cfg) {
-        if (stale() || !cfg) return false;
-        return openDavPdfHook(p, { url: C.davBookUrl(cfg.base, cfg.library, p.rel), key: 'dav:' + p.rel, stale: stale,
-          authHeader: davAuthHeader, askDav: askDav });
-      });
-    }
+    if (kind === 'pdf' && !openDavPdfHook) { toast('暂不支持 PDF'); return Promise.resolve(false); }
     return davEnsure().then(function (cfg) {
       return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
     }).then(function (cfg) {
@@ -3366,7 +3811,10 @@
       return pullProgress(key).then(function (remote) {
         if (remote && C.remoteIsNewer(remote, books[key])) { applyRemoteProgress(key, remote); from = remote; }
         if (stale()) return false;
-        return openZipUrl(C.davBookUrl(cfg.base, cfg.library, p.rel), {
+        var url = C.davBookUrl(cfg.base, cfg.library, p.rel);
+        if (kind === 'pdf') return openDavPdfHook(p, { url: url, key: key, stale: stale, authHeader: davAuthHeader, askDav: askDav, prog: pg,
+          onFail: function (why) { davOpenErr = why; } });     // PDF 的失败自己 toast 后返回 false（不抛）：原因记下来，volStep 的「打不开」提示要带上
+        return openZipUrl(url, {
           title: p.title, key: key, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale, prog: pg,
           /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
           onAuthFail: function () { if (!opening && !stale()) askDav('账号或密码不对（HTTP 401），请重新输入'); }
@@ -3580,10 +4028,10 @@
       html += '<button class="shelf-row" data-book="' + esc(rel) + '"><span class="ico">📖</span><span class="main"><span class="nm">' + esc(b.name) + '</span>' +
         (r ? progBar(r) : '') + '</span><span class="meta">' + meta + '</span></button>';
     });
-    if (!html) shelfMsg(q ? '没有匹配「' + esc(q) + '」的项目。' : '这个文件夹里没有 epub / cbz / zip，也没有子文件夹。');
+    if (!html) shelfMsg(q ? '没有匹配「' + esc(q) + '」的项目。' : '这个文件夹里没有 ' + C.LIB_OPEN_KINDS.join(' / ') + '，也没有子文件夹。');
     else $('#shelfList').innerHTML = html;
     $('#shelfInfo').textContent = shelfData.dirs.length + ' 个文件夹 · ' + shelfData.books.length + ' 本书' +
-      (shelfData.other ? ' · 另有 ' + shelfData.other + ' 个暂不支持的文件（rar / pdf 等）' : '');
+      (shelfData.other ? ' · 另有 ' + shelfData.other + ' 个暂不支持的文件（rar / cbr 等）' : '');
   }
   function openShelfBook(rel) {
     var bad = C.relError(rel, true);
@@ -3831,8 +4279,12 @@
     syncPush: syncPush, pullProgress: pullProgress, syncState: function () { return { off: syncOff, sent: syncSent }; },
     applyLaunchHash: applyLaunchHash, askDav: askDav, davEnsure: davEnsure, davStore: davStore, davForget: davForget,
     volStep: volStep, openDavBook: openDavBook,
-    setDavPdfHook: function (fn) { openDavPdfHook = typeof fn === 'function' ? fn : null; volRefresh(); },
+    setDavPdfHook: function (fn) { openDavPdfHook = typeof fn === 'function' ? fn : (fn === 'default' ? openDavPdf : null); volRefresh(); },
     volCache: function () { return Object.keys(dirCache); },
+    openPdfFile: openPdfFile, openPdfSource: openPdfSource, openPdfUrl: openPdfUrl,
+    pdfCtx: function () { return activePdf; },      /* 测试钩子：给 e2e 换掉 doc.cleanup 等 */
+    pdfInfo: function () { var c = activePdf; return c ? { pages: c.doc.numPages, renders: c.renders, thumbs: c.thumbs, thumbsOptIn: !!c.thumbsOptIn, queue: c.queue.length, busy: c.busy, fatal: c.fatal ? (c.fatal.message || String(c.fatal)) : null,
+      areaCap: c.areaCap, maxCanvas: c.maxCanvas, canvasPx: c.canvas ? c.canvas.width * c.canvas.height : 0, reads: c.adapter.reads, bytes: c.adapter.bytes, authGen: c.authGen } : null; },
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
       dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },
     openServerPath: openServerPath, openViaBackend: openViaBackend, openProg: openProgBegin,
@@ -3843,7 +4295,7 @@
         pages: pages.length, total: allPages ? allPages.length : pages.length,
         index: index, chapterIndex: chapterIndex, chapters: chapters ? chapters.map(function (c) { return { title: c.title, n: c.items.length }; }) : null,
         pair: lastPair.map(function (p) { return p.name; }),
-        fitMode: fitMode, zoom: zoom, rotation: rotation, S: S, autoOn: autoOn,
+        fitMode: fitMode, zoom: zoom, rotation: rotation, S: S, spread: spreadOn(), autoOn: autoOn,
         bookKey: bookKey, bookTitle: bookTitle, skipped: skipped.slice(),
         panX: panX, panY: panY,
         box: displayPair().map(function (p) { var b = boxOf(p); return { w: b.w, h: b.h, x: b.x, y: b.y }; }),

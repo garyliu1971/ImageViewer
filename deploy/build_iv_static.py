@@ -10,6 +10,7 @@
     manifest.webmanifest
     sw.js                 <- 把 __BUILD__ 换成内容哈希（每次发布缓存名都会变）
     icons/icon-192.png icon-512.png maskable-512.png
+    vendor/pdfjs/...      <- 仓库里 vendor/pdfjs/ 的原样拷贝（pdf.js + cmaps + standard_fonts + 许可证；不含 README / SHA256SUMS）
 """
 import argparse
 import hashlib
@@ -27,6 +28,25 @@ FILES = [  # (源文件, 目标相对路径)
     ("icons/icon-512.png", "icons/icon-512.png"),
     ("icons/maskable-512.png", "icons/maskable-512.png"),
 ]
+VENDOR_SRC = "vendor/pdfjs"                      # 仓库内的第三方库目录；整棵树原样发布到 /iv/vendor/pdfjs/
+VENDOR_SKIP = {"README.md", "SHA256SUMS"}        # 只给人看 / 校验用，不发布
+
+
+def vendor_files():
+    """vendor/pdfjs 下要发布的文件（相对仓库根的 posix 路径，排好序）。目录不存在就是空：build 会报错，不悄悄少发。"""
+    base = os.path.join(ROOT, *VENDOR_SRC.split("/"))
+    out = []
+    for dp, _dn, fns in os.walk(base):
+        for fn in fns:
+            rel = os.path.relpath(os.path.join(dp, fn), base).replace(os.sep, "/")
+            if rel not in VENDOR_SKIP:
+                out.append(VENDOR_SRC + "/" + rel)
+    return sorted(out)
+
+
+def is_binary(dst):
+    """原样字节发布的：图标，以及整个 vendor/（压缩过的 js、字体、cmap 都不能动一个字节，哪怕里面碰巧有换行符）。"""
+    return dst.endswith(".png") or dst.startswith("vendor/")
 
 
 def read(rel):
@@ -63,10 +83,14 @@ def main(argv=None):
         print("拒绝：" + why, file=sys.stderr)
         return 2
 
+    vfiles = vendor_files()
+    if not any(f.endswith("/pdf.min.js") for f in vfiles) or not any(f.endswith("/pdf.worker.min.js") for f in vfiles):
+        print("缺少 %s/pdf.min.js 或 pdf.worker.min.js：先把 pdf.js 放进仓库（见 vendor/pdfjs/README.md）" % VENDOR_SRC, file=sys.stderr)
+        return 2
     blobs = {}
-    for src, dst in FILES:
+    for src, dst in FILES + [(f, f) for f in vfiles]:
         data = read(src)
-        blobs[dst] = data if dst.endswith(".png") else normalize_eol(data)   # 文本统一 LF（图标是二进制，原样）：CRLF / LF 检出出同样的包、同样的 build 号
+        blobs[dst] = data if is_binary(dst) else normalize_eol(data)   # 文本统一 LF（图标 / vendor 是二进制，原样）：CRLF / LF 检出出同样的包、同样的 build 号
     h = hashlib.sha256()
     for dst in sorted(blobs):
         h.update(dst.encode("utf-8")); h.update(blobs[dst])
@@ -89,7 +113,10 @@ def main(argv=None):
             f.write(data)
     print("build", build, "->", out)
     for dst in sorted(blobs):
-        print("  %-26s %9d bytes" % (dst, len(blobs[dst])))
+        if not dst.startswith("vendor/") or dst.endswith(".min.js"):     # vendor 里一百多个 cmap / 字体不逐个列
+            print("  %-26s %9d bytes" % (dst, len(blobs[dst])))
+    nv = [d for d in blobs if d.startswith("vendor/")]
+    print("  vendor/pdfjs: %d files, %d bytes" % (len(nv), sum(len(blobs[d]) for d in nv)))
 
     if not a.no_tar:
         tgz = out.rstrip("/\\") + ".tgz"

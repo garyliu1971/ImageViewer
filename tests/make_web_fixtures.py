@@ -87,6 +87,82 @@ def mini_pdf(pages):
     return out.getvalue()
 
 
+def rich_pdf(pages, scan_kb=140, outline=True, rtl=False):
+    """比 mini_pdf 丰富的测试 PDF（stdlib，确定性）：非嵌入标准字体文字（Helvetica / ZapfDingbats）、RGB 图像、
+    非嵌入 CJK 字体（STSong-Light + UniGB-UCS2-H，逼 pdf.js 去取 cmap）、/Rotate、不同纸张、大纲、可选从右到左。
+    pages = [{"kind": "text"|"image"|"cjk"|"scan", "w": 612, "h": 792, "rot": 0}, ...]；
+    scan 页自带一张 scan_kb KB 的整页灰度图（像扫描书：只有读到这一页才需要它那段字节），用来造「大 PDF」测懒读。
+    classic xref 表在文件末尾（不是线性化 / object stream）。tests/web_e2e.mjs 里有等价的 Node 版（在内存里造 20MB 的，不入库）。"""
+    n = len(pages)
+    first = 10
+    scan_id = {}
+    nxt = first + 2 * n
+    for i, pg in enumerate(pages):
+        if pg.get("kind") == "scan":
+            scan_id[i] = nxt
+            nxt += 1
+    out_ids = list(range(nxt, nxt + (3 if outline else 0)))
+    objs = {}   # id -> bytes（body，不含 "N 0 obj"）
+
+    def stream(d, data):
+        return ("<< %s /Length %d >>\nstream\n" % (d, len(data))).encode("latin-1") + data + b"\nendstream"
+
+    objs[1] = ("<< /Type /Catalog /Pages 2 0 R /PageLayout /SinglePage%s%s >>" % (
+        " /ViewerPreferences << /Direction /R2L >>" if rtl else "",
+        " /Outlines %d 0 R" % out_ids[0] if outline else "")).encode("latin-1")
+    objs[2] = ("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % (first + 2 * i) for i in range(n)), n)).encode("latin-1")
+    objs[3] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+    objs[4] = b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light-UniGB-UCS2-H /Encoding /UniGB-UCS2-H /DescendantFonts [5 0 R] >>"
+    objs[5] = (b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> "
+               b"/FontDescriptor 6 0 R /DW 1000 >>")
+    objs[6] = (b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 /FontBBox [-25 -254 1000 880] /ItalicAngle 0 "
+               b"/Ascent 880 /Descent -120 /CapHeight 880 /StemV 93 >>")
+    rgb = bytearray()
+    for y in range(64):
+        for x in range(64):
+            rgb += bytes((x * 4, 40, y * 4))
+    objs[7] = stream("/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB /BitsPerComponent 8", bytes(rgb))
+    objs[8] = b"<< /Font << /F1 3 0 R /F2 4 0 R /F3 9 0 R >> /XObject << /Im1 7 0 R >> >>"
+    objs[9] = b"<< /Type /Font /Subtype /Type1 /BaseFont /ZapfDingbats >>"
+    for i, pg in enumerate(pages):
+        w, h, k = pg.get("w", 612), pg.get("h", 792), pg.get("kind", "text")
+        res = "/Resources 8 0 R"
+        if k == "image":
+            c = "q 200 0 0 200 72 %d cm /Im1 Do Q BT /F1 18 Tf 72 %d Td (image page %d) Tj ET" % (h - 320, h - 340, i + 1)
+        elif k == "cjk":
+            c = "BT /F2 28 Tf 72 %d Td <4E2D65876D4B8BD5> Tj ET 0 0 0 rg 72 %d 200 40 re f" % (h - 100, h - 200)
+        elif k == "scan":
+            c = "q %d 0 0 %d 0 0 cm /Im1 Do Q BT /F1 20 Tf 72 %d Td (Scan page %d) Tj ET" % (w, h, h // 2, i + 1)
+            res = "/Resources << /Font << /F1 3 0 R >> /XObject << /Im1 %d 0 R >> >>" % scan_id[i]
+            raw = bytearray(b"\xc0" * (scan_kb * 1024))
+            raw[:1024 * 20] = b"\x20" * (1024 * 20)
+            objs[scan_id[i]] = stream("/Type /XObject /Subtype /Image /Width 1024 /Height %d /ColorSpace /DeviceGray /BitsPerComponent 8" % scan_kb, bytes(raw))
+        else:
+            c = ("BT /F1 36 Tf 72 %d Td (Hello PDF page %d) Tj ET BT /F3 24 Tf 72 %d Td (abc) Tj ET 0 0 0 rg 72 %d 200 40 re f"
+                 % (h - 100, i + 1, h - 140, h - 220))
+        objs[first + 2 * i] = ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %d %d] %s%s /Contents %d 0 R >>" % (
+            w, h, "/Rotate %d " % pg["rot"] if pg.get("rot") else "", res, first + 2 * i + 1)).encode("latin-1")
+        objs[first + 2 * i + 1] = stream("", c.encode("latin-1"))
+    if outline:
+        a, b, c0 = out_ids
+        objs[a] = ("<< /Type /Outlines /First %d 0 R /Last %d 0 R /Count 2 >>" % (b, c0)).encode("latin-1")
+        objs[b] = ("<< /Title (Chapter 1) /Parent %d 0 R /Next %d 0 R /Dest [%d 0 R /Fit] >>" % (a, c0, first)).encode("latin-1")
+        objs[c0] = ("<< /Title (Chapter 2) /Parent %d 0 R /Prev %d 0 R /Dest [%d 0 R /Fit] >>" % (a, b, first + 2 * min(2, n - 1))).encode("latin-1")
+    maxid = max(objs)
+    out = io.BytesIO()
+    out.write(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    offs = {}
+    for oid in sorted(objs):                     # 页面对象在前、各页的扫描图在后：紧凑布局
+        offs[oid] = out.tell()
+        out.write(("%d 0 obj\n" % oid).encode("ascii") + objs[oid] + b"\nendobj\n")
+    xref = out.tell()
+    out.write(("xref\n0 %d\n0000000000 65535 f \n" % (maxid + 1)).encode("ascii"))
+    for oid in range(1, maxid + 1):
+        out.write(("%010d 00000 n \n" % offs[oid]).encode("ascii"))
+    out.write(("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (maxid + 1, xref)).encode("ascii"))
+    return out.getvalue()
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
 
@@ -196,6 +272,14 @@ def main():
     with open(ppdf, "wb") as fh:
         fh.write(mini_pdf([(600, 800), (700, 500), (400, 900)]))
     print("wrote", ppdf, os.path.getsize(ppdf), "bytes")
+
+    # 6) 丰富的小 PDF（8 页：标准字体文字 / RGB 图 / 非嵌入中文字体 / 旋转 / 横版 / 小开本 / 竖长 / 扫描图）+ 大纲 —— /iv/ 的 pdf.js 阅读器用
+    prich = os.path.join(OUT, "sample_rich.pdf")
+    with open(prich, "wb") as fh:
+        fh.write(rich_pdf([{"kind": "text"}, {"kind": "image"}, {"kind": "cjk"}, {"kind": "text", "rot": 90},
+                           {"kind": "text", "w": 792, "h": 612}, {"kind": "text", "w": 300, "h": 400},
+                           {"kind": "text", "w": 400, "h": 900}, {"kind": "scan"}], scan_kb=16))
+    print("wrote", prich, os.path.getsize(prich), "bytes")
 
 
 if __name__ == "__main__":
