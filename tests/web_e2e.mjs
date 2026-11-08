@@ -1518,15 +1518,21 @@ function check(name, ok, detail) {
         for (const k of Object.keys(iv.prog)) delete iv.prog[k];
         iv.prog['/users/gary/iv-progress/' + h1 + '.json'] = JSON.stringify({ v: 1, key: HOMEKEY, at: Date.now() - 3600e3 - 5000, index: 3, chapter: 0, total: 5,
           direction: 'rtl', title: 'sample_comic.epub', dev: '手机/平板' });
+        const hg = await cdp.eval(`return IVCore.hash53('dav:gone.epub');`);
+        iv.prog['/users/gary/iv-progress/' + hg + '.json'] = JSON.stringify({ v: 1, key: 'dav:gone.epub', at: Date.now() - 7200e3, index: 1, chapter: 0, total: 9, direction: 'ltr', title: 'gone.epub', dev: '电脑' });   // 书已被删
         iv.prog['/users/gary/iv-progress/ffffffffffffff.json'] = 'not json';          // 坏文件：不能让「继续阅读」崩
         await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress', syncUser: 'writer', syncPass: 'w pass' }`));
         await cdp.eval(`sessionStorage.setItem('iv.e2e.home', '1'); localStorage.removeItem('iv.home.shelf.v1'); localStorage.removeItem('iv.books.v1'); localStorage.removeItem('iv.shelf.dir.v1'); return 1;`);
         await fresh(IVURL);                                    // 新设备：本地没有任何进度
         const auto = await waitFor(`${shelfOpenExpr} && document.querySelector('#shelfRecent .shelf-row')`, 10000);
         check('启动页自动显示书架（账号已存、无启动链接）', !!auto);
-        const rec = await cdp.eval(`const r = document.querySelector('#shelfRecent .shelf-row'); return r ? { t: r.querySelector('.nm').textContent, meta: r.querySelector('.meta').innerHTML, bar: !!r.querySelector('.shelf-bar i'), n: document.querySelectorAll('#shelfRecent .shelf-row').length, head: document.querySelector('#shelfRecent .shelf-h').textContent } : null;`);
-        check('「继续阅读」来自云端进度：书名 / 第 4 / 5 页 / 1 小时前 / 进度条；坏文件被忽略', rec && rec.t === 'sample_comic.epub' && /第 <b>4<\/b> \/ 5 页/.test(rec.meta) && /1 小时前/.test(rec.meta) && rec.bar && rec.n === 1 && rec.head === '继续阅读', rec);
-        await cdp.eval(`document.querySelector('#shelfRecent .shelf-row').click(); return 1;`);
+        const rec = await cdp.eval(`const r = document.querySelector('#shelfRecent .shelf-row[data-book="小说/sample_comic.epub"]'); return r ? { t: r.querySelector('.nm').textContent, meta: r.querySelector('.meta').innerHTML, bar: !!r.querySelector('.shelf-bar i'), n: document.querySelectorAll('#shelfRecent .shelf-row').length, head: document.querySelector('#shelfRecent .shelf-h').textContent } : null;`);
+        check('「继续阅读」来自云端进度：书名 / 第 4 / 5 页 / 1 小时前 / 进度条；坏文件被忽略', rec && rec.t === 'sample_comic.epub' && /第 <b>4<\/b> \/ 5 页/.test(rec.meta) && /1 小时前/.test(rec.meta) && rec.bar && rec.n === 2 && rec.head === '继续阅读', rec);
+        // 点一个已经不存在的书：提示失败，并回到书架（不是对着空白页）
+        await cdp.eval(`document.querySelector('#shelfRecent .shelf-row[data-book="gone.epub"]').click(); return 1;`);
+        await waitFor(`/404|失败/.test(document.querySelector('#toast').textContent)`, 8000);
+        check('点已被删的书 → 提示失败并回到书架', await waitFor(shelfOpenExpr, 4000), await cdp.eval(`return document.querySelector('#toast').textContent;`));
+        await cdp.eval(`document.querySelector('#shelfRecent .shelf-row[data-book="小说/sample_comic.epub"]').click(); return 1;`);
         await waitFor(`window.__IV.state().total === 5 && window.__IV.state().bookKey === ${JSON.stringify(HOMEKEY)}`, 10000);
         check('点「继续阅读」→ 打开并接上云端页码（第 4 页）', (await stateOf()).index === 3, (await stateOf()).index);
         // 目录视图：这本书带进度条，读过的排在前面

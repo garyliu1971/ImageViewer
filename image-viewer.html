@@ -322,6 +322,11 @@
   .shelf-row .ico { flex: 0 0 auto; width: 22px; text-align: center; }
   .shelf-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .shelf-row .meta { flex: 0 0 auto; font-size: 12px; color: var(--muted); }
+  @media (max-width: 520px) {
+    .shelf-row { flex-wrap: wrap; }
+    .shelf-row .main { flex: 1 1 0; }
+    .shelf-row .meta { flex: 1 1 100%; padding-left: 32px; }
+  }
   .shelf-row .meta b { color: var(--text); font-weight: 600; }
   .shelf-row .main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
   .shelf-row .main .nm { flex: none; }
@@ -2377,13 +2382,13 @@
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
-  function closeModals() { shelfSeq++; MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
+  function closeModals() { shelfSeq++; shelfOpenGen++; MODALS.forEach(function (id) { $('#' + id).classList.add('hidden'); }); if (davPending) davFinish(null); }
   function toggleModal(id, force) {
     var m = $('#' + id);
     var show = force === undefined ? m.classList.contains('hidden') : force;
     m.classList.toggle('hidden', !show);
     if (id === 'dav' && !show && davPending) davFinish(null);
-    if (id === 'shelf' && !show) shelfSeq++;            /* 关掉书架 = 作废还在飞的读目录，别再弹账号框 */
+    if (id === 'shelf' && !show) { shelfSeq++; shelfOpenGen++; }            /* 关掉书架 = 作废还在飞的读目录，别再弹账号框 */
     if (id === 'jump' && show) setTimeout(function () { try { $('#jumpInput').focus(); $('#jumpInput').select(); } catch (e) {} }, 30);
   }
 
@@ -3109,6 +3114,7 @@
       syncDir: sdir, syncUser: $('#davSyncUser').value.trim(), syncPass: $('#davSyncPass').value };
     try { localStorage.removeItem(LS_SYNC_DENIED); } catch (e) {}
     syncOff = false;                                    /* 改了账号 / 文件夹，再给同步一次机会 */
+    resetCloudState();
     davStore(cfg).then(function (saved) {
       if (!saved) toast('这个浏览器不让保存账号，只在本次打开期间有效');
       davFinish(cfg);
@@ -3167,7 +3173,7 @@
   }
   /* ================= 书架：浏览云端书库目录（PROPFIND Depth:1），点书走 openDavBook ================= */
   var LS_SHELF = 'iv.shelf.dir.v1', LS_HOME = 'iv.home.shelf.v1';
-  var shelfRel = '', shelfSeq = 0, shelfData = null, shelfRecentDone = false;
+  var shelfRel = '', shelfSeq = 0, shelfData = null, shelfRecentDone = false, shelfOpenGen = 0;   // shelfOpenGen：每次开 / 关书架 +1（继续阅读只认它）
   function shelfUrl(cfg, rel) {
     return C.davBookUrl(cfg.base, cfg.library, rel).replace(/\/+$/, '') + '/';
   }
@@ -3193,6 +3199,8 @@
   }
   /* ---- 云端进度（users/gary/iv-progress/<hash>.json）：目录里有哪些文件 = 哪些书读过；只读读过的那几本 ---- */
   var cloudProg = {}, cloudIdx = null;
+  /** 云端进度缓存 + 「继续阅读」清空：开书架 / 刷新 / 换账号 / 忘记此设备时用，免得看到上一个账号或过期的进度 */
+  function resetCloudState() { cloudProg = {}; cloudIdx = null; shelfRecentDone = false; var el = $('#shelfRecent'); if (el) el.innerHTML = ''; }
   function progOf(key) {
     var c = cloudProg[key], l = books[key];
     return c && (!l || c.at > (l.at || 0)) ? c : (l || null);
@@ -3247,9 +3255,9 @@
     });
   }
   /** 「继续阅读」：云端最近改过的几个进度文件 + 本机最近读的，按 at 合并取前 5 */
-  function loadRecent(seq) {
+  function loadRecent(gen) {
     function render() {
-      if (seq !== shelfSeq) return;
+      if (gen !== shelfOpenGen) return;
       var seen = Object.create(null), list = [];
       function add(k, r) { if (r && /^dav:/.test(k) && !seen[k]) { seen[k] = 1; list.push({ k: k, r: r }); } }
       Object.keys(books).forEach(function (k) { add(k, progOf(k)); });
@@ -3264,7 +3272,7 @@
     }
     render();
     return cloudIndex(false).then(function (map) {
-      if (!map || seq !== shelfSeq) return;
+      if (!map || gen !== shelfOpenGen) return;
       var names = Object.keys(map).sort(function (a, b) { return map[b] - map[a]; }).slice(0, 8);
       /* 文件名是哈希，要读内容才知道是哪本书；已经取过的不重复取 */
       var have = Object.create(null);
@@ -3287,7 +3295,7 @@
     var last = ''; try { last = localStorage.getItem(LS_SHELF) || ''; } catch (e) { last = ''; }
     toggleModal('shelf', true);
     $('#shelfFilter').value = '';
-    shelfRecentDone = false; cloudIdx = null;
+    resetCloudState();
     try { $('#shelfHome').checked = localStorage.getItem(LS_HOME) !== '0'; } catch (e) { $('#shelfHome').checked = true; }
     loadShelf(C.relError(last, true) ? '' : last);
   }
@@ -3309,7 +3317,7 @@
         try { localStorage.setItem(LS_SHELF, rel); } catch (e) { /* 忽略 */ }
         renderShelf();
         loadFolderProgress(seq);
-        if (!shelfRecentDone) { shelfRecentDone = true; loadRecent(seq); }
+        if (!shelfRecentDone) { shelfRecentDone = true; loadRecent(shelfOpenGen); }
       }, function (e) {
         if (seq !== shelfSeq) return;
         if (e && e.status === 401) {
@@ -3361,7 +3369,12 @@
     var token = ++launchSeq;
     setBack(null);
     toast('正在打开…');
-    openDavBook({ rel: rel, title: C.baseName(rel), dir: null }, token)['catch'](function (e) { toast('云端打开失败：' + ((e && e.message) || e)); });
+    openDavBook({ rel: rel, title: C.baseName(rel), dir: null }, token).then(function (ok) {
+      if (ok === false && token === launchSeq && $('#start') && !$('#start').classList.contains('hidden')) toggleModal('shelf', true);
+    }, function (e) {
+      toast('云端打开失败：' + ((e && e.message) || e));
+      if (token === launchSeq && $('#start') && !$('#start').classList.contains('hidden')) toggleModal('shelf', true);
+    });
   }
   function applyLaunchHash(hash) {
     var p = C.parseLaunchHash(hash === undefined ? location.hash : hash);
@@ -3408,7 +3421,7 @@
   $('#startDav').addEventListener('click', function () { askDav(); });
   $('#startShelf').addEventListener('click', openShelf);
   $('#btnShelf').addEventListener('click', openShelf);
-  $('#shelfReload').addEventListener('click', function () { loadShelf(shelfRel); });
+  $('#shelfReload').addEventListener('click', function () { resetCloudState(); loadShelf(shelfRel); });
   $('#shelfFilter').addEventListener('input', renderShelf);
   $('#shelfCrumbs').addEventListener('click', function (e) {
     var b = e.target.closest ? e.target.closest('button[data-rel]') : null;
@@ -3429,7 +3442,8 @@
   $('#davCancel').addEventListener('click', function () { davFinish(null); });
   $('#davClose').addEventListener('click', function () { davFinish(null); });
   $('#davForget').addEventListener('click', function () {
-    davForget().then(function () { toast('已忘记这台设备上保存的账号'); davFinish(null); });
+    davForget().then(function () {
+      resetCloudState(); toast('已忘记这台设备上保存的账号'); davFinish(null); });
   });
   ['#davBase', '#davLib', '#davUser', '#davPass'].forEach(function (sel) {
     $(sel).addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); davSubmit(); } });
