@@ -572,6 +572,51 @@ test('ZipReader.extractMany：条目之间隔着大文件就拆成多次读（�
   assert.deepEqual(await zr.extractMany([]), []);
 });
 
+test('UrlRangeSource + extractMany：大 epub（>64KB，尾部缓存装不下）真实 HTTP 请求数；low 标记透传', async () => {
+  const img = (i, n) => { const b = Buffer.alloc(n); for (let k = 0; k < n; k++) b[k] = (k * 7 + i) & 0xff; return b; };
+  const N = 120;
+  // 布局 A：图片在前、xhtml 连续在后（常见）；布局 B：xhtml 与 20KB 图片交错
+  const layoutA = [], layoutB = [];
+  for (let i = 0; i < N; i++) layoutA.push({ name: `Images/${i}.jpg`, data: img(i, 3000) });
+  for (let i = 0; i < N; i++) layoutA.push({ name: `Text/p${i}.xhtml`, data: xhtml(i), deflate: i % 2 === 0 });
+  for (let i = 0; i < N; i++) { layoutB.push({ name: `Text/p${i}.xhtml`, data: xhtml(i) }); layoutB.push({ name: `Images/${i}.jpg`, data: img(i, 20000) }); }
+  for (const [label, files, maxReq] of [['A 图片在前 xhtml 连续', layoutA, 2 + 2], ['B 交错', layoutB, 2 + N]]) {
+    const zip = buildZip(files);
+    assert.ok(zip.length > 200000, label);
+    const s = await startServer({ data: zip });
+    try {
+      const src = new C.UrlRangeSource(s.url, {});
+      await src.init();
+      const zr = await new C.ZipReader(src).open();
+      const afterOpen = s.st.requests.length;
+      const list = zr.entries.filter((e) => /\.xhtml$/.test(e.name));
+      assert.equal(list.length, N);
+      const got = await zr.extractMany(list, true);
+      const used = s.st.requests.length - afterOpen;
+      list.forEach((en, i) => assert.deepEqual(Buffer.from(got[i]), files.find((f) => f.name === en.name).data, en.name));
+      assert.ok(used <= maxReq - 2, `${label}：读 ${N} 个 xhtml 用了 ${used} 个请求（旧做法 ${2 * N}）`);
+      if (label.startsWith('A')) assert.ok(used <= 2, `${label}：连续存放应只要 1~2 个请求：${used}`);
+      assert.ok(s.st.maxInflight <= 4);
+      // 单条读（翻页）：1 个请求
+      const before = s.st.requests.length;
+      const one = await zr.extract(zr.entries.find((e) => e.name === 'Images/5.jpg'));
+      assert.deepEqual(Buffer.from(one), files.find((f) => f.name === 'Images/5.jpg').data);
+      assert.equal(s.st.requests.length - before, 1, '单页一次请求');
+    } finally { await s.close(); }
+  }
+  // low 标记：run 读和补读都带 low
+  const lows = [];
+  const files = [{ name: 'a.xhtml', data: xhtml(1) }, { name: 'b.xhtml', data: xhtml(2), localExtra: 400 }];
+  const zip = buildZip(files);
+  const zr = await new C.ZipReader({ size: zip.length, read: async (o, l, low) => { lows.push(!!low); return zip.subarray(o, o + l); } }).open();
+  lows.length = 0;
+  await zr.extractMany(zr.entries, true);
+  assert.ok(lows.length >= 2 && lows.every((x) => x === true), JSON.stringify(lows));
+  lows.length = 0;
+  await zr.extractMany(zr.entries);
+  assert.ok(lows.length >= 2 && lows.every((x) => x === false), JSON.stringify(lows));
+});
+
 test('ZipReader.extractMany：本地头 extra 比估计长 = 该条目补读，其余照常；读失败只让那一段变 null', async () => {
   const files = [
     { name: 'a.xhtml', data: xhtml(1) },
