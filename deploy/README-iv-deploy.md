@@ -177,6 +177,17 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
 - 验证：`curl -u gary:… -X MKCOL $HOST/users/gary/iv-progress/` → 201（已存在是 405）；
   `curl -u gary:… -X PUT --data '{}' $HOST/users/gary/iv-progress/x.json` → 201；再 DELETE 掉 `x.json`；`iv-viewer` 同样 PUT → 403/404。
 
+## 7c. 读书时「上一本 / 下一本」
+
+在云端书架（📚 云端书架，快捷键 `L`）里点开的书、或 `#open=` 链接打开的书，读书时工具栏出现「« 上一本 / 下一本 »」（快捷键 `P` / `N`；手机宽度下工具栏放不下，改在工具栏下面单独一条换书条里），
+切到**同一文件夹里**按名字自然排序相邻的书（顺序和书架不同：书架把读过的书排到前面，换书始终按名字）（只认 epub / cbz / zip，跳过打不开的）；每本书各自的页码 / 方向照旧记住。读到最后一页会出现「下一本：xxx »」浮层。
+
+- **不用改 SFTPGo / Caddy / CSP**：目录列表就是书架那一次 `PROPFIND`（Depth:1，只要 `/library` 的 list 权限），书架列过的文件夹直接缓存复用，不再发请求。
+  用 `#open=` 链接打开的书，第一次用到（按钮 / 读到最后一页）才去列它的父文件夹（一个 PROPFIND）。换账号 / 忘记账号 / 点书架「刷新」会清掉这份缓存（换之前还在路上的列目录请求，回来也会被丢掉，不会把旧账号的目录写回缓存）。
+- **rar / cbr 不能打开**：浏览器没法随机读取 rar，`#open=` 指向 rar 会提示「请先转成 cbz 再上传」（目前没有现成的转换工具；rar 支持是另一件事，还没做）。
+- **pdf**：`#open=` 指向 pdf 时走 `openDavBook` 里的扩展名分流，调用 `__IV.setDavPdfHook(fn)` 挂上的阅读器；没挂时提示「暂不支持 PDF」。书架列表目前只列 epub / cbz / zip。
+- 只在 http(s) 的 `/iv/` 页面、且没连本地后端（`web_backend.py`）时出现；`file://` 和后端模式下按钮不显示，原有流程不变。
+
 ## 8. 回滚 / 下线
 
 - 只回滚页面：见第 2 步。

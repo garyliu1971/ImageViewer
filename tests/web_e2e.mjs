@@ -144,6 +144,8 @@ function pngBytes(w, h, hex) {
 /* ------------------------- /iv/ 同源测试服务器（模拟 Caddy + SFTPGo WebDAV）-------------------------
    /iv/…      页面 / manifest / sw.js / 图标，带 deploy/Caddyfile.iv.snippet 里同一条 CSP
    /library/… 书库：Basic 认证 + 真 Range（206）；/library/ignore/… 故意忽略 Range 回 200
+   PROPFIND（Depth:1，SFTPGo 风格的 207）：目录从 books 的键推出，S.virtual[目录] 追加假条目（几千个文件的文件夹），
+     S.listSlow[目录] 让列目录变慢（测连点时旧请求被 abort），S.denyList=true 让所有请求回 401（账号被禁）。
    记录每个 /library 请求（方法 / 路径 / Range / 是否带 Authorization / 实际发出的字节），供断言。 */
 function startIvServer(books) {
   const snippet = fs.readFileSync(path.join(ROOT, 'deploy', 'Caddyfile.iv.snippet'), 'utf8');
@@ -152,7 +154,33 @@ function startIvServer(books) {
   const html = fs.readFileSync(PAGE);
   const sw = fs.readFileSync(path.join(ROOT, 'sw.js'), 'utf8').replace('__BUILD__', 'e2e');
   const manifest = fs.readFileSync(path.join(ROOT, 'manifest.webmanifest'));
-  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [], slow: {}, prog: {}, progLog: [], progDir: false };   // slow: 相对路径 -> 每个请求的延迟 ms（默认 15）
+  const S = { log: [], inflight: 0, maxInflight: 0, user: 'viewer', pass: 'pä ss', hits: [], slow: {}, prog: {}, progLog: [], progDir: false,   // slow: 相对路径 -> 每个请求的延迟 ms（默认 15）
+    virtual: {}, listSlow: {}, denyList: false };
+  const xesc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const hrefOf = (rel, dir) => '/library/' + rel.split('/').filter(Boolean).map(encodeURIComponent).join('/') + (dir && rel ? '/' : '');
+  /** dirRel 这一层的孩子：Map(名字 -> {dir, size})；目录不存在返回 null */
+  function listDir(dirRel) {
+    const kids = new Map(), pre = dirRel ? dirRel + '/' : '';
+    for (const k of Object.keys(books)) {
+      if (!k.startsWith(pre)) continue;
+      const rest = k.slice(pre.length), i = rest.indexOf('/');
+      if (i < 0) kids.set(rest, { dir: false, size: books[k].length });
+      else if (!kids.has(rest.slice(0, i))) kids.set(rest.slice(0, i), { dir: true });
+    }
+    for (const [d, items] of Object.entries(S.virtual)) {
+      if (d === dirRel) { for (const it of items) kids.set(it.name, { dir: !!it.dir, size: it.size || 0 }); }
+      else if (d.startsWith(pre) && !kids.has(d.slice(pre.length).split('/')[0])) kids.set(d.slice(pre.length).split('/')[0], { dir: true });
+    }
+    return dirRel === '' || kids.size || S.virtual[dirRel] ? kids : null;
+  }
+  function propfindXml(dirRel, kids) {
+    const one = (rel, dir, size) => '<D:response><D:href>' + xesc(hrefOf(rel, dir)) + '</D:href><D:propstat><D:prop><D:resourcetype>' +
+      (dir ? '<D:collection xmlns:D="DAV:"/>' : '') + '</D:resourcetype>' + (dir ? '' : '<D:getcontentlength>' + size + '</D:getcontentlength>') +
+      '<D:getlastmodified>Fri, 07 Nov 2026 08:00:00 GMT</D:getlastmodified></D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>';
+    let out = '<?xml version="1.0" encoding="UTF-8"?><D:multistatus xmlns:D="DAV:">' + one(dirRel, true, 0);
+    for (const [name, k] of kids) out += one((dirRel ? dirRel + '/' : '') + name, k.dir, k.size);
+    return out + '</D:multistatus>';
+  }
   const srv = http.createServer((req, res) => {
     const u = new URL(req.url, 'http://x');
     const p = decodeURIComponent(u.pathname);
@@ -177,29 +205,26 @@ function startIvServer(books) {
         auth: !!req.headers.authorization, status: 0, bytes: 0 };
       S.log.push(ent);
       const want = 'Basic ' + Buffer.from(S.user + ':' + S.pass, 'utf8').toString('base64');
-      if (req.headers.authorization !== want) {
+      if (req.headers.authorization !== want || S.denyList) {
         ent.status = 401;
-        res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="lib"' }); return res.end('no');
+        const reject = () => { res.writeHead(401, { 'WWW-Authenticate': 'Basic realm="lib"' }); res.end('no'); };
+        const slow = req.method === 'PROPFIND' ? (S.listSlow[p.replace(/^\/library\/?/, '').replace(/\/+$/, '')] || 0) : 0;   // 慢列表的 401 也慢（模拟「飞着的时候账号被禁」）
+        req.resume();
+        return slow ? setTimeout(reject, slow) : reject();
       }
       if (req.method === 'PROPFIND') {
-        const dir = decodeURIComponent(u.pathname).slice('/library/'.length).replace(/\/+$/, '');
-        const kids = new Map();
-        for (const k of Object.keys(books)) {
-          if (dir && !k.startsWith(dir + '/')) continue;
-          const rest = dir ? k.slice(dir.length + 1) : k, seg = rest.split('/');
-          if (seg.length > 1) kids.set(seg[0], null); else kids.set(seg[0], books[k].length);
-        }
-        const href = (n) => '/library/' + (dir ? dir.split('/').map(encodeURIComponent).join('/') + '/' : '') + (n ? encodeURIComponent(n) : '');
-        let x = '<?xml version="1.0" encoding="UTF-8"?><D:multistatus xmlns:D="DAV:">' +
-          '<D:response><D:href>' + href('') + '</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>';
-        for (const [n, len] of kids) {
-          x += len === null
-            ? '<D:response><D:href>' + href(n) + '/</D:href><D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat></D:response>'
-            : '<D:response><D:href>' + href(n) + '</D:href><D:propstat><D:prop><D:resourcetype/><D:getcontentlength>' + len + '</D:getcontentlength></D:prop></D:propstat></D:response>';
-        }
-        x += '</D:multistatus>';
-        ent.status = 207; ent.depth = req.headers.depth || null;
-        return send(207, 'application/xml; charset=utf-8', x);
+        req.resume();
+        ent.depth = req.headers.depth || null;
+        res.on('close', () => { if (!res.writableEnded) ent.aborted = true; });     // 客户端中途放弃（abort）
+        const dirRel = p.replace(/^\/library\/?/, '').replace(/\/+$/, '');
+        setTimeout(() => {
+          if (ent.aborted) return;
+          const kids = listDir(dirRel);
+          if (!kids) { ent.status = 404; return send(404, 'text/plain', 'nf'); }
+          ent.status = 207;
+          send(207, 'application/xml; charset=utf-8', propfindXml(dirRel, kids));
+        }, S.listSlow[dirRel] || 5);
+        return;
       }
       const ignore = p.startsWith('/library/ignore/');
       const rel = ignore ? p.slice('/library/ignore/'.length) : p.slice('/library/'.length);
@@ -1622,6 +1647,363 @@ function check(name, ok, detail) {
       await cdp.eval(`document.querySelector('#btnBack').click(); return 1;`);
       await sleep(900);
       check('点「← 返回」回到 back 指定的同源页面', iv.hits.some((h) => h === 'GET /reader/'), iv.hits.slice(0, 5));
+      /* ======== [23c] 读书时上一本 / 下一本：从云端书架打开 / #open= 打开 / rar·pdf 说明 ======== */
+      log('\n[23c] 云端书：读书时「上一本 / 下一本」（同一文件夹相邻的书）；#open= 指向 rar / cbr / pdf 的说明');
+      const mkCbz = (hexes) => buildZip(hexes.map((h, i) => ({ name: String(i + 1).padStart(2, '0') + '.png', store: true, data: pngBytes(120, 180, h) })));
+      const SER = 'lib/系列A/';
+      bookBufs[SER + 'vol 1.cbz'] = mkCbz(['aa0000', '00aa00', '0000aa']);
+      bookBufs[SER + 'vol 2.cbz'] = mkCbz(['aa5500', '55aa00', '0055aa']);
+      bookBufs[SER + 'vol 3.rar'] = Buffer.from('Rar!\x1a\x07\x00 not a real rar');
+      bookBufs[SER + 'vol 5.epub'] = epubBuf;
+      bookBufs[SER + 'vol 10.cbz'] = mkCbz(['aa00aa', '00aaaa', 'aaaa00', '888888']);
+      bookBufs[SER + '第二部/ch1.cbz'] = mkCbz(['123456']);
+      bookBufs['lib/doc.pdf'] = Buffer.from('%PDF-1.4 fake');
+      bookBufs['lib/old.cbr'] = Buffer.from('Rar!');
+      iv.virtual['lib/系列A'] = [{ name: 'notes.txt', size: 5 }, { name: '.DS_Store', size: 6148 }, { name: 'Thumbs.db', size: 9 }];
+      const plog = () => iv.log.filter((e) => e.method === 'PROPFIND');
+      const toastText = () => cdp.eval(`return document.querySelector('#toast').textContent;`);
+      const disp = (sel) => cdp.eval(`return getComputedStyle(document.querySelector(${JSON.stringify(sel)})).display;`);
+      const key = (k) => cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true })); return 1;`);
+      const bookKeyIs = (rel, n) => `window.__IV.state().bookKey === ${JSON.stringify('dav:' + rel)} && window.__IV.state().total === ${n}`;
+      const shelfIs = (rel) => `!document.querySelector('#shelf').classList.contains('hidden') && window.__IV.shelfState().rel === ${JSON.stringify(rel)} && !!window.__IV.shelfState().data`;
+
+      /* ---- 0) 按钮的显示条件：http(s) 页 + 没连本地后端 + 打开的是云端书（dav: key）才出现 ----
+         光「没开书所以不显示」什么也证明不了；这里每个场景都真的打开一本带 dav: key 的书，只改一个条件 */
+      const openKeyed = `const it = [await __mk('01.png', 'b/01.png', 100, 150), await __mk('02.png', 'b/02.png', 100, 150)];
+        window.__IV.openItems(it, { kind: 'dir', title: 'b', key: 'dav:lib/x/vol 1.cbz' }); await __tick(); return 1;`;
+      const volVis = () => cdp.eval(`return { has: document.body.classList.contains('has-vol'), prev: getComputedStyle(document.querySelector('#btnVolPrev')).display, next: getComputedStyle(document.querySelector('#btnVolNext')).display };`);
+      await fresh(url.pathToFileURL(PAGE).href);
+      const fileNoBook = await cdp.eval(`await window.__IV.volStep(1); await window.__IV.wait(150); return document.querySelector('#toast').textContent;`);
+      check('没打开云端书时按 N：只提示「不是从云端书库打开的」', /不是从云端书库/.test(fileNoBook), fileNoBook);
+      await cdp.eval(openKeyed);
+      const fileKeyed = await volVis();
+      check('file://（没有 WebDAV）：就算打开的是 dav: key 的书，上一本 / 下一本也不显示', !fileKeyed.has && fileKeyed.prev === 'none' && fileKeyed.next === 'none', fileKeyed);
+      await fresh(IVURL);
+      await cdp.eval(openKeyed);
+      const httpKeyed = await volVis();
+      check('（对照）同一本书在 http 页面：按钮出现 —— 上一条的差别只来自 file:// 这一个条件', httpKeyed.has && httpKeyed.prev !== 'none' && httpKeyed.next !== 'none', httpKeyed);
+      await cdp.eval(`window.__IV.backend().on = true; window.__IV.setDavPdfHook(null); return 1;`);
+      const beKeyed = await volVis();
+      check('连上本地后端（BE.on）：同一本书的按钮消失', !beKeyed.has && beKeyed.prev === 'none' && beKeyed.next === 'none', beKeyed);
+      await cdp.eval(`window.__IV.backend().on = false; window.__IV.setDavPdfHook(null); return 1;`);
+      const beOff = await volVis();
+      check('后端断开（BE.on 复位）：按钮回来', beOff.has && beOff.next !== 'none', beOff);
+
+      /* ---- 1) 从书架进「lib/系列A」：书架这一次 PROPFIND 同时把列表缓存给「换书」用 ---- */
+      await fresh(IVURL);
+      await cdp.eval(`localStorage.setItem('iv.home.shelf.v1', '0'); localStorage.setItem('iv.shelf.dir.v1', 'lib/系列A'); document.querySelector('#startShelf').click(); return 1;`);
+      await waitFor(shelfIs('lib/系列A'), 8000);
+      const serRows = await cdp.eval(`return Array.from(document.querySelectorAll('#shelfList .shelf-row')).map((b) => b.querySelector('.nm').textContent);`);
+      check('书架只列 epub / cbz / zip（rar / txt 不列），书按自然顺序（vol 2 < vol 10）', JSON.stringify(serRows) === JSON.stringify(['第二部', 'vol 1.cbz', 'vol 2.cbz', 'vol 5.epub', 'vol 10.cbz']), serRows);
+      check('书架列过的文件夹进了「换书」缓存', (await cdp.eval(`return window.__IV.volCache();`)).includes('lib/系列A'));
+      const g0 = iv.log.length, pn = plog().length;
+      await cdp.eval(`document.querySelector('#shelfList .shelf-row[data-book="lib/系列A/vol 2.cbz"]').click(); return 1;`);
+      await waitFor(bookKeyIs(SER + 'vol 2.cbz', 3), 8000);
+      const s2 = await stateOf();
+      check('点书：key = dav:<相对路径>，3 页', s2.bookKey === 'dav:' + SER + 'vol 2.cbz' && s2.total === 3 && s2.bookTitle === 'vol 2.cbz', { k: s2.bookKey, t: s2.total });
+      check('打开书没有多发 PROPFIND', plog().length === pn, iv.log.slice(g0).map((e) => e.method + ' ' + e.status));
+
+      /* ---- 2) 上一本 / 下一本：同一文件夹，保留每本书自己的进度与方向 ---- */
+      check('按钮出现；vol 2 前后都有书（缓存里已有这个文件夹的列表）', (await disp('#btnVolNext')) !== 'none' && (await disp('#btnVolPrev')) !== 'none' &&
+        await cdp.eval(`return !document.querySelector('#btnVolPrev').disabled && !document.querySelector('#btnVolNext').disabled;`));
+      await cdp.eval(`document.querySelector('#btnVolPrev').click(); return 1;`);
+      await waitFor(bookKeyIs(SER + 'vol 1.cbz', 3), 8000);
+      check('「上一本」→ vol 1；它是第一本，上一本按钮变灰', await cdp.eval(`return document.querySelector('#btnVolPrev').disabled && !document.querySelector('#btnVolNext').disabled;`));
+      const dirNow = await cdp.eval(`window.__IV.showPage(2); await __tick(); window.__IV.toggleDirection(); await __tick(); window.__IV.saveProgress(); return window.__IV.state().S.direction;`);
+      await cdp.eval(`document.querySelector('#btnVolNext').click(); return 1;`);
+      await waitFor(bookKeyIs(SER + 'vol 2.cbz', 3), 8000);
+      await cdp.eval(`window.__IV.showPage(1); await __tick(); window.__IV.saveProgress(); return 1;`);
+      await key('p');
+      await waitFor(bookKeyIs(SER + 'vol 1.cbz', 3), 8000);
+      await cdp.eval(`await __tick(); return 1;`);
+      const back1 = await stateOf();
+      check('P 键 → vol 1：回来仍在第 3 页、阅读方向没丢（每本书各自记住）', back1.index === 2 && back1.S.direction === dirNow, { idx: back1.index, dir: back1.S.direction, want: dirNow });
+      await key('n');
+      await waitFor(bookKeyIs(SER + 'vol 2.cbz', 3), 8000);
+      await key('n');
+      await waitFor(bookKeyIs(SER + 'vol 5.epub', 5), 8000);
+      check('N 键：vol 2 → vol 5.epub（5 页；书架不列 vol 3.rar，换书也不会落到它）', (await stateOf()).bookTitle === 'vol 5.epub');
+      await cdp.eval(`document.querySelector('#btnVolNext').click(); return 1;`);
+      await waitFor(bookKeyIs(SER + 'vol 10.cbz', 4), 8000);
+      check('→ vol 10.cbz（4 页）；已是最后一本：下一本按钮变灰', await cdp.eval(`return document.querySelector('#btnVolNext').disabled;`));
+      await cdp.eval(`await window.__IV.volStep(1); return 1;`);
+      check('最后一本再下一本 → 提示，书不变', /最后一本/.test(await toastText()) && (await stateOf()).bookKey === 'dav:' + SER + 'vol 10.cbz');
+      check('整个换书过程只用了缓存的列表：没有新的 PROPFIND', plog().length === pn);
+
+      /* ---- 3) 读到最后一页：温和的「下一本」入口 ---- */
+      await key('p'); await waitFor(bookKeyIs(SER + 'vol 5.epub', 5), 8000);
+      await key('p'); await waitFor(bookKeyIs(SER + 'vol 2.cbz', 3), 8000);
+      await cdp.eval(`window.__IV.showPage(0); await __tick(); return 1;`);
+      check('在第 1 页：没有「下一本」浮层', (await disp('#volNext')) === 'none');
+      await cdp.eval(`window.__IV.showPage(2); await __tick(); return 1;`);
+      const chip = await cdp.eval(`return { d: getComputedStyle(document.querySelector('#volNext')).display, t: document.querySelector('#volNext').textContent };`);
+      check('最后一页：出现「下一本：vol 5.epub」', chip.d !== 'none' && /vol 5\.epub/.test(chip.t), chip);
+      await cdp.eval(`document.querySelector('#toast').textContent = ''; window.__IV.next(); await window.__IV.wait(100); return 1;`);
+      check('最后一页再翻页 → 提示还有下一本（按 N）', /最后一页/.test(await toastText()) && /vol 5/.test(await toastText()), await toastText());
+      await cdp.eval(`document.querySelector('#volNext').click(); return 1;`);
+      await waitFor(bookKeyIs(SER + 'vol 5.epub', 5), 8000);
+      check('点浮层 → 打开 vol 5.epub，浮层收起', (await disp('#volNext')) === 'none');
+
+      /* ---- 4) #open= 打开的书：第一次用到才去列父文件夹 ---- */
+      // vol 2 上次停在最后一页：先把它的进度改回第 1 页，否则一打开就读到末页、立刻去列文件夹
+      await cdp.eval(`const b = window.__IV.books(); b['dav:lib/系列A/vol 2.cbz'].index = 0; localStorage.setItem('iv.books.v1', JSON.stringify(b)); return 1;`);
+      const pLazy = plog().length;
+      await fresh(IVURL + hashFor(SER + 'vol 2.cbz'));
+      await waitFor(bookKeyIs(SER + 'vol 2.cbz', 3), 8000);
+      check('#open= 打开后，上一本 / 下一本 按钮出现，但还没有列文件夹（没发 PROPFIND）', (await disp('#btnVolNext')) !== 'none' && plog().length === pLazy);
+      await cdp.eval(`window.__IV.showPage(0); await __tick(); window.__IV.showPage(2); await __tick(); return 1;`);
+      await waitFor(`getComputedStyle(document.querySelector('#volNext')).display !== 'none'`, 8000);
+      const lazyReq = plog().slice(pLazy);
+      check('读到最后一页才列一次父文件夹（1 个 PROPFIND，Depth:1），随后出现「下一本」', lazyReq.length === 1 && lazyReq[0].path === '/library/lib/%E7%B3%BB%E5%88%97A/' && lazyReq[0].depth === '1', lazyReq.map((e) => e.path));
+      await cdp.eval(`document.querySelector('#btnVolNext').click(); return 1;`);
+      await waitFor(bookKeyIs(SER + 'vol 5.epub', 5), 8000);
+      check('随后换书用的是刚列出的缓存，不再请求', plog().length === pLazy + 1);
+      check('从 #open= 来的书换书后 hash 仍是干净的', (await cdp.eval(`return location.hash;`)) === '');
+
+      /* ---- 5) 书架重新读目录 / 忘记账号：换书缓存一起作废（旧账号看到的目录不能再用） ---- */
+      check('（前置）换书缓存里有 lib/系列A', (await cdp.eval(`return window.__IV.volCache();`)).includes('lib/系列A'));
+      await cdp.eval(`localStorage.setItem('iv.shelf.dir.v1', ''); document.querySelector('#btnShelf').click(); return 1;`);
+      await waitFor(shelfIs(''), 8000);
+      check('打开书架（= 重新读目录）：旧缓存先清掉，只剩书架刚列的根目录', JSON.stringify(await cdp.eval(`return window.__IV.volCache();`)) === '[""]', await cdp.eval(`return window.__IV.volCache();`));
+      await cdp.eval(`document.querySelector('#shelf [data-close]').click(); window.__IV.askDav(); return 1;`);
+      await waitFor(dlgOpen, 5000);
+      await cdp.eval(`document.querySelector('#davForget').click(); return 1;`);
+      await waitFor(`!${dlgOpen}`, 5000);
+      check('忘记此设备：换书缓存清空', (await cdp.eval(`return window.__IV.volCache();`)).length === 0);
+
+      /* ---- 6) rar / cbr 不能打开（说明原因）；pdf 走钩子，没接上就提示 ---- */
+      await fresh(IVURL);
+      await cdp.eval(`window.__IV.askDav(); return 1;`);
+      await waitFor(dlgOpen, 5000);
+      await cdp.eval(`document.querySelector('#davBase').value = '${iv.origin}'; document.querySelector('#davUser').value = 'viewer'; document.querySelector('#davPass').value = 'pä ss'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`!${dlgOpen}`, 5000);
+      const gRar = iv.log.length;
+      await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor(SER + 'vol 3.rar'))}); return 1;`);
+      await sleep(500);
+      check('#open= 指向 rar：解释为什么打不开（浏览器不能随机读取 → 先转成 cbz），没打开任何书', /这是 rar.*不能随机读取.*cbz/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
+      check('指向 rar 没有向服务器取这个文件', iv.log.slice(gRar).every((e) => !/vol%203\.rar/.test(e.path)));
+      await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/old.cbr'))}); return 1;`);
+      await sleep(400);
+      check('#open= 指向 cbr 同样解释，同样没请求这个文件', /这是 cbr.*cbz/.test(await toastText()) && iv.log.slice(gRar).every((e) => !/old\.cbr/.test(e.path)), await toastText());
+      await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/doc.pdf'))}); return 1;`);
+      await sleep(400);
+      check('#open= 指向 pdf（还没接 pdf 阅读器）→「暂不支持 PDF」，没请求这个文件', /暂不支持 PDF/.test(await toastText()) && iv.log.slice(gRar).every((e) => !/doc\.pdf/.test(e.path)), await toastText());
+      await cdp.eval(`window.__pdf = []; window.__IV.setDavPdfHook((p, ctx) => { window.__pdf.push({ rel: p.rel, url: ctx.url, key: ctx.key,
+        auth: typeof ctx.authHeader === 'function' && /^Basic /.test(ctx.authHeader()) }); return Promise.resolve(true); }); return 1;`);
+      await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/doc.pdf'))}); return 1;`);
+      await sleep(400);
+      const pdfCalls = await cdp.eval(`return window.__pdf;`);
+      check('pdf 钩子接上之后：调用钩子（相对路径 / URL / key / 带账号头）', pdfCalls.length === 1 && pdfCalls[0].rel === 'lib/doc.pdf' &&
+        pdfCalls[0].url === iv.origin + '/library/lib/doc.pdf' && pdfCalls[0].key === 'dav:lib/doc.pdf' && pdfCalls[0].auth, pdfCalls);
+      await cdp.eval(`window.__IV.setDavPdfHook(null); return 1;`);
+      check('换书 / 打开全程 CSP 零违规', (await cdp.eval(`return window.__csp || [];`)).length === 0, await cdp.eval(`return window.__csp || [];`));
+      await fresh(IVURL);
+      {
+      /* ======== [23d] 换书评审修复：连按「下一本」/ 打不开的下一本 / 换账号作废缓存 / 书架开着时换书热键 / 手机换书条 ======== */
+      log('\n[23d] 换书评审修复：连按「下一本」、下一本打不开、换账号 / 忘记作废缓存、书架开着时热键、手机换书条');
+      for (const n of ['a', 'b', 'c', 'd']) bookBufs['fast/' + n + '.cbz'] = mkCbz(['aa0000', '00aa00', '0000aa']);
+      for (const n of ['a', 'c']) bookBufs['bad/' + n + '.cbz'] = mkCbz(['aa0000', '00aa00', '0000aa']);
+      iv.virtual['bad'] = [{ name: 'b-ghost.cbz', size: 123 }];             // 列得出来，取书时 404：打不开的下一本
+      bookBufs['chap/ch.cbz'] = buildZip(['c1/01.png', 'c1/02.png', 'c2/01.png'].map((n, i) => ({ name: n, store: true, data: pngBytes(100, 150, ['aa0000', '00aa00', '0000aa'][i]) })));
+      const hitsOf = (rel) => iv.log.filter((e) => e.path === '/library/' + rel.split('/').map(encodeURIComponent).join('/')).length;
+
+      /* ---- 1) 连按「下一本」：只换一次，不重复打开 / 不连跳；下一本打不开 → 留在当前这本 ---- */
+      iv.slow['fast/b.cbz'] = 400;                  // b 每个请求慢 400ms：开书要好几百毫秒，期间会有新的按键进来
+      await fresh(IVURL + hashFor('fast/a.cbz'));
+      await waitFor(bookKeyIs('fast/a.cbz', 3), 8000);
+      const hb0 = hitsOf('fast/b.cbz');
+      await key('n');
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      await sleep(400);
+      const oneOpen = hitsOf('fast/b.cbz') - hb0;
+      check('（基线）按一次 N：换到 b.cbz', (await stateOf()).bookKey === 'dav:fast/b.cbz' && oneOpen > 0, oneOpen);
+      await fresh(IVURL + hashFor('fast/a.cbz'));
+      await waitFor(bookKeyIs('fast/a.cbz', 3), 8000);
+      const hb1 = hitsOf('fast/b.cbz'), hc1 = hitsOf('fast/c.cbz');
+      await cdp.eval(`for (let i = 0; i < 5; i++) { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', bubbles: true })); await window.__IV.wait(120); } return 1;`);
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      await sleep(900);
+      check('b 还在打开的时候又连按 5 次 N：只换一本（停在 b，没有连跳到 c / d）', (await stateOf()).bookKey === 'dav:fast/b.cbz' && hitsOf('fast/c.cbz') === hc1, { key: (await stateOf()).bookKey, c: hitsOf('fast/c.cbz') - hc1 });
+      check('连按期间 b.cbz 只被打开一次（请求数和只按一次时相同）', hitsOf('fast/b.cbz') - hb1 === oneOpen, { one: oneOpen, many: hitsOf('fast/b.cbz') - hb1 });
+      delete iv.slow['fast/b.cbz'];
+      await key('n');
+      await waitFor(bookKeyIs('fast/c.cbz', 3), 8000);
+      check('换完之后再按 N 照常继续（锁已释放）：c.cbz', (await stateOf()).bookKey === 'dav:fast/c.cbz');
+      /* 打不开的下一本 */
+      await fresh(IVURL + hashFor('bad/a.cbz'));
+      await waitFor(bookKeyIs('bad/a.cbz', 3), 8000);
+      await cdp.eval(`window.__IV.showPage(1); await __tick(); window.__IV.saveProgress(); return 1;`);
+      const badRes = await cdp.eval(`await window.__IV.volStep(1); await window.__IV.wait(150);
+        const s = window.__IV.state(), b = window.__IV.books()['dav:bad/a.cbz'];
+        return { key: s.bookKey, total: s.total, index: s.index, toast: document.querySelector('#toast').textContent, rec: b && b.index };`);
+      check('下一本（b-ghost.cbz）打不开 → 仍停在当前这本：书 / 页码不变，进度记录还在，提示说明停在当前这本',
+        badRes.key === 'dav:bad/a.cbz' && badRes.total === 3 && badRes.index === 1 && badRes.rec === 1 && /b-ghost\.cbz/.test(badRes.toast) && /仍停在当前这本/.test(badRes.toast), badRes);
+      const again = await cdp.eval(`document.querySelector('#toast').textContent = ''; const t0 = Date.now(); await window.__IV.volStep(1); return { ms: Date.now() - t0, toast: document.querySelector('#toast').textContent };`);
+      check('失败之后锁也释放了：再按一次同样给提示（没有卡住）', again.ms < 5000 && /仍停在当前这本/.test(again.toast), again);
+
+      /* ---- 2) 换账号：换书缓存作废；换完账号再换书时重新列目录 ---- */
+      await fresh(IVURL);
+      await cdp.eval(`localStorage.setItem('iv.home.shelf.v1', '0'); localStorage.setItem('iv.shelf.dir.v1', 'fast'); document.querySelector('#startShelf').click(); return 1;`);
+      await waitFor(shelfIs('fast'), 8000);
+      check('（前置）换账号前：换书缓存里有 fast', (await cdp.eval(`return window.__IV.volCache();`)).includes('fast'));
+      iv.user = 'viewer2';
+      await cdp.eval(`window.__IV.askDav(); return 1;`);
+      await waitFor(dlgOpen, 5000);
+      await cdp.eval(`document.querySelector('#davUser').value = 'viewer2'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`!${dlgOpen}`, 5000);
+      check('换成另一个账号：旧账号的换书缓存清空', (await cdp.eval(`return window.__IV.volCache();`)).length === 0, await cdp.eval(`return window.__IV.volCache();`));
+      iv.user = 'viewer';
+      await cdp.eval(`document.querySelector('#shelf [data-close]').click(); window.__IV.askDav(); return 1;`);
+      await waitFor(dlgOpen, 5000);
+      await cdp.eval(`document.querySelector('#davUser').value = 'viewer'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`!${dlgOpen}`, 5000);
+
+      /* ---- 3) 书架开着：焦点在列表行 / 按钮上，换书 / 翻页等热键都不能穿透 ---- */
+      await fresh(IVURL + hashFor('fast/b.cbz'));
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      await cdp.eval(`window.__IV.showPage(1); await __tick(); localStorage.setItem('iv.shelf.dir.v1', 'fast'); return 1;`);
+      await key('l');
+      await waitFor(shelfIs('fast'), 8000);
+      const before = await cdp.eval(`const s = window.__IV.state(); return { index: s.index, key: s.bookKey, auto: s.autoOn, spread: s.S.spread, dir: s.S.direction, trim: s.S.trim, book: s.S.book };`);
+      const hk = await cdp.eval(`const row = document.querySelector('#shelfList .shelf-row'); row.focus();
+        const keys = ['ArrowRight', 'ArrowLeft', 'PageDown', 'a', 'A', 'n', 'N', 'p', 'P', 'd', 'm', 'c', 'b', 'g', 'Home', 'End', 'r', 't', 'i', 'h'];
+        for (const k of keys) row.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+        const btn = document.querySelector('#shelfReload'); btn.focus();
+        for (const k of ['ArrowRight', 'a', 'n']) btn.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+        await window.__IV.wait(500);
+        const s = window.__IV.state();
+        return { index: s.index, key: s.bookKey, auto: s.autoOn, spread: s.S.spread, dir: s.S.direction, trim: s.S.trim, book: s.S.book,
+          jump: !document.querySelector('#jump').classList.contains('hidden'), help: !document.querySelector('#help').classList.contains('hidden'),
+          detail: !document.querySelector('#detail').classList.contains('hidden'), shelf: !document.querySelector('#shelf').classList.contains('hidden') };`);
+      check('书架开着、焦点在列表行 / 按钮上：方向键、A、N、P、D、M、G、Home/End… 一个都不触发（页码 / 书 / 模式不变，也不弹别的框）',
+        JSON.stringify({ index: hk.index, key: hk.key, auto: hk.auto, spread: hk.spread, dir: hk.dir, trim: hk.trim, book: hk.book }) === JSON.stringify(before) && !hk.jump && !hk.help && !hk.detail && hk.shelf, { before, hk });
+      await cdp.eval(`document.querySelector('#shelfList .shelf-row').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); return 1;`);
+      check('书架开着时 Esc 照常关闭', !(await cdp.eval(`return !document.querySelector('#shelf').classList.contains('hidden');`)));
+      await key('ArrowRight');
+      check('关掉书架后热键恢复', (await stateOf()).index === before.index + 1, (await stateOf()).index);
+
+      /* ---- 4) 别的弹窗（帮助 / 详情）开着时，N / P 不换书（书架那一条在更前面就被拦了，测不到 !anyModal()） ---- */
+      for (const [k, id] of [['h', 'help'], ['i', 'detail']]) {
+        await key(k);
+        const opened = await cdp.eval(`return !document.querySelector('#${id}').classList.contains('hidden');`);
+        const bk0 = (await stateOf()).bookKey;
+        await key('n'); await key('N'); await key('p'); await key('P');
+        await sleep(500);
+        const bk1 = (await stateOf()).bookKey;
+        check('「' + id + '」开着：N / P 不换书', opened && bk1 === bk0 && bk0 === 'dav:fast/b.cbz', { opened, bk0, bk1 });
+        await key('Escape');
+      }
+      await key('n');
+      await waitFor(bookKeyIs('fast/c.cbz', 3), 8000);
+      check('（对照）弹窗都关了：N 照常换书 → c.cbz', (await stateOf()).bookKey === 'dav:fast/c.cbz');
+
+      /* ---- 5) 书架「刷新」按钮：清掉换书缓存（和换账号一样），再只登记刷新出来的这个文件夹 ---- */
+      await fresh(IVURL);
+      await cdp.eval(`localStorage.setItem('iv.home.shelf.v1', '0'); localStorage.setItem('iv.shelf.dir.v1', ''); document.querySelector('#startShelf').click(); return 1;`);
+      await waitFor(shelfIs(''), 8000);
+      await cdp.eval(`document.querySelector('#shelfList .shelf-row[data-dir="fast"]').click(); return 1;`);
+      await waitFor(shelfIs('fast'), 8000);
+      const cacheBefore = await cdp.eval(`return window.__IV.volCache().slice().sort();`);
+      check('（前置）逛了根目录和 fast：换书缓存里有这两个文件夹', JSON.stringify(cacheBefore) === JSON.stringify(['', 'fast']), cacheBefore);
+      const pr0 = plog().length;
+      await cdp.eval(`document.querySelector('#shelfReload').click(); return 1;`);
+      for (let i = 0; i < 40 && plog().length === pr0; i++) await sleep(100);
+      await waitFor(shelfIs('fast'), 8000);
+      const cacheAfter = await cdp.eval(`return window.__IV.volCache();`);
+      check('点书架「刷新」：旧缓存作废（根目录那份没了），只剩刷新出来的 fast', plog().length === pr0 + 1 && JSON.stringify(cacheAfter) === JSON.stringify(['fast']), { n: plog().length - pr0, cacheAfter });
+
+      /* ---- 6) 换书那一刻：旧书的最后一页就存、就推到云端（不等 3 秒去抖，那时 bookKey 已经是新书了） ---- */
+      await fresh(IVURL);
+      await cdp.eval(`await window.__IV.davStore({ base: '${iv.origin}', library: 'library', user: 'viewer', pass: 'pä ss', syncDir: 'users/gary/iv-progress', syncUser: 'writer', syncPass: 'w pass' }); return 1;`);
+      await fresh(IVURL + hashFor('fast/a.cbz'));
+      await waitFor(bookKeyIs('fast/a.cbz', 3), 8000);
+      await sleep(300);
+      iv.progLog.length = 0;
+      const keyA = 'dav:fast/a.cbz';
+      const atA = await cdp.eval(`window.__IV.showPage(2); await __tick(); const t = window.__IV.books()[${JSON.stringify(keyA)}].at; await window.__IV.wait(80); return t;`);
+      await key('n');
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      const recA = await cdp.eval(`return window.__IV.books()[${JSON.stringify(keyA)}];`);
+      check('换书那一刻旧书的进度又存了一次（at 变新、停在最后一页）', recA && recA.at > atA && recA.index === 2, { atA, rec: recA });
+      const putsOf = (k) => iv.progLog.filter((e) => e.method === 'PUT' && e.status === 201 && (() => { try { return JSON.parse(e.body).key === k; } catch (x) { return false; } })());
+      for (let i = 0; i < 25 && !putsOf(keyA).length; i++) await sleep(100);
+      const pushedA = putsOf(keyA).map((e) => JSON.parse(e.body));
+      check('换书后马上（远不到 3 秒）把旧书最后一页推到云端，不是等去抖时推成新书', pushedA.length >= 1 && pushedA[pushedA.length - 1].index === 2, { pushedA, all: iv.progLog.map((e) => e.method + e.status) });
+      await fresh(IVURL);
+      await cdp.eval(`await window.__IV.davStore({ base: '${iv.origin}', library: 'library', user: 'viewer', pass: 'pä ss', syncDir: '' }); return 1;`);
+
+      /* ---- 6b) 列目录在路上时换账号：旧结果不能写回缓存；换账号本身不去发新的列目录；之后换书重新列 ---- */
+      const rewindA = `const b = window.__IV.books(); b['dav:fast/a.cbz'].index = 0; localStorage.setItem('iv.books.v1', JSON.stringify(b)); return 1;`;   // 上次停在最后一页的话，一打开就会去列文件夹
+      await fresh(IVURL); await cdp.eval(rewindA);
+      await fresh(IVURL + hashFor('fast/a.cbz'));
+      await waitFor(bookKeyIs('fast/a.cbz', 3), 8000);
+      check('（前置）从第 1 页打开：还没列过文件夹（换书缓存是空的）', (await cdp.eval(`return window.__IV.volCache().length;`)) === 0);
+      iv.listSlow['fast'] = 700;
+      const ps0 = plog().length;
+      await cdp.eval(`window.__IV.showPage(2); return 1;`);                       // 最后一页 → 后台预取父文件夹
+      for (let i = 0; i < 40 && plog().length === ps0; i++) await sleep(50);
+      check('（前置）最后一页触发了一次后台列目录，还在路上', plog().length === ps0 + 1 && (await cdp.eval(`return window.__IV.volCache().length;`)) === 0, plog().length - ps0);
+      await cdp.eval(`window.__IV.askDav(); return 1;`);
+      await waitFor(dlgOpen, 5000);
+      await cdp.eval(`document.querySelector('#davUser').value = 'viewer'; document.querySelector('#davSave').click(); return 1;`);
+      await waitFor(`!${dlgOpen}`, 5000);
+      await sleep(1200);
+      delete iv.listSlow['fast'];
+      check('在路上的旧列表回来后被丢弃：没有写进换书缓存', (await cdp.eval(`return window.__IV.volCache();`)).length === 0, await cdp.eval(`return window.__IV.volCache();`));
+      check('换账号本身没有顺手去列目录（只有最初那一次请求）', plog().length === ps0 + 1, plog().length - ps0);
+      await key('n');
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      check('换完账号再按 N：重新列了一次目录，照常换到 b.cbz', plog().length === ps0 + 2 && (await stateOf()).bookKey === 'dav:fast/b.cbz', plog().length - ps0);
+
+      /* ---- 6c) 后台预取还在飞时按「下一本」：预取失败（401）后要走正常路径弹账号框，而不是只给个 toast ---- */
+      await fresh(IVURL); await cdp.eval(rewindA);
+      await fresh(IVURL + hashFor('fast/a.cbz'));
+      await waitFor(bookKeyIs('fast/a.cbz', 3), 8000);
+      iv.user = 'nobody'; iv.listSlow['fast'] = 700;                              // 之后的列目录：慢，而且 401
+      const pj0 = plog().length;
+      await cdp.eval(`window.__IV.showPage(2); return 1;`);
+      for (let i = 0; i < 40 && plog().length === pj0; i++) await sleep(50);
+      await cdp.eval(`window.__volP = window.__IV.volStep(1); return 1;`);        // 不等：趁预取还在飞
+      const re401b = await waitFor(`${dlgOpen} && /401/.test(document.querySelector('#davMsg').textContent)`, 6000);
+      check('预取还在飞时按「下一本」，预取 401 失败后弹出账号框（不是只有一条 toast）；账号框前确实走过一次 401 的列目录', !!re401b && plog().slice(pj0).filter((e) => e.status === 401).length >= 1 && (await cdp.eval(`return window.__IV.volCache().length;`)) === 0, plog().slice(pj0).map((e) => e.status));
+      await cdp.eval(`document.querySelector('#davCancel').click(); return 1;`);
+      check('取消账号框 → 这次换书结束（没换成）', (await cdp.eval(`return await window.__volP;`)) === false && (await stateOf()).bookKey === 'dav:fast/a.cbz');
+      iv.user = 'viewer'; delete iv.listSlow['fast'];
+      await fresh(IVURL);
+
+      /* ---- 7) 手机宽度：「上一本 / 下一本」不用横向滚工具栏就够得着 ---- */
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 2, mobile: true });
+      await fresh(IVURL + hashFor('fast/b.cbz'));
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      const ph2 = await cdp.eval(`const r = (sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect();
+          return { d: getComputedStyle(e).display, l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), w: Math.round(b.width), h: Math.round(b.height), dis: !!e.disabled }; };
+        const tb = document.querySelector('#toolbar');
+        return { w: innerWidth, next: r('#volBarNext'), prev: r('#volBarPrev'), bar: r('#volBar'), tbNext: r('#btnVolNext'), tbScroll: tb.scrollLeft, tbOverflow: tb.scrollWidth > tb.clientWidth,
+          vpTop: parseFloat(document.querySelector('#viewport').style.top), docSw: document.documentElement.scrollWidth };`);
+      const inView = (x) => x && x.d !== 'none' && x.l >= 0 && x.r <= ph2.w && x.w >= 60 && x.h >= 36;
+      check('手机宽度：「下一本」「上一本」在屏幕内、够大、不用横向滚工具栏（工具栏未滚动）', inView(ph2.next) && inView(ph2.prev) && ph2.tbScroll === 0 && ph2.docSw <= ph2.w, ph2);
+      check('手机宽度：工具栏里那两个（会被挤到屏幕外的）不再重复显示；换书条在工具栏下面，图片区让开它', ph2.tbNext && ph2.tbNext.d === 'none' && ph2.bar && ph2.bar.t >= 40 && ph2.vpTop >= ph2.bar.b, ph2);
+      await cdp.eval(`document.querySelector('#volBarNext').click(); return 1;`);
+      await waitFor(bookKeyIs('fast/c.cbz', 3), 8000);
+      check('手机宽度：点换书条上的「下一本」→ 换到 c.cbz', (await stateOf()).bookKey === 'dav:fast/c.cbz');
+      await cdp.eval(`document.querySelector('#volBarPrev').click(); return 1;`);
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      check('手机宽度：点「上一本」→ 回到 b.cbz', (await stateOf()).bookKey === 'dav:fast/b.cbz');
+      await fresh(IVURL + hashFor('chap/ch.cbz'));
+      await waitFor(bookKeyIs('chap/ch.cbz', 3), 8000);
+      const ph3 = await cdp.eval(`const r = (sel) => { const b = document.querySelector(sel).getBoundingClientRect(); return { t: Math.round(b.top), b: Math.round(b.bottom) }; };
+        return { ch: document.querySelector('#chapterBar').classList.contains('show'), bar: r('#volBar'), cbar: r('#chapterBar'), vpTop: parseFloat(document.querySelector('#viewport').style.top) };`);
+      check('手机宽度 + 多章节：章节条在换书条下面（不重叠），图片区再让开章节条', ph3.ch && ph3.cbar.t >= ph3.bar.b - 1 && ph3.vpTop >= ph3.cbar.b - 1, ph3);
+      await cdp.send('Emulation.clearDeviceMetricsOverride');
+      /* 桌面宽度：布局不变（换书条不出现，工具栏里的按钮照旧，图片区顶部 = 工具栏高度） */
+      await fresh(IVURL + hashFor('fast/b.cbz'));
+      await waitFor(bookKeyIs('fast/b.cbz', 3), 8000);
+      const dk = await cdp.eval(`const e = document.querySelector('#btnVolNext').getBoundingClientRect();
+        return { bar: getComputedStyle(document.querySelector('#volBar')).display, btn: getComputedStyle(document.querySelector('#btnVolNext')).display,
+          inView: e.right <= innerWidth && e.left >= 0, vpTop: parseFloat(document.querySelector('#viewport').style.top), tb: document.querySelector('#toolbar').offsetHeight };`);
+      check('桌面宽度不变：没有换书条，工具栏里的「下一本」照旧可见，图片区顶部 = 工具栏高度', dk.bar === 'none' && dk.btn !== 'none' && dk.inView && dk.vpTop === dk.tb, dk);
+      await fresh(IVURL);
+      }
       iv.close();
     }
 
