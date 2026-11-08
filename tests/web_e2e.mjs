@@ -1186,6 +1186,12 @@ function check(name, ok, detail) {
       const dlgInfo = await cdp.eval(`return { base: document.querySelector('#davBase').value, lib: document.querySelector('#davLib').value,
         hash: location.hash, pass: document.querySelector('#davPass').type, pending: window.__IV.launchInfo().pending };`);
       check('没有账号 → 弹出账号框，默认同源根 + library', dlg && dlgInfo.base === iv.origin && dlgInfo.lib === 'library' && dlgInfo.pass === 'password', dlgInfo);
+      await waitFor(`document.activeElement && document.activeElement.id === 'davPass'`, 3000);
+      const pre = await cdp.eval(`const q = (s) => document.querySelector(s);
+        return { user: q('#davUser').value, pass: q('#davPass').value, focus: document.activeElement && document.activeElement.id,
+          syncUser: q('#davSyncUser').value, syncPass: q('#davSyncPass').value, syncOpen: q('#dav details.dav-sync').open };`);
+      check('第一次：用户名预填 iv-viewer、密码留空、光标在密码上；进度账号预填 gary 并展开「跨设备续读」',
+        pre.user === 'iv-viewer' && pre.pass === '' && pre.focus === 'davPass' && pre.syncUser === 'gary' && pre.syncPass === '' && pre.syncOpen, pre);
       check('弹框期间 hash 还在（刷新不丢）、还没发任何 /library 请求', /open=/.test(dlgInfo.hash) && iv.log.length === 0, { h: dlgInfo.hash, n: iv.log.length });
       await cdp.eval(`document.querySelector('#davBase').value = 'https://evil.example/'; document.querySelector('#davSave').click(); return 1;`);
       const rejected = await cdp.eval(`return { open: ${dlgOpen}, msg: document.querySelector('#davMsg').textContent };`);
@@ -1553,6 +1559,42 @@ function check(name, ok, detail) {
         check('带 #open= 启动链接时直接开书，不弹书架', await cdp.eval(`return document.querySelector('#shelf').classList.contains('hidden');`));
         await cdp.eval(`sessionStorage.removeItem('iv.e2e.home'); localStorage.setItem('iv.home.shelf.v1', '0'); return 1;`);
         await cdp.eval(cfgJs(`{ syncDir: 'users/gary/iv-progress' }`));
+      }
+
+      /* ---- 8e) 打开云端书时的进度条（慢网络：每个 /library 请求慢 150ms） ---- */
+      {
+        await fresh(IVURL);
+        iv.log.length = 0;
+        await cdp.eval(`window.__ops = []; window.__of = window.fetch;
+          window.fetch = (u, i) => /\\/library\\//.test(String(u)) ? new Promise((r) => setTimeout(r, 150)).then(() => window.__of(u, i)) : window.__of(u, i);
+          const e = document.querySelector('#openProg');
+          new MutationObserver(() => { if (e.classList.contains('show')) window.__ops.push(e.querySelector('.op-t').textContent + '|' + e.querySelector('.op-s').textContent + '|' + e.querySelector('.op-bar i').style.width); })
+            .observe(e, { subtree: true, childList: true, characterData: true, attributes: true });
+          window.__open = window.__IV.applyLaunchHash(${JSON.stringify(hashFor(RELE))}); return 1;`);
+        await waitFor(`window.__IV.state().total === 5`, 15000);
+        await sleep(200);
+        const ops = await cdp.eval(`return window.__ops;`);
+        const shownEarly = await cdp.eval(`return document.querySelector('#openProg').classList.contains('show');`);
+        check('慢开书：进度条出现，标题 = 书名，显示「解析章节 N / M」+ 百分比 + 进度宽度',
+          ops.some((s) => /^sample_comic\.epub\|/.test(s)) && ops.some((s) => /\|解析章节 \d+ \/ \d+ +\d+%\|\d/.test(s)), ops.slice(0, 12));
+        check('书打开后进度条已收起', shownEarly === false, shownEarly);
+        await cdp.eval(`window.fetch = window.__of; return 1;`);
+        // 失败（云端没有这本书）也要收起，不能一直挂在屏幕上
+        await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('不存在的书.epub'))}); return 1;`);
+        await sleep(1500);
+        check('打开失败后进度条也收起', await cdp.eval(`return !document.querySelector('#openProg').classList.contains('show');`));
+        // 直接用钩子：先不定长，再有百分比，end 之后收起；快的（<0.35s）根本不出现
+        await cdp.eval(`window.__pg = window.__IV.openProg('X 书'); window.__pg.set('读取目录…', null); return 1;`);
+        await sleep(500);
+        const indet = await cdp.eval(`const e = document.querySelector('#openProg'); return { show: e.classList.contains('show'), indet: e.classList.contains('indet'), s: e.querySelector('.op-s').textContent };`);
+        await cdp.eval(`window.__pg.set('解析章节 3 / 10', 0.3); return 1;`);
+        const pct = await cdp.eval(`const e = document.querySelector('#openProg'); return { indet: e.classList.contains('indet'), s: e.querySelector('.op-s').textContent, w: e.querySelector('.op-bar i').style.width };`);
+        await cdp.eval(`window.__pg.end(); return 1;`);
+        check('钩子：不定长 → 有百分比 → end 收起', indet.show && indet.indet && !pct.indet && /30%/.test(pct.s) && pct.w === '30%' &&
+          await cdp.eval(`return !document.querySelector('#openProg').classList.contains('show');`), { indet, pct });
+        await cdp.eval(`const q = window.__IV.openProg('快'); q.set('x', 0.5); q.end(); return 1;`);
+        await sleep(500);
+        check('开得很快（调用 end 早于 0.35 秒）→ 从不出现', await cdp.eval(`return !document.querySelector('#openProg').classList.contains('show');`));
       }
 
       /* ---- 9) 忘记此设备；返回键 ---- */
