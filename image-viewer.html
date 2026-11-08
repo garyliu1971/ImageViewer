@@ -39,13 +39,22 @@
   #viewport {
     position: fixed; inset: 0;
     transform-origin: center center;
-    touch-action: none;
-    cursor: grab;
     will-change: transform;
     user-select: none;
     -webkit-user-select: none;
+    pointer-events: none;   /* 它带着 translate/scale，命中框会跟着缩小、移走；鼠标 / 触摸一律交给下面的 #hit */
   }
-  #viewport.dragging { cursor: grabbing; }
+  /* 命中层：不带任何变换、和 #viewport 同一块可视区（updateChrome 同步 top/bottom），
+     平移 / 缩放 / 点击 / 双击 / 滚轮 / 触摸手势的监听都挂在它上面。z-index 低于工具栏 / 翻页箭头 / 缩略图 / 弹窗，它们照常收点击 */
+  #hit {
+    position: fixed; inset: 0; z-index: 1;
+    touch-action: none;
+    cursor: grab;
+    background: transparent;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #hit.dragging { cursor: grabbing; }
   #stage {
     position: absolute; inset: 0;
     transform-origin: center center;
@@ -115,7 +124,7 @@
     transition: transform .25s ease, opacity .25s ease;
   }
   #toolbar::-webkit-scrollbar { display: none; }
-  button, .btn, .thumb { touch-action: manipulation; }   /* 去掉触屏双击缩放的 300ms 等待，不影响 #viewport 的自定义手势 */
+  button, .btn, .thumb { touch-action: manipulation; }   /* 去掉触屏双击缩放的 300ms 等待，不影响 #hit 的自定义手势 */
   body.ui-hidden #toolbar, body.ui-hidden #chapterBar, body.ui-hidden #volBar { transform: translateY(-200%); opacity: 0; }
   .toolbar-group { display: flex; align-items: center; gap: 3px; white-space: nowrap; }
   .sep { width: 1px; height: 22px; background: var(--border); margin: 0 4px; flex: 0 0 auto; }
@@ -420,6 +429,7 @@
     </div>
   </div>
 </div>
+<div id="hit"></div>
 
 <div id="toolbar">
   <div class="toolbar-group">
@@ -513,7 +523,7 @@
     </div>
     <p class="start-resume" id="resumeHint"></p>
     <p class="start-hint">
-      <kbd>←</kbd> <kbd>→</kbd> 翻页 · 滚轮 缩放 · 拖拽 平移 · <kbd>D</kbd> 双页 · <kbd>M</kbd> 日漫方向<br>
+      <kbd>←</kbd> <kbd>→</kbd> 翻页 · 滚轮 缩放 / 长页上下滚 · 拖拽 平移 · <kbd>D</kbd> 双页 · <kbd>M</kbd> 日漫方向<br>
       <kbd>C</kbd> 裁白边 · <kbd>B</kbd> 纸质质感 · <kbd>A</kbd> 自动翻页 · <kbd>G</kbd> 跳页 ·
       <kbd>T</kbd> 缩略图 · <kbd>F</kbd> 全屏 · <kbd>I</kbd> 详情 · <kbd>?</kbd> 帮助
     </p>
@@ -535,8 +545,9 @@
     <table>
       <tr><td><kbd>←</kbd> / <kbd>→</kbd> / <kbd>PageUp</kbd> / <kbd>PageDown</kbd></td><td>上一页 / 下一页</td></tr>
       <tr><td><kbd>空格</kbd> / <kbd>Home</kbd> / <kbd>End</kbd></td><td>下一页 / 第一页 / 最后一页</td></tr>
-      <tr><td>滚轮 / 触控板上下滑</td><td>缩放（以鼠标位置为中心）</td></tr>
-      <tr><td>触控板捏合（<kbd>Ctrl</kbd> + 滚轮）</td><td>缩放</td></tr>
+      <tr><td>滚轮 / 触控板上下滑</td><td>整页放得进窗口（漫画）：缩放（以鼠标位置为中心）；页面比窗口高（PDF 按页宽读）：上下滚动，滚到页尾 / 页首再继续滚才翻页</td></tr>
+      <tr><td>触控板捏合 / <kbd>Ctrl</kbd> + 滚轮</td><td>缩放（任何时候都缩放）</td></tr>
+      <tr><td><kbd>↑</kbd> / <kbd>↓</kbd> / <kbd>PageUp</kbd> / <kbd>PageDown</kbd> / <kbd>空格</kbd></td><td>页面比窗口高时：上下滚动 10% / 90% 窗口高度，到页首 / 页尾再按才翻页（整页放得进窗口时 <kbd>↑</kbd> <kbd>↓</kbd> 不动，其余同上一行）</td></tr>
       <tr><td>触控板左右滑 / 触屏左右滑</td><td>翻页（方向随阅读方向）</td></tr>
       <tr><td><kbd>+</kbd> / <kbd>-</kbd></td><td>放大 / 缩小</td></tr>
       <tr><td>拖拽 / 单指拖动</td><td>平移图片</td></tr>
@@ -1561,7 +1572,8 @@
     window.__errs.push('rejection: ' + String((e.reason && e.reason.message) || e.reason));
   });
 
-  var viewport = $('#viewport'), stage = $('#stage'), pageBox = $('#pageBox');
+  var viewport = $('#viewport'), hit = $('#hit'), stage = $('#stage'), pageBox = $('#pageBox');
+  var zoomInfoEl = $('#zoomInfo'), zoomSliderEl = $('#zoomSlider');
   var grain = $('#grain'), thumbsEl = $('#thumbs');
 
   /* ================= 状态 ================= */
@@ -1571,7 +1583,10 @@
   var chapterIndex = 0;
   var index = -1;
   var zoom = 1, panX = 0, panY = 0, rotation = 0, fitMode = 'window';
+  var lastFit = null;          /* 最近一次非 custom 的适配方式（PDF 换页时用它代替 custom） */
+  var landBottomFor = -1;      /* 滚到页首再往上翻出来的上一页：落在页尾（接着往上读），记它的页号 */
   var loadToken = 0;
+  var pageLoading = false;    /* 当前页正在解码 / 渲染（showPage 开始 -> 画出来或失败）：翻页 / 滚动键据此区分「还在画」和「画失败了」 */
   var bookKey = null, bookTitle = '', bookKind = 'dir';
   var skipped = [];
   var urlMap = new Map();    // pageId -> {url, page}，LRU，避免几百页常驻全尺寸位图
@@ -1710,7 +1725,7 @@
     rec.index = index; rec.chapter = chapterIndex; rec.total = pages.length;
     rec.spread = spreadOn(); rec.direction = S.direction; rec.trim = S.trim;
     rec.book = S.book; rec.compare = S.compare;
-    rec.fit = fitMode === 'custom' ? 'window' : fitMode;
+    rec.fit = fitMode === 'custom' ? (pages[0] && pages[0].kind === 'pdf' ? (lastFit || 'width') : 'window') : fitMode;   /* PDF 缩放过再关掉，下次打开仍按页宽，不是适应窗口 */
     rec.title = bookTitle;
     rec.at = Date.now();
     books[bookKey] = rec;
@@ -2145,14 +2160,19 @@
     var changed = i !== index;
     index = i;
     rotation = 0;
-    if (fitMode === 'custom') fitMode = 'window';   /* 同桌面版：换页回到自动适配 */
+    if (fitMode === 'custom') {
+      /* 同桌面版：换页回到自动适配。PDF 例外：回到按页宽（上一次的适配方式），不然 Ctrl+滚轮 / 捏合缩放过一次，下一页就掉成「适应窗口」（16-24%，看不清字） */
+      fitMode = pages[i] && pages[i].kind === 'pdf' ? (lastFit || 'width') : 'window';
+    }
     setKeepWindow();
     var token = ++loadToken;
+    pageLoading = true;
     decidePair().then(function (pair) {
       if (token !== loadToken) return;
       return Promise.all(pair.map(urlFor)).then(function (urls) { paint(pair, urls, token); });
     })['catch'](function (e) {
       if (token !== loadToken) return;
+      pageLoading = false;                                                           // 画失败 / 被取消：不会再有 paint 了
       if (e && e.cancelled) return;                                                  // PDF 渲染被取消（关书 / 翻走）：不是错误
       if (e && e.ivToastAt && Date.now() - e.ivToastAt < 3000) return;              // PDF 读取失败时已经提示过了（更具体）
       toast('图片打开失败：' + (pages[index] ? pages[index].name : '') + '（' + ((e && e.message) || e) + '）');
@@ -2189,6 +2209,7 @@
     lastPair = pair;
     pair.forEach(thumbForViewed);
     if (token !== loadToken) return;
+    pageLoading = false;
     updateInfo();
     reflow();
   }
@@ -2206,9 +2227,13 @@
   }
 
   /* ================= 变换 ================= */
+  var lastVT = '', lastST = '';
   function applyTransform() {
-    viewport.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ')';
-    stage.style.transform = 'rotate(' + rotation + 'deg)';
+    /* 平移时只有 translate 在变：值没变的样式 / 文本不再重写（每个 pointermove / wheel 都会走到这里） */
+    var vt = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ')';
+    if (vt !== lastVT) { viewport.style.transform = vt; lastVT = vt; }
+    var st = 'rotate(' + rotation + 'deg)';
+    if (st !== lastST) { stage.style.transform = st; lastST = st; }
     syncZoomUI();
   }
   function baseSize() {
@@ -2222,6 +2247,8 @@
   }
   function applyFit(mode, quiet) {
     fitMode = mode;
+    wheelZoomed = false;      /* 换适配方式 / 换页：滚轮缩放那一轮结束，下一次滚轮重新按「页面是否溢出」判断 */
+    if (mode !== 'custom') lastFit = mode;
     if (!pages.length) { applyTransform(); return; }
     var rw = baseSize();
     zoom = C.computeZoom(mode, zoom, viewport.clientWidth, viewport.clientHeight, rw.w, rw.h);
@@ -2229,8 +2256,10 @@
     var dp0 = displayPair()[0];
     if (dp0 && dp0.kind === 'pdf' && rw.h * zoom > viewport.clientHeight) {
       panY = (rw.h * zoom - viewport.clientHeight) / 2;     /* PDF 按页宽读时从页面顶部开始，不是从中间 */
+      if (landBottomFor === index && dp0 === pages[index]) panY = -panY;   /* 往上翻出来的上一页：从页尾开始 */
       clampPan();
     }
+    if (dp0 && dp0 === pages[index]) landBottomFor = -1;
     applyTransform();
     if (!quiet) saveProgress();
   }
@@ -2258,9 +2287,10 @@
     clampPan(); applyTransform(); saveProgressSoon();
   }
   function syncZoomUI() {
-    $('#zoomInfo').textContent = Math.round(zoom * 100) + '%';
-    var sl = $('#zoomSlider'), pos = C.zoomSliderPos(zoom);
-    if (document.activeElement !== sl) sl.value = String(pos);
+    var label = Math.round(zoom * 100) + '%';
+    if (zoomInfoEl.textContent !== label) zoomInfoEl.textContent = label;     /* 平移时倍率没变：不写 DOM，工具栏不重排 */
+    var sl = zoomSliderEl, pos = String(C.zoomSliderPos(zoom));
+    if (document.activeElement !== sl && sl.value !== pos) sl.value = pos;
   }
 
   /* ================= 翻页 ================= */
@@ -2315,10 +2345,11 @@
   }
   function rerender() {
     var token = ++loadToken;
+    pageLoading = true;
     decidePair().then(function (pair) {
       if (token !== loadToken) return;
       return Promise.all(pair.map(urlFor)).then(function (urls) { paint(pair, urls, token); });
-    })['catch'](function () {});
+    })['catch'](function () { if (token === loadToken) pageLoading = false; });
   }
   function toggleMode(key, label) {
     if (key === 'compare' && !S.compare && pages.length < 2) { toast('至少两张图片才能对比'); return; }
@@ -2340,7 +2371,7 @@
 
   /* ---------------- 画布区域避开工具栏 / 章节条 / 缩略图 / 状态栏 ----------------
      桌面版的 canvas 是 pack 在工具栏和缩略图之间的，图片不会被 UI 盖住；
-     网页版用 fixed 层，靠 #viewport 的 top/bottom 缩进来对齐这个行为。
+     网页版用 fixed 层，靠 #viewport（和同样大小的命中层 #hit）的 top/bottom 缩进来对齐这个行为。
      隐藏 UI（单击中间 / 全屏沉浸式）时缩进归零，图片铺满窗口。 */
   function updateChrome() {
     var hidden = document.body.classList.contains('ui-hidden');
@@ -2350,6 +2381,8 @@
       (S.thumbs && pages.length ? ($('#thumbs').offsetHeight || 0) : 0);
     viewport.style.top = top + 'px';
     viewport.style.bottom = bottom + 'px';
+    hit.style.top = top + 'px';             /* 命中层和图片层同一块可视区：clientWidth / clientHeight 一致，点击分区不变 */
+    hit.style.bottom = bottom + 'px';
   }
 
   /* ================= 状态 / 信息 ================= */
@@ -2535,13 +2568,16 @@
   var pointers = new Map(), gesture = null, clickTimer = null;
   function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 
-  viewport.addEventListener('pointerdown', function (e) {
+  /* 鼠标 / 触摸监听都挂在 #hit（不带变换的全窗口命中层）上，不是带 translate/scale 的 #viewport：
+     后者的命中框会随平移 / 缩放缩小、移出窗口（PDF 按页宽打开时窗口里 0% 能点到），鼠标事件根本到不了它。 */
+  hit.addEventListener('pointerdown', function (e) {
     if (!pages.length) return;
-    try { viewport.setPointerCapture(e.pointerId); } catch (err) {}
+    if (e.pointerType === 'mouse' && e.button !== 0) return;     /* 右键 / 中键 / 侧键不是点击：不翻页、不切工具栏（也不打断正在进行的左键拖拽） */
+    try { hit.setPointerCapture(e.pointerId); } catch (err) {}
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    viewport.classList.add('dragging');
+    hit.classList.add('dragging');
     if (pointers.size === 1) {
-      gesture = { mode: 'pan', startX: e.clientX, startY: e.clientY, startTime: Date.now(), panX0: panX, panY0: panY, moved: false };
+      gesture = { mode: 'pan', startX: e.clientX, startY: e.clientY, startTime: Date.now(), panX0: panX, panY0: panY, moved: false, mouse: e.pointerType === 'mouse' };
     } else if (pointers.size === 2) {
       var ps = Array.from(pointers.values());
       gesture = { mode: 'pinch', startDist: dist(ps[0], ps[1]), startZoom: zoom, startPanX: panX, startPanY: panY,
@@ -2549,7 +2585,7 @@
     }
   });
 
-  viewport.addEventListener('pointermove', function (e) {
+  hit.addEventListener('pointermove', function (e) {
     if (!pointers.has(e.pointerId)) return;
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (!gesture) return;
@@ -2581,14 +2617,15 @@
     if (!pointers.has(e.pointerId)) return;
     pointers.delete(e.pointerId);
     if (pointers.size === 0) {
-      viewport.classList.remove('dragging');
+      hit.classList.remove('dragging');
       var g = gesture; gesture = null;
       if (g && g.mode === 'pan') {
         if (!g.moved) handleClick(e.clientX, e.clientY);
         else {
           var dt = Date.now() - g.startTime;
           var dx = e.clientX - g.startX, dy = e.clientY - g.startY;
-          if (dt < 320 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+          /* 鼠标在比窗口高的页面上（PDF 按页宽读）快拖一下不翻页：那是在拖页面上下看，斜着一抖就翻走很恼人；触屏的快滑翻页照旧 */
+          if (dt < 320 && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5 && !(g.mouse && overflowsV())) {
             var forward = (S.direction === 'rtl') ? (dx > 0) : (dx < 0);
             forward ? next() : prev();
           }
@@ -2600,9 +2637,9 @@
       gesture = { mode: 'pan', startX: p.x, startY: p.y, startTime: Date.now(), panX0: panX, panY0: panY, moved: true };
     }
   }
-  viewport.addEventListener('pointerup', endPointer);
-  viewport.addEventListener('pointercancel', endPointer);
-  viewport.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  hit.addEventListener('pointerup', endPointer);
+  hit.addEventListener('pointercancel', endPointer);
+  hit.addEventListener('contextmenu', function (e) { e.preventDefault(); });
 
   function handleClick(x, y) {
     var vw = viewport.clientWidth;
@@ -2617,20 +2654,84 @@
       updateChrome(); reflow();
     }, 260);
   }
-  viewport.addEventListener('dblclick', function (e) {
+  hit.addEventListener('dblclick', function (e) {
     e.preventDefault();
     if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
     if (!pages.length) return;
+    var vw = viewport.clientWidth;
+    if (e.clientX < vw * 0.18 || e.clientX > vw * 0.82) return;   /* 左右翻页区快速连点两下 = 翻两页，不是「双击切换适配」（否则 PDF 会从按页宽掉成实际大小，之后每页都是） */
     applyFit(fitMode === 'custom' ? 'window' : 'actual');   /* 同桌面版双击行为 */
   });
 
   /* ================= 滚轮 / 触控板 ================= */
+  /* 页面是否比可视区高（PDF 按页宽读几乎总是）。放得进窗口的页（漫画适应窗口）不算。 */
+  /* 当前页是否已经画出来：翻页后新页还没画好时，页面尺寸 / 平移值还是上一页的，这时不处理滚动 / 翻页键（否则连按两下会连翻两页） */
+  function pageReady() { return lastPair.length > 0 && lastPair[0] === pages[index]; }
+  function overflowsV() {
+    if (!pages.length) return false;
+    var rw = baseSize();
+    return rw.h * zoom > viewport.clientHeight + 1;
+  }
+  /* 竖向可滚动范围的一半：panY = +edge 是页首对齐可视区顶，panY = -edge 是页尾对齐可视区底（和 applyFit 对 PDF 的取法一致） */
+  function vEdge() {
+    var rw = baseSize();
+    return Math.max(0, (rw.h * zoom - viewport.clientHeight) / 2);
+  }
+  function edgeState() {
+    var e = vEdge();
+    return panY >= e - 0.5 ? 'top' : (panY <= -e + 0.5 ? 'bottom' : '');
+  }
+  /** 往下（dy > 0）/ 往上（dy < 0）滚 dy 像素；dx 同理横向。只在竖向溢出时调用。返回 true = 已处理。 */
+  function panPage(dx, dy) {
+    var e = vEdge();
+    panY = C.clamp(panY - dy, -e, e);
+    panX -= dx;
+    clampPan();           /* 横向仍用 clampPan 的留边规则 */
+    applyTransform(); saveProgressSoon();
+  }
+  /** 滚到页首 / 页尾以后继续滚才翻页。forward=true 翻下一页；往上翻出来的上一页落在页尾。 */
+  function flipTarget(forward) {
+    return forward ? Math.min(index + pairStep(), pages.length - 1) : Math.max(index - pairStep(), 0);
+  }
+  function flipByScroll(forward) {
+    if (flipTarget(forward) === index) {          /* 已经是第一页 / 最后一页：什么都不做（next() / prev() 会把同一页重排一遍，视图被甩回页首） */
+      if (forward && atBookEnd()) volEndHint();
+      return;
+    }
+    var before = index;
+    if (forward) next(); else prev();
+    if (!forward && index !== before) landBottomFor = index;
+  }
+
   var wheelAccumX = 0, wheelTimer = null;
-  viewport.addEventListener('wheel', function (e) {
+  var WHEEL_IDLE_MS = 250, WHEEL_ACC_MS = 1500, WHEEL_FLIP_PX = 200;
+  var wheelZoomed = false;      /* 这一轮（直到换适配 / 换页）里普通滚轮已经在缩放：放大到比窗口高以后也继续缩放，不会突然改成上下滚动 */
+  var wheelGest = { t: 0, edge: '', acc: 0, locked: false };
+  function wheelPan(dx, dy) {
+    var w = wheelGest, now = Date.now();
+    if (!pageReady()) { w.t = now; return; }       /* 刚翻页、新页还没画好：吞掉 */
+    var gap = now - w.t;
+    if (gap > WHEEL_IDLE_MS) { w.edge = edgeState(); w.locked = false; }   /* 新的一次滚动：看它是不是从页首 / 页尾开始的；上一次翻页后的惯性也在这里结束 */
+    if (gap > WHEEL_ACC_MS) w.acc = 0;           /* 一格一格慢慢滚：800ms 内的几格累加（滚轮一格 100px，两格翻页） */
+    w.t = now;
+    if (w.locked) return;                       /* 刚翻过页：这一串（含触控板惯性）剩下的事件都吞掉，停 250ms 才认下一次 */
+    var down = dy > 0, up = dy < 0, es = edgeState();
+    if ((down && w.edge === 'bottom' && es === 'bottom') || (up && w.edge === 'top' && es === 'top')) {
+      if (w.acc === 0 && flipTarget(down) !== index) toast(down ? '已到页尾，再滚一下翻到下一页' : '已到页首，再滚一下翻到上一页', 1400);   /* 慢慢一格一格滚时没有别的反馈 */
+      w.acc += Math.abs(dy);                    /* 一次滚动开始时就已经顶在边上：继续滚的量累加，够了才翻页 */
+      if (w.acc >= WHEEL_FLIP_PX) { w.acc = 0; w.locked = true; flipByScroll(down); }
+      return;
+    }
+    w.acc = 0;
+    if (dy) w.edge = '';                        /* 中途掉头 / 滚开了边：这一次滚动不再算「从边上开始」 */
+    panPage(dx, dy);
+  }
+
+  hit.addEventListener('wheel', function (e) {
     e.preventDefault();
     var m = e.deltaMode === 1 ? 16 : (e.deltaMode === 2 ? 120 : 1);
     var dx = e.deltaX * m, dy = e.deltaY * m;
-    if (e.ctrlKey) { zoomAt(e.clientX, e.clientY, Math.exp(-dy * 0.0015)); return; }
+    if (e.ctrlKey) { zoomAt(e.clientX, e.clientY, Math.exp(-dy * 0.0015)); return; }   /* 捏合 / Ctrl+滚轮：任何时候都缩放 */
     if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 3) {
       wheelAccumX += dx;
       clearTimeout(wheelTimer);
@@ -2642,6 +2743,12 @@
       }
       return;
     }
+    /* 页面比可视区高（PDF 按页宽读）：滚轮上下滚动；整页放得进窗口（漫画）：滚轮照旧缩放 */
+    if (overflowsV() && !(wheelZoomed && fitMode === 'custom')) {
+      if (e.deltaMode === 2) { dx = e.deltaX * viewport.clientWidth; dy = e.deltaY * viewport.clientHeight; }   /* 按「页」滚：一页 = 一个可视区 */
+      wheelPan(dx, dy); return;
+    }
+    wheelZoomed = true;
     zoomAt(e.clientX, e.clientY, Math.exp(-dy * 0.0015));
   }, { passive: false });
 
@@ -2657,6 +2764,18 @@
     }
     /* 书架开着时，空格 / 方向键 / L 等不要去翻后面的书（Esc 照常关弹窗） */
     if (e.key !== 'Escape' && !$('#shelf').classList.contains('hidden')) return;
+    /* 页面比可视区高时 ↑↓ 滚动 10%、PageUp / PageDown / 空格滚动 90%，到页首 / 页尾再按才翻页；放得进窗口时保持原样（↑↓ 不动，其余翻页） */
+    if (!anyModal() && overflowsV()) {
+      var kStep = e.key === 'ArrowDown' ? 0.1 : e.key === 'ArrowUp' ? -0.1 : (e.key === 'PageDown' || e.key === ' ') ? 0.9 : e.key === 'PageUp' ? -0.9 : 0;
+      if (kStep && (pageReady() || pageLoading)) {       /* 页面画失败了（不在加载中也没画出来）：不拦，PageUp / PageDown / 空格照旧翻页 */
+        e.preventDefault();
+        if (!pageReady()) return;
+        var es = edgeState();
+        if ((kStep > 0 && es === 'bottom') || (kStep < 0 && es === 'top')) { if (!e.repeat) flipByScroll(kStep > 0); }   /* 长按不连翻 */
+        else panPage(0, kStep * viewport.clientHeight);
+        return;
+      }
+    }
     switch (e.key) {
       case 'ArrowRight': case 'PageDown': case ' ': e.preventDefault(); next(); break;
       case 'ArrowLeft': case 'PageUp': e.preventDefault(); prev(); break;

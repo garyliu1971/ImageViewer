@@ -18,7 +18,7 @@ import { spawn } from 'node:child_process';
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
-const PAGE = path.join(ROOT, 'image-viewer.html');
+const PAGE = process.env.IV_PAGE ? path.resolve(process.env.IV_PAGE) : path.join(ROOT, 'image-viewer.html');   // IV_PAGE：指向别的 html（比如 git 里取出的旧版本），用来验证新增测试在旧代码上会失败
 
 /* ------------------------- 找浏览器 ------------------------- */
 function findChrome() {
@@ -595,7 +595,7 @@ function check(name, ok, detail) {
       // 拖拽过界后平移被钳制（clamp_pan）
       const sliderWant = window.IVCore.zoomSliderPos(2);   // 当前倍率 = 实际大小 1 × 2
       window.__IV.zoomAt(vw / 2, vh / 2, 4);
-      const vp0 = document.querySelector('#viewport');
+      const vp0 = document.querySelector('#hit');      // 鼠标 / 触摸事件的真实目标是不带变换的 #hit 命中层（见 [11b]），不是带 translate/scale 的 #viewport
       const r0 = vp0.getBoundingClientRect();
       const pe = (type, x, y, buttons) => vp0.dispatchEvent(new PointerEvent(type, {
         bubbles: true, cancelable: true, pointerId: 77, pointerType: 'mouse',
@@ -768,7 +768,7 @@ function check(name, ok, detail) {
       const iv = window.__IV;
       await __force('spread', true); await __force('direction', false); await __force('compare', false);
       iv.showPage(0); await __tick();
-      const vp = document.querySelector('#viewport');
+      const vp = document.querySelector('#hit');      // 真实事件的目标：不带变换的命中层（[11b] 用真实 CDP 输入验证它确实接得到）
       const r = vp.getBoundingClientRect();
       const pe = (type, x, y, extra) => vp.dispatchEvent(new PointerEvent(type, Object.assign({
         bubbles:true, cancelable:true, pointerId:1, pointerType:'mouse', isPrimary:true,
@@ -801,7 +801,8 @@ function check(name, ok, detail) {
       pp('pointerup', 11, cx - 140, cy, 0); pp('pointerup', 12, cx + 140, cy, 0);
       await __wait(80);
       out.pinchZoom = iv.state().zoom > z0 * 1.5;
-      // 滚轮 / 触控板
+      // 滚轮 / 触控板（整页放得进窗口时滚轮缩放；捏合放大后页面已经比窗口大，先回适应窗口）
+      iv.applyFit('window'); await __wait(30);
       const zw = iv.state().zoom;
       vp.dispatchEvent(new WheelEvent('wheel', { bubbles:true, cancelable:true, deltaY:-240, clientX:cx, clientY:cy }));
       out.wheelIn = iv.state().zoom > zw && iv.state().fitMode === 'custom';
@@ -2488,6 +2489,522 @@ function check(name, ok, detail) {
       check('file:// 页面选 PDF：提示要通过网址（http / https）打开，不会卡住', /http/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
       }
       }
+      /*SCROLLFIX-BEGIN*/
+      {   // [11b] 真实输入：命中层 / 滚轮 / 拖拽 / 方向键 / 点击分区 / UI 在命中层之上（块作用域，别和前面的变量重名）
+      /* ======== [11b] 为什么要单独一节：[11] 里的手势测试是 vp.dispatchEvent(...)，事件直接塞给监听器，根本不经过命中测试，
+         所以「真实鼠标事件打不到监听器」这类 bug（监听器挂在带 translate/scale 的 #viewport 上，命中框缩小 / 移出窗口）它看不见。
+         这一节全部用 CDP Input.dispatchMouseEvent / dispatchKeyEvent / dispatchTouchEvent 发真实输入，并用 elementFromPoint 网格验证命中。 ======== */
+      log('\n[11b] 真实输入（CDP Input.*）：命中层网格 / 滚轮 / 拖拽 / 方向键 / 点击分区 / 触摸 / UI 在命中层之上');
+      bookBufs['pdf/scroll.pdf'] = buildPdf({ pages: Array.from({ length: 6 }, () => ({ kind: 'text' })) });   // 6 页 Letter 竖版：按页宽读时比窗口高
+      const mouse = (type, x, y, o) => cdp.send('Input.dispatchMouseEvent', Object.assign({ type, x, y, button: 'none' }, o || {}));
+      const wheel = (x, y, dx, dy, mod) => mouse('mouseWheel', x, y, { deltaX: dx, deltaY: dy, modifiers: mod || 0 });
+      const CTRL = 2;
+      const click = async (x, y, n) => {
+        await mouse('mouseMoved', x, y);
+        for (let i = 1; i <= (n || 1); i++) {
+          await mouse('mousePressed', x, y, { button: 'left', buttons: 1, clickCount: i });
+          await mouse('mouseReleased', x, y, { button: 'left', buttons: 0, clickCount: i });
+        }
+      };
+      const drag = async (x0, y0, x1, y1, steps) => {
+        steps = steps || 8;
+        await mouse('mouseMoved', x0, y0);
+        await mouse('mousePressed', x0, y0, { button: 'left', buttons: 1, clickCount: 1 });
+        for (let i = 1; i <= steps; i++) await mouse('mouseMoved', x0 + (x1 - x0) * i / steps, y0 + (y1 - y0) * i / steps, { buttons: 1 });
+        await mouse('mouseReleased', x1, y1, { button: 'left', buttons: 0, clickCount: 1 });
+      };
+      const KEYS = { ArrowDown: ['ArrowDown', 40], ArrowUp: ['ArrowUp', 38], PageDown: ['PageDown', 34], PageUp: ['PageUp', 33],
+        ' ': ['Space', 32], ArrowRight: ['ArrowRight', 39], ArrowLeft: ['ArrowLeft', 37], t: ['KeyT', 84], '0': ['Digit0', 48], '1': ['Digit1', 49], '2': ['Digit2', 50] };
+      const key = async (k, o) => {
+        const [code, vk] = KEYS[k];
+        const text = k === ' ' ? ' ' : (k.length === 1 ? k : undefined);
+        await cdp.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, text }, o || {}));
+        await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk });
+      };
+      const st = () => cdp.eval(`const s = window.__IV.state(); return { index: s.index, zoom: s.zoom, panX: s.panX, panY: s.panY, fitMode: s.fitMode, total: s.total };`);
+      const geo = () => cdp.eval(`const t = parseFloat(document.querySelector('#viewport').style.top) || 0, b = parseFloat(document.querySelector('#viewport').style.bottom) || 0;
+        return { w: innerWidth, h: innerHeight, top: t, bottom: b, vh: innerHeight - t - b, hidden: document.body.classList.contains('ui-hidden') };`);
+      const near = (a, b, tol) => Math.abs(a - b) <= (tol === undefined ? 1.5 : tol);
+      /** 可视区里 13×13 个点的 elementFromPoint：落在命中层（#hit）= 好；落在工具栏 / 弹窗 / 翻页箭头等真实控件上 = 不算；其它（#viewport / BODY / 图片 …）= 坏 */
+      const hitGrid = () => cdp.eval(`
+        const t = parseFloat(document.querySelector('#viewport').style.top) || 0, b = parseFloat(document.querySelector('#viewport').style.bottom) || 0;
+        const N = 13, bad = {}; let hitN = 0, uiN = 0, badN = 0;
+        for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+          const x = innerWidth * (0.02 + 0.96 * i / (N - 1)), y = t + (innerHeight - t - b) * (0.02 + 0.96 * j / (N - 1));
+          const el = document.elementFromPoint(x, y);
+          if (el && el.id === 'hit') hitN++;
+          else if (el && el.closest('#toolbar,#chapterBar,#volBar,#thumbs,#statusbar,.nav,#start,.modal,#toast')) uiN++;
+          else { badN++; const k = el ? el.tagName + (el.id ? '#' + el.id : '') : 'null'; bad[k] = (bad[k] || 0) + 1; }
+        }
+        return { total: N * N, hitN, uiN, badN, bad };`);
+      const hitOk = (g) => g.badN === 0 && g.hitN >= g.total * 0.85;
+      const settle = async (idx) => {
+        await waitFor(`window.__IV.state().index === ${idx} && window.__IV.state().pair[0] && window.__IV.state().pair[0].endsWith('第 ${idx + 1} 页') && (() => { const m = document.querySelector('#pageBox .page img'); return m && m.complete && m.naturalWidth > 0; })()`, 25000);
+        await sleep(350);
+      };
+      const openScrollPdf = async () => {
+        await fresh(IVURL + hashFor('pdf/scroll.pdf'));
+        await waitFor(`window.__IV.state().total === 6 && window.__IV.state().decoded[0] && window.__IV.state().decoded[0].w > 0 && (() => { const m = document.querySelector('#pageBox .page img'); return m && m.complete && m.naturalWidth > 0; })()`, 25000);
+        await cdp.eval(`window.__IV.showPage(0); return 1;`);               // 前面的用例存过进度（页码 / 适配方式）：每次都从第 1 页、按页宽开始
+        await settle(0);
+        await cdp.eval(`window.__IV.applyFit('width'); return 1;`);
+        await sleep(400);
+      };
+      const wheelN = async (x, y, dy, n, gap) => { for (let i = 0; i < n; i++) { await wheel(x, y, 0, dy); await sleep(gap || 25); } };
+
+      /* ---- 1) PDF 按页宽打开（默认）：命中网格、真实滚轮 / 拖拽 / 方向键 ---- */
+      await openScrollPdf();
+      let G = await geo(), s0 = await st();
+      const CX = Math.round(G.w / 2), CY = Math.round(G.top + G.vh / 2);
+      check('PDF 首次打开：按页宽（width），页面比可视区高（panY 在页首 > 0）', s0.fitMode === 'width' && s0.panY > 50 && s0.index === 0, s0);
+      const gW = await hitGrid();
+      check('命中网格 PDF 按页宽：可视区 169 个点全部落在 #hit（或真实控件），没有一个落在 #viewport / BODY / 图片上', hitOk(gW), gW);
+      const compW = await cdp.eval(`const h = document.querySelector('#hit'), c = h ? getComputedStyle(h) : null, v = getComputedStyle(document.querySelector('#viewport'));
+        return { hasHit: !!h, hitTouch: c ? c.touchAction : null, hitZ: c ? c.zIndex : null, vpPE: v.pointerEvents };`);
+      check('命中层 #hit：touch-action:none（触摸手势在它上面）；#viewport pointer-events:none', compW.hasHit && compW.hitTouch === 'none' && compW.vpPE === 'none', compW);
+
+      /* 真实滚轮：整页比窗口高 -> 上下滚动，不缩放，不改适配方式 */
+      const pw0 = await st();
+      await wheelN(CX, CY, 100, 3);
+      const pw1 = await st();
+      check('真实滚轮（deltaY=100 ×3，窗口中心）：panY 下移 300、zoom 不变、fitMode 仍为 width', near(pw0.panY - pw1.panY, 300) && pw1.zoom === pw0.zoom && pw1.fitMode === 'width' && pw1.index === 0, { pw0, pw1 });
+      await wheelN(60, G.top + 80, -100, 2);       // 离中心很远的点（靠左上）
+      const pw2 = await st();
+      check('真实滚轮向上（deltaY=-100 ×2，靠边的点 (60, 顶部+80)）：panY 回升 200，zoom 不变', near(pw2.panY - pw1.panY, 200) && pw2.zoom === pw1.zoom, { pw1, pw2 });
+      await wheelN(CX, CY, 100, 60, 5);            // 60 格（计划里的复现量）：原代码里 zoom 一路缩到最小
+      const pw3 = await st();
+      check('真实滚轮 60 格：zoom 仍是原值（原代码这里会缩到最小值）、停在页尾（panY = -页首 panY）、没有翻页', pw3.zoom === pw0.zoom && near(pw3.panY, -pw0.panY, 2) && pw3.index === 0, { pw0, pw3 });
+
+      /* Ctrl+滚轮 / 捏合：任何时候都缩放 */
+      await openScrollPdf();
+      const cz0 = await st();
+      await wheel(CX, CY, 0, -200, CTRL); await sleep(40);
+      const cz1 = await st();
+      check('Ctrl+滚轮（deltaY=-200）在比窗口高的页上照样缩放：zoom ×e^0.3、fitMode=custom', near(cz1.zoom / cz0.zoom, Math.exp(0.3), 0.01) && cz1.fitMode === 'custom', { cz0, cz1 });
+
+      /* 真实拖拽：离中心很远的点，平移量 ≈ 拖动距离 */
+      await openScrollPdf();
+      const d0 = await st();
+      await drag(200, CY, 200, CY - 120);
+      const d1 = await st();
+      await drag(200, CY - 120, 200, CY - 20);
+      const d2 = await st();
+      check('真实拖拽（起点 (200,中部) 偏离中心）：向上拖 120 -> panY 减 120；再向下拖 100 -> 加 100；zoom 不变、没翻页',
+        near(d0.panY - d1.panY, 120, 2) && near(d2.panY - d1.panY, 100, 2) && d1.zoom === d0.zoom && d2.index === 0 && d2.fitMode === 'width', { d0, d1, d2 });
+      await drag(560, CY, 300, CY - 10, 3);        // 快速横拖（鼠标）：向左 = ltr 的「下一页」方向（向右是上一页，在第 1 页本来就是空操作，测不出守卫）
+      await sleep(100);
+      check('鼠标在比窗口高的页上快速向左横拖（>60px、<320ms，下一页方向）：不翻页（触屏快滑翻页保留）', (await st()).index === 0, await st());
+      await cdp.eval(`window.__IV.showPage(2); return 1;`); await settle(2);
+      await drag(300, CY, 560, CY - 10, 3);        // 第 3 页上向右快拖 = 上一页方向（这回是真的会翻的方向）
+      await sleep(100);
+      check('鼠标在比窗口高的页上快速向右横拖（上一页方向，从第 3 页）：也不翻页', (await st()).index === 2, await st());
+      /* 按下鼠标时命中层要拿到指针捕获（setPointerCapture）：拖到窗口外 / 工具栏上方时移动和抬起仍交给它。
+         CDP 注入的鼠标事件不会按捕获重定向（实测：hasPointerCapture 为 true，事件目标仍是工具栏），所以这里直接断言捕获状态，不断言拖拽结果。 */
+      await openScrollPdf();
+      await mouse('mouseMoved', 300, CY);
+      await mouse('mousePressed', 300, CY, { button: 'left', buttons: 1, clickCount: 1 });
+      const hasCap = await cdp.eval(`return document.querySelector('#hit').hasPointerCapture(1);`);
+      await mouse('mouseReleased', 300, CY, { button: 'left', buttons: 0, clickCount: 1 });
+      check('鼠标按下后命中层持有指针捕获（hasPointerCapture）', hasCap === true, { hasCap });
+      await mouse('mouseMoved', 600, CY);
+
+      /* 方向键 / PageUp·PageDown / 空格：滚动 10% / 90% 可视区高度，到边才翻页，翻页后保持按页宽 */
+      await openScrollPdf();
+      G = await geo();
+      const k0 = await st();
+      for (let i = 0; i < 3; i++) await key('ArrowDown');
+      const k1 = await st();
+      check('ArrowDown ×3：panY 下移 0.3 × 可视区高度，没翻页', near(k0.panY - k1.panY, 0.3 * G.vh, 1) && k1.index === 0 && k1.zoom === k0.zoom, { k0, k1, vh: G.vh });
+      for (let i = 0; i < 3; i++) await key('ArrowUp');
+      const k2 = await st();
+      check('ArrowUp ×3：回到页首（panY 恢复）', near(k2.panY, k0.panY, 1) && k2.index === 0, { k0, k2 });
+      await key('PageDown');
+      const k3 = await st();
+      check('PageDown：panY 下移 0.9 × 可视区高度', near(k0.panY - k3.panY, 0.9 * G.vh, 1) && k3.index === 0, { k0, k3, vh: G.vh });
+      await key('PageUp');
+      check('PageUp：回到页首', near((await st()).panY, k0.panY, 1) && (await st()).index === 0, await st());
+      await key(' ');
+      check('空格：同样下移 0.9 × 可视区高度（不是翻页）', near(k0.panY - (await st()).panY, 0.9 * G.vh, 1) && (await st()).index === 0, await st());
+      await key(' ');
+      const k4 = await st();
+      check('空格再按一次：滚到页尾（panY = -页首 panY），仍没翻页', near(k4.panY, -k0.panY, 1.5) && k4.index === 0, { k0, k4 });
+      await key('ArrowDown', { autoRepeat: true });
+      await sleep(250);
+      check('在页尾长按（autoRepeat）ArrowDown：不连翻', (await st()).index === 0, await st());
+      await key('PageDown');
+      await settle(1);
+      const k5 = await st();
+      check('页尾再按 PageDown：翻到第 2 页，保持按页宽（width），从页首开始（panY = 页首值）', k5.index === 1 && k5.fitMode === 'width' && near(k5.panY, k0.panY, 2) && near(k5.zoom, k0.zoom, 1e-6), { k0, k5 });
+      await key('PageUp');
+      await settle(0);
+      const k6 = await st();
+      check('页首再按 PageUp：回到第 1 页，落在页尾（接着往上读：panY = -页首值），保持 width', k6.index === 0 && k6.fitMode === 'width' && near(k6.panY, -k0.panY, 2), { k0, k6 });
+      await key('ArrowDown');
+      await settle(1);
+      const k7 = await st();
+      check('从页尾落点按 ArrowDown：已在页尾 -> 翻到下一页，从页首开始（只在边上才翻）', k7.index === 1 && k7.fitMode === 'width' && near(k7.panY, k0.panY, 2), { k0, k7 });
+      await key('ArrowRight');
+      await settle(2);
+      check('ArrowRight 照旧翻页（不受页面是否溢出影响）且保持 width', (await st()).index === 2 && (await st()).fitMode === 'width', await st());
+      /* Ctrl+滚轮缩放（fitMode=custom）后换页：PDF 回到按页宽（不是适应窗口）；漫画仍回适应窗口 */
+      await wheel(CX, CY, 0, -300, CTRL); await sleep(40);
+      const fc = await st();
+      await key('ArrowRight');
+      await settle(3);
+      const fc2 = await st();
+      check('PDF：Ctrl+滚轮缩放（custom）后换页 -> 回到 width（原来掉成 window，约 16-24% 看不清）', fc.fitMode === 'custom' && fc2.fitMode === 'width' && fc2.index === 3 && fc2.zoom > fc.zoom * 0.5, { fc, fc2 });
+
+      /* 滚轮滚到页尾后继续滚才翻页：连续一口气滚过页尾不翻；停一下再滚（两格）才翻；翻页后保持 width；往上同理落在页尾 */
+      await openScrollPdf();
+      const e0 = await st();
+      await wheelN(CX, CY, 100, 14, 30);          // 一口气滚过页尾（连续，间隔 30ms）
+      const e1 = await st();
+      check('一口气滚过页尾（14 格，间隔 30ms）：停在页尾、不翻页（避免一次连滚误翻）', e1.index === 0 && near(e1.panY, -e0.panY, 2), { e0, e1 });
+      await sleep(320);
+      await wheel(CX, CY, 0, 100);
+      await sleep(120);
+      check('页尾停一下后只滚一格：还不翻页（累计 100px < 200px）', (await st()).index === 0, await st());
+      await wheel(CX, CY, 0, 100);
+      await settle(1);
+      const e2 = await st();
+      check('再滚一格（累计 200px）：翻到第 2 页，保持 width，从页首开始', e2.index === 1 && e2.fitMode === 'width' && near(e2.panY, e0.panY, 2), { e0, e2 });
+      await sleep(320);
+      await wheelN(CX, CY, -100, 2, 30);
+      await settle(0);
+      const e3 = await st();
+      check('页首往上滚两格：回到第 1 页，落在页尾，保持 width', e3.index === 0 && e3.fitMode === 'width' && near(e3.panY, -e0.panY, 2), { e0, e3 });
+
+      /* 滚轮「慢慢一格一格」滚到页尾：每格隔 1 秒也能累计翻页（原来 800ms 就清零，一格 100px 永远凑不够 200px），并有提示 */
+      await openScrollPdf();
+      const sw0 = await st();
+      await wheelN(CX, CY, 100, 14, 30);
+      await sleep(320);
+      await wheel(CX, CY, 0, 100);
+      await sleep(150);
+      const swHint = await cdp.eval(`const t = document.querySelector('#toast'); return t.classList.contains('show') ? t.textContent : '';`);
+      await sleep(850);
+      check('页尾第一格：给提示（已到页尾，再滚一下翻到下一页），还没翻页', /再滚一下翻到下一页/.test(swHint) && (await st()).index === 0, { swHint, st: await st() });
+      await wheel(CX, CY, 0, 100);       // 距上一格约 1 秒
+      await settle(1);
+      const sw1 = await st();
+      check('每格隔约 1 秒的两格滚轮也能翻到下一页，保持 width、从页首开始', sw1.index === 1 && sw1.fitMode === 'width' && near(sw1.panY, sw0.panY, 2), { sw0, sw1 });
+
+      /* 翻页后的惯性：翻页后 250ms 内不断有滚轮事件（触控板惯性尾巴）时，不翻第二页、也不带着新页往下滚 */
+      await openScrollPdf();
+      const lk0 = await st();
+      await wheelN(CX, CY, 100, 14, 30);
+      await sleep(320);
+      await wheelN(CX, CY, 100, 2, 30);      // 累计 200px：翻到第 2 页
+      await wheelN(CX, CY, 100, 45, 30);     // 继续 ~1.4 秒的惯性（间隔 30ms < 250ms）
+      await sleep(300);
+      const lk1 = await st();
+      check('翻页后继续来惯性滚轮事件（45 个、间隔 30ms）：停在第 2 页的页首，没有被带着往下滚或再翻一页', lk1.index === 1 && near(lk1.panY, lk0.panY, 2), { lk0, lk1 });
+
+      /* 滚轮 deltaMode：行（×16px）和页（×可视区高度），CDP 的 mouseWheel 没法设 deltaMode，直接发合成 WheelEvent */
+      await openScrollPdf();
+      G = await geo();
+      const dm0 = await st();
+      const synWheel = (dy, mode) => cdp.eval(`const h = document.querySelector('#hit'); h.dispatchEvent(new WheelEvent('wheel', { deltaY: ${dy}, deltaMode: ${mode}, clientX: 600, clientY: 400, bubbles: true, cancelable: true })); return 1;`);
+      await synWheel(3, 1); await sleep(30);
+      const dm1 = await st();
+      await synWheel(0.5, 2); await sleep(30);
+      const dm2 = await st();
+      check('滚轮 deltaMode=1（3 行）：下移 48px；deltaMode=2（0.5 页）：下移 0.5 × 可视区高度', near(dm0.panY - dm1.panY, 48, 1) && near(dm1.panY - dm2.panY, 0.5 * G.vh, 1.5), { dm0, dm1, dm2, vh: G.vh });
+
+      /* 最后一页滚到页尾后继续滚 / 按键：停在页尾，不能被甩回页首 */
+      await openScrollPdf();
+      await cdp.eval(`window.__IV.showPage(5); return 1;`); await settle(5);
+      const lp0 = await st();
+      await wheelN(CX, CY, 100, 20, 30);
+      const lp1 = await st();
+      await sleep(320);
+      await wheelN(CX, CY, 100, 3, 30);
+      await sleep(400);
+      const lp2 = await st();
+      check('最后一页滚到页尾后继续滚（再来 3 格）：仍停在页尾（panY = -页首值），没有被甩回页首，没翻页', lp1.index === 5 && near(lp1.panY, -lp0.panY, 2) && lp2.index === 5 && near(lp2.panY, lp1.panY, 1), { lp0, lp1, lp2 });
+      await key(' '); await sleep(300);
+      await key(' '); await sleep(300);
+      const lp3 = await st();
+      check('最后一页页尾再按空格 ×2：panY 不变、仍是最后一页', lp3.index === 5 && near(lp3.panY, lp1.panY, 1), { lp1, lp3 });
+
+      /* 连按两次翻页键（同一个任务里发两个 keydown）：新页还没画好，第二下被吞掉，只翻一页 */
+      await openScrollPdf();
+      await key(' '); await key(' ');
+      await cdp.eval(`for (let i = 0; i < 2; i++) document.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true, cancelable: true })); return 1;`);
+      await settle(1);
+      check('页尾处同一时刻发两次 PageDown：只翻一页（新页画好之前的按键被吞掉）', (await st()).index === 1, await st());
+
+      /* 弹窗打开时 ↑↓ 不滚动页面（它们属于弹窗，比如帮助里滚动文字） */
+      await openScrollPdf();
+      await cdp.eval(`document.querySelector('#help').classList.remove('hidden'); return 1;`);
+      const mo0 = await st();
+      await key('ArrowDown'); await key('ArrowDown');
+      const mo1 = await st();
+      await cdp.eval(`document.querySelector('#help').classList.add('hidden'); return 1;`);
+      check('帮助弹窗打开时按 ArrowDown ×2：页面不动（panY、页码不变）', mo1.panY === mo0.panY && mo1.index === mo0.index, { mo0, mo1 });
+      await key('ArrowDown');
+      check('弹窗关掉后 ArrowDown 又能滚', (await st()).panY < mo0.panY - 10, { mo0, now: await st() });
+
+      /* 适应窗口的 PDF：Ctrl+滚轮缩放（custom）后换页 -> 回「适应窗口」（lastFit 记的是最近一次非 custom 的适配），不是 width；缩放过的 PDF 存进度也记原来的适配方式 */
+      await openScrollPdf();
+      await key('0'); await sleep(250);
+      await wheel(CX, CY, 0, -300, CTRL); await sleep(60);
+      const lf0 = await st();
+      await cdp.eval(`window.__IV.saveProgress(); return 1;`);
+      const savedFit = await cdp.eval(`const s = window.__IV.state(); const r = window.__IV.books()[s.bookKey]; return r ? r.fit : null;`);
+      await key('ArrowRight'); await settle(1);
+      const lf1 = await st();
+      check('PDF 适应窗口 -> Ctrl+滚轮缩放 -> 换页：回到 window（不是 width）；缩放状态下存的进度 fit 也是 window', lf0.fitMode === 'custom' && lf1.fitMode === 'window' && savedFit === 'window', { lf0, lf1, savedFit });
+      await openScrollPdf();
+      await wheel(CX, CY, 0, -300, CTRL); await sleep(60);
+      await cdp.eval(`window.__IV.saveProgress(); return 1;`);
+      const savedFit2 = await cdp.eval(`const s = window.__IV.state(); const r = window.__IV.books()[s.bookKey]; return r ? r.fit : null;`);
+      check('PDF 按页宽 -> Ctrl+滚轮缩放（custom）后存进度：fit 记 width（重开仍按页宽，不是 window）', (await st()).fitMode === 'custom' && savedFit2 === 'width', { savedFit2 });
+
+      /* 点击分区里的「快速连点」「非左键」 */
+      await openScrollPdf();
+      G = await geo();
+      await cdp.eval(`window.__IV.showPage(1); return 1;`); await settle(1);
+      const edc0 = await st();
+      await click(G.w - 60, CY, 2);       // 右边缘快速连点两下 = 翻两页（浏览器随后还会发 dblclick）
+      await sleep(900);
+      const edc1 = await st();
+      await key('ArrowRight'); await sleep(900);
+      const edc2 = await st();
+      check('右边缘快速连点两下：翻两页（第 2 -> 4 页），适配方式仍是 width（原来 dblclick 把它切成 actual 100%，之后每页都是）', edc0.index === 1 && edc1.index === 3 && edc1.fitMode === 'width' && near(edc1.zoom, edc0.zoom, 1e-6) && edc2.index === 4 && edc2.fitMode === 'width', { edc0, edc1, edc2 });
+      await click(60, CY, 2);
+      await sleep(900);
+      const edc3 = await st();
+      check('左边缘快速连点两下：翻回两页（5 -> 3），仍是 width', edc3.index === 2 && edc3.fitMode === 'width', { edc3 });
+      const nb0 = await st();
+      const ui0 = (await geo()).hidden;
+      const nbBad = [];      // 每一下都要和起点比（翻过去又翻回来、显示又隐藏会互相抵消）
+      for (const btn of ['right', 'middle']) {
+        for (const xx of [60, G.w - 60, CX]) {
+          await mouse('mouseMoved', xx, CY);
+          await mouse('mousePressed', xx, CY, { button: btn, buttons: btn === 'right' ? 2 : 4, clickCount: 1 });
+          await mouse('mouseReleased', xx, CY, { button: btn, buttons: 0, clickCount: 1 });
+          await sleep(450);
+          const nbNow = await st();
+          if (nbNow.index !== nb0.index || (await geo()).hidden !== ui0) nbBad.push({ btn, xx, index: nbNow.index, hidden: (await geo()).hidden });
+        }
+      }
+      const nb1 = await st();
+      check('右键 / 中键点左边缘、右边缘、中间（逐个检查）：不翻页、不切换工具栏（只有左键算点击）', nb1.index === nb0.index && (await geo()).hidden === ui0 && nbBad.length === 0, { nb0, nb1, ui0, nbBad });
+      await click(60, CY); await settle(nb0.index - 1);
+      check('（对照）左键点左边缘仍然翻页', (await st()).index === nb0.index - 1, await st());
+      await openScrollPdf();      // 下面「触控板横向滚」接着从第 1 页开始
+
+      /* 触控板横向滚：照旧翻页（页面比窗口高时也是） */
+      await sleep(320);
+      await wheel(CX, CY, 90, 2);
+      await settle(1);
+      check('横向为主的滚轮（deltaX=90, deltaY=2）仍然翻页', (await st()).index === 1, await st());
+
+      /* 点击分区：真实点击左 / 右 18% 翻页，中间切换工具栏，双击切换适配 */
+      await openScrollPdf();
+      await cdp.eval(`window.__IV.showPage(2); return 1;`); await settle(2);
+      G = await geo();
+      await click(60, CY); await settle(1);
+      check('真实点击左边缘（x=60）：上一页（原代码：点不到，页码纹丝不动）', (await st()).index === 1, await st());
+      await click(G.w - 60, CY); await settle(2);
+      check('真实点击右边缘（x=窗口宽-60）：下一页', (await st()).index === 2, await st());
+      await click(CX, CY); await sleep(400);
+      const ui1 = (await geo()).hidden;
+      await click(CX, CY); await sleep(400);
+      check('真实点击中间：隐藏 / 再点显示工具栏', ui1 === true && (await geo()).hidden === false, { ui1 });
+      await sleep(300);
+      const fz0 = (await st()).fitMode;
+      await click(CX, CY, 2); await sleep(500);
+      const fz1 = await st();
+      check('真实双击中间：按页宽（width）-> 实际大小（actual），工具栏显隐不变', fz0 === 'width' && fz1.fitMode === 'actual' && (await geo()).hidden === false, { fz0, fz1 });
+
+      /* PDF：适应窗口 / 实际大小下的命中网格；适应窗口时整页放得进窗口 -> 滚轮缩放 */
+      await key('0'); await sleep(200);
+      const gWin = await hitGrid();
+      check('命中网格 PDF 适应窗口：全部落在 #hit（或真实控件）', hitOk(gWin), gWin);
+      const wz0 = await st();
+      await wheel(CX, CY, 0, -240); await sleep(60);
+      const wz1 = await st();
+      check('PDF 适应窗口（整页放得进窗口）：滚轮照旧缩放（zoom ×e^0.36、custom、panY 不乱动）', wz0.fitMode === 'window' && near(wz1.zoom / wz0.zoom, Math.exp(0.36), 0.01) && wz1.fitMode === 'custom', { wz0, wz1 });
+      await key('1'); await sleep(250);
+      const gAct = await hitGrid();
+      check('命中网格 PDF 实际大小：全部落在 #hit（或真实控件）', hitOk(gAct), gAct);
+      await key('2'); await sleep(250);
+
+      /* 翻页箭头 / 工具栏 / 缩略图条 / 弹窗 / 开始页 / 账号框：必须在命中层之上，真实点击照常收到 */
+      G = await geo();
+      const navPos = await cdp.eval(`const r = document.querySelector('#navNext').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, top: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2).closest('#navNext') !== null };`);
+      const iN0 = (await st()).index;
+      await click(navPos.x, navPos.y); await settle(iN0 + 1);
+      check('真实点击右侧翻页箭头 #navNext（在命中层之上）：下一页，而不是被命中层当成「右边缘点击」吞掉两次', navPos.top && (await st()).index === iN0 + 1, { navPos, idx: (await st()).index, iN0 });
+      const centerOf = (sel) => cdp.eval(`const e = document.querySelector(${JSON.stringify(sel)}); e.scrollIntoView({ block: 'nearest', inline: 'nearest' }); const r = e.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, ok: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) !== null && e.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)) };`);
+      const isOpen = (id) => cdp.eval(`return !document.querySelector('#${id}').classList.contains('hidden');`);
+      const bh = await centerOf('#btnHelp');
+      await click(bh.x, bh.y); await sleep(150);
+      const helpOpen = await isOpen('help');
+      const hc = await centerOf('[data-close="help"]');
+      await click(hc.x, hc.y); await sleep(150);
+      check('工具栏「?」真实点击打开帮助；弹窗右上角 ✕ 真实点击关闭', bh.ok && helpOpen && hc.ok && !(await isOpen('help')), { bh, helpOpen, hc });
+      await click(bh.x, bh.y); await sleep(150);
+      await click(20, G.h - 20); await sleep(150);
+      check('弹窗打开时点它的背景（窗口左下角）：关闭弹窗，且没有穿透到命中层翻页', helpOpen && !(await isOpen('help')) && (await st()).index === iN0 + 1, await st());
+      const pi = await centerOf('#pageInfo');
+      await click(pi.x, pi.y); await sleep(150);
+      const jumpOpen = await isOpen('jump');
+      const jc = await centerOf('[data-close="jump"]');
+      await click(jc.x, jc.y); await sleep(150);
+      check('点页码弹出跳页框；真实点「取消」关闭', pi.ok && jumpOpen && jc.ok && !(await isOpen('jump')), { pi, jumpOpen, jc });
+      const bd = await centerOf('#btnDetail');
+      await click(bd.x, bd.y); await sleep(200);
+      const detOpen = await isOpen('detail');
+      const dc = await centerOf('[data-close="detail"]');
+      await click(dc.x, dc.y); await sleep(150);
+      check('工具栏详情按钮 -> 详情弹窗；✕ 真实点击关闭', bd.ok && detOpen && dc.ok && !(await isOpen('detail')), { bd, detOpen, dc });
+      /* 书架 / 账号框（它们的内容靠网络，这里直接显示出来，只验证盖在命中层上、按钮真实点击有效） */
+      await cdp.eval(`document.querySelector('#shelf').classList.remove('hidden'); return 1;`);
+      const shOn = await cdp.eval(`const c = document.querySelector('#shelf .modal-card').getBoundingClientRect(); const e = document.elementFromPoint(c.left + c.width / 2, c.top + 40); return e && e.closest('#shelf') !== null;`);
+      const sc = await centerOf('#shelf .modal-close');
+      await click(sc.x, sc.y); await sleep(150);
+      check('书架弹窗盖在命中层之上（中心点命中它自己）；✕ 真实点击关闭', shOn === true && sc.ok && !(await isOpen('shelf')), { shOn, sc });
+      await cdp.eval(`document.querySelector('#dav').classList.remove('hidden'); return 1;`);
+      const dvOn = await cdp.eval(`const c = document.querySelector('#dav .modal-card').getBoundingClientRect(); const e = document.elementFromPoint(c.left + c.width / 2, c.top + 30); return e && e.closest('#dav') !== null;`);
+      const dcx = await centerOf('#davCancel');
+      await click(dcx.x, dcx.y); await sleep(200);
+      check('账号框盖在命中层之上；「取消」真实点击关闭', dvOn === true && dcx.ok && !(await isOpen('dav')), { dvOn, dcx });
+      /* 缩略图条 */
+      await key('t'); await sleep(500);
+      const thOn = await cdp.eval(`const t = document.querySelector('#thumbs'); return !t.classList.contains('hidden') && document.querySelectorAll('#thumbs .thumb').length;`);
+      const th4 = await centerOf('#thumbs .thumb:nth-child(5)');
+      await click(th4.x, th4.y); await settle(4);
+      check('缩略图条（T 打开）：真实点击第 5 张缩略图 -> 跳到第 5 页', thOn === 6 && th4.ok && (await st()).index === 4, { thOn, th4, idx: (await st()).index });
+      const hitMirror = await cdp.eval(`const h = document.querySelector('#hit'), v = document.querySelector('#viewport'); return { ht: h.style.top, hb: h.style.bottom, vt: v.style.top, vb: v.style.bottom };`);
+      check('缩略图条打开时：命中层的上 / 下缩进和图片层（#viewport）一致（点击分区、可视区高度同一块区域）', hitMirror.hb !== '' && hitMirror.hb !== '0px' && hitMirror.ht === hitMirror.vt && hitMirror.hb === hitMirror.vb, hitMirror);
+      await key('t'); await sleep(300);
+      const gTh = await hitGrid();
+      check('命中网格（缩略图条关闭后）：命中层随可视区重新铺满、全部点都落在 #hit', hitOk(gTh), gTh);
+      /* 开始页（没有打开书）：按钮真实可点；命中层不挡 */
+      await fresh(IVURL);
+      const sd = await centerOf('#startDav');
+      await click(sd.x, sd.y); await sleep(200);
+      const startDav = await isOpen('dav');
+      const dc2 = await centerOf('#davCancel');
+      await click(dc2.x, dc2.y); await sleep(150);
+      check('开始页：「书库账号」按钮真实点击 -> 账号框打开；「取消」关闭', sd.ok && startDav && dc2.ok && !(await isOpen('dav')), { sd, startDav, dc2 });
+
+      /* ---- 2) 漫画（整页放得进窗口）：滚轮仍缩放；Ctrl+滚轮；拖拽；键盘；换页回适应窗口 ---- */
+      await fresh(IVURL);
+      await cdp.eval(`
+        const it = [];
+        for (let i = 1; i <= 4; i++) it.push(await __mk(i + '.png', 'cm/' + i + '.png', 600, 900, { rect: '#345', rectW: 600, rectH: 900 }));
+        window.__IV.openItems(it, { kind: 'dir', title: 'cm' });
+        await __force('spread', false); await __force('compare', false); await __force('trim', false);
+        window.__IV.showPage(0); await __tick(); return 1;`);
+      await sleep(400);
+      G = await geo();
+      const cy = Math.round(G.top + G.vh / 2);
+      const m0 = await st();
+      check('漫画：适应窗口，整页放得进窗口（panY=0）', m0.fitMode === 'window' && m0.panY === 0 && m0.index === 0, m0);
+      const gC = await hitGrid();
+      check('命中网格 漫画适应窗口：全部落在 #hit（或真实控件）（原代码里只有约 4% 的点打得到）', hitOk(gC), gC);
+      await wheel(CX, cy, 0, -240); await sleep(60);
+      const m1 = await st();
+      check('漫画（整页放得进窗口）：滚轮照旧缩放（deltaY=-240 -> zoom ×e^0.36），fitMode=custom', near(m1.zoom / m0.zoom, Math.exp(0.36), 0.01) && m1.fitMode === 'custom', { m0, m1 });
+      await wheel(CX, cy, 0, 100, CTRL); await sleep(60);
+      const m2 = await st();
+      check('漫画：Ctrl+滚轮缩小', m2.zoom < m1.zoom && near(m2.zoom / m1.zoom, Math.exp(-0.15), 0.01), { m1, m2 });
+      await key('0'); await sleep(200);          // 回到适应窗口：滚轮缩放那一轮结束（滚轮缩放过的页放大后仍继续缩放，见本节末尾）
+      await wheel(CX, cy, 0, -900, CTRL); await sleep(60);
+      const m3 = await st();
+      await wheel(CX, cy, 0, 100); await sleep(60);
+      const m4 = await st();
+      check('漫画用 Ctrl+滚轮放大到比窗口高之后：普通滚轮改为上下滚动（owner 决定：页面溢出才滚动），不再缩放', m3.fitMode === 'custom' && m4.zoom === m3.zoom && m4.panY < m3.panY, { m3, m4 });
+      await drag(500, 300, 450, 250);
+      const m5 = await st();
+      check('漫画放大后真实拖拽（起点 (500,300)，向左上 50,50）：panX / panY 各 -50', near(m5.panX - m4.panX, -50, 2) && near(m5.panY - m4.panY, -50, 2), { m4, m5 });
+      await click(CX, cy, 2); await sleep(500);
+      const m6 = await st();
+      check('漫画真实双击：custom -> 回到适应窗口（window）', m6.fitMode === 'window' && near(m6.zoom, m0.zoom, 1e-6), { m0, m6 });
+      await key('ArrowDown');
+      const m7 = await st();
+      check('漫画整页放得进窗口时 ArrowDown 不动（照旧）：panY、页码都不变', m7.panY === 0 && m7.index === 0, m7);
+      await key('PageDown'); await sleep(400);
+      check('漫画 PageDown 照旧翻页', (await st()).index === 1, await st());
+      await wheel(CX, cy, 0, -300, CTRL); await sleep(60);
+      const mf = await st();
+      await key('ArrowRight'); await sleep(500);
+      const mf2 = await st();
+      check('漫画：Ctrl+滚轮缩放（custom）后换页 -> 仍回「适应窗口」（旧行为不变，只有 PDF 保持按页宽）', mf.fitMode === 'custom' && mf2.fitMode === 'window' && mf2.index === 2, { mf, mf2 });
+      await wheel(CX, cy, 90, 2); await sleep(300);
+      check('漫画：横向为主的滚轮照旧翻页', (await st()).index === 3, await st());
+      await click(60, cy); await sleep(400);
+      check('漫画：真实点击左边缘翻上一页', (await st()).index === 2, await st());
+      /* 普通滚轮在整页放得进窗口的漫画上缩放：一格放大后页面就比窗口高了，但这一轮滚轮缩放要一直缩放下去（不能第一格之后就变成上下滚动），也能缩回来 */
+      await key('0'); await sleep(250);
+      const wz0c = await st();
+      await wheelN(CX, cy, -100, 6, 400);        // 每格隔 400ms（> 250ms 空闲间隔）
+      const wz1c = await st();
+      check('漫画适应窗口：普通滚轮连放大 6 格（每格隔 400ms）：zoom 每格 ×e^0.15（共 ×e^0.9），不会第一格之后就停', wz1c.fitMode === 'custom' && near(wz1c.zoom / wz0c.zoom, Math.exp(0.9), 0.02), { wz0c, wz1c });
+      await wheelN(CX, cy, 100, 4, 400);
+      const wz2c = await st();
+      check('接着普通滚轮缩小 4 格：zoom 缩回（×e^-0.6）', near(wz2c.zoom / wz1c.zoom, Math.exp(-0.6), 0.02), { wz1c, wz2c });
+      await key('0'); await sleep(250);
+      const wz3c = await st();
+      await wheelN(CX, cy, -100, 2, 400);
+      check('回到适应窗口（0 键）后重新开始一轮：滚轮又从缩放开始', wz3c.fitMode === 'window' && near((await st()).zoom / wz3c.zoom, Math.exp(0.3), 0.02), { wz3c, now: await st() });
+
+      /* 一页画不出来（损坏的图）：前一页是溢出的长页时，PageUp / PageDown / 空格仍然翻页（不能被「新页还没画好」的守卫吞掉） */
+      await fresh(IVURL);
+      await cdp.eval(`
+        const it = [];
+        it.push(await __mk('1.png', 'bad/1.png', 600, 2400, { rect: '#345', rectW: 600, rectH: 2400 }));
+        const garbage = new File([new Uint8Array(2000).fill(7)], '2.png', { type: 'image/png' });
+        it.push({ kind: 'file', file: garbage, name: '2.png', path: 'bad/2.png', size: 2000 });
+        for (let i = 3; i <= 5; i++) it.push(await __mk(i + '.png', 'bad/' + i + '.png', 600, 2400, { rect: '#345', rectW: 600, rectH: 2400 }));
+        window.__IV.openItems(it, { kind: 'dir', title: 'bad' });
+        await __force('spread', false); await __force('compare', false); await __force('trim', false);
+        window.__IV.showPage(0); await __tick(); window.__IV.applyFit('width'); await __tick(); return 1;`);
+      await sleep(400);
+      const bd0 = await st();
+      await key('ArrowRight'); await sleep(900);
+      const bd1 = await st();
+      const bdToast = await cdp.eval(`return document.querySelector('#toast').textContent;`);
+      check('（前提）第 2 页是坏图：翻到它时提示「图片打开失败」，前一页（长页，按页宽）仍是溢出的', bd0.total === 5 && bd1.index === 1 && /图片打开失败/.test(bdToast) && bd1.fitMode === 'width', { bd0, bd1, bdToast });
+      await key('PageDown'); await sleep(600);
+      check('停在画不出来的页上按 PageDown：照旧翻到下一页', (await st()).index === 2, await st());
+      await key('ArrowLeft'); await sleep(900);
+      const bd2 = await st();
+      await key('PageUp'); await sleep(600);
+      check('回到坏图页后按 PageUp：照旧翻到上一页', bd2.index === 1 && (await st()).index === 0, { bd2, now: await st() });
+      await key('ArrowRight'); await sleep(900);
+      await key(' '); await sleep(600);
+      check('停在坏图页上按空格：照旧翻到下一页', (await st()).index === 2, await st());
+
+      /* ---- 3) 触摸：单指拖动 / 双指捏合（touch-action:none 在接触摸的那一层）---- */
+      await openScrollPdf();
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+      const tp = (type, pts) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: pts.map((p, i) => ({ x: p[0], y: p[1], id: i + 1 })) });
+      const t0 = await st();
+      await tp('touchStart', [[300, CY]]);
+      for (let i = 1; i <= 6; i++) await tp('touchMove', [[300, CY - 20 * i]]);
+      await tp('touchEnd', []);
+      await sleep(150);
+      const t1 = await st();
+      check('触摸单指向上拖 120px：panY 减 120，zoom 不变（touch-action:none 在命中层上，浏览器没抢走手势）', near(t0.panY - t1.panY, 120, 3) && t1.zoom === t0.zoom, { t0, t1 });
+      await tp('touchStart', [[900, CY]]);
+      for (let i = 1; i <= 3; i++) await tp('touchMove', [[900 - 130 * i, CY]]);
+      await tp('touchEnd', []);
+      await settle(1);
+      check('触摸快滑（向左 390px、几十毫秒）：在比窗口高的页上照样翻页（触屏的快滑翻页保留，只有鼠标不翻）', (await st()).index === 1, await st());
+      await tp('touchStart', [[CX - 40, CY], [CX + 40, CY]]);
+      for (let i = 1; i <= 6; i++) await tp('touchMove', [[CX - 40 - 20 * i, CY], [CX + 40 + 20 * i, CY]]);
+      await tp('touchEnd', []);
+      await sleep(150);
+      const t2 = await st();
+      check('触摸双指捏合（间距 80 -> 320）：放大，fitMode=custom', t2.zoom > t1.zoom * 2 && t2.fitMode === 'custom', { t1, t2 });
+      await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      }
+      /*SCROLLFIX-END*/
       iv.close();
     }
 
