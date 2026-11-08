@@ -810,16 +810,16 @@ test('书架：parsePropfind / shelfSplit / 面包屑', () => {
     dirR('/library/%E5%B0%8F%E8%AF%B4/%E7%AC%AC%E4%BA%8C%E5%8D%B7/') +       // 子目录「第二卷」
     fileR('/library/%E5%B0%8F%E8%AF%B4/a%20b%231.epub', 1234, 'Sat, 07 Nov 2026 08:00:00 GMT') +
     fileR('/library/%E5%B0%8F%E8%AF%B4/vol10.cbz', 5, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/vol2.cbz', 6, 'x') +
-    fileR('/library/%E5%B0%8F%E8%AF%B4/x.pdf', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/.hidden.cbz', 9, 'x') +
+    fileR('/library/%E5%B0%8F%E8%AF%B4/x.pdf', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/y.rar', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/.hidden.cbz', 9, 'x') +
     fileR('/library/%E5%B0%8F%E8%AF%B4/a&amp;b.zip', 7, 'x'));
   const es = C.parsePropfind(xml, '/library/%E5%B0%8F%E8%AF%B4/');
-  assert.deepEqual(es.map((e) => e.name), ['第二卷', 'a b#1.epub', 'vol10.cbz', 'vol2.cbz', 'x.pdf', '.hidden.cbz', 'a&b.zip']);
+  assert.deepEqual(es.map((e) => e.name), ['第二卷', 'a b#1.epub', 'vol10.cbz', 'vol2.cbz', 'x.pdf', 'y.rar', '.hidden.cbz', 'a&b.zip']);
   assert.equal(es[0].isDir, true); assert.equal(es[1].isDir, false); assert.equal(es[1].size, 1234);
   assert.equal(es[1].mtime, Date.parse('2026-11-07T08:00:00Z')); assert.equal(es[2].mtime, null);
   const sp = C.shelfSplit(es);
   assert.deepEqual(sp.dirs.map((e) => e.name), ['第二卷']);
-  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz']);   // 自然排序，隐藏文件不列
-  assert.equal(sp.other, 1);                                                                          // x.pdf 只计数
+  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz', 'x.pdf']);   // 自然排序，隐藏文件不列；pdf 和 zip 系一样列出来
+  assert.equal(sp.other, 1);                                                                          // y.rar 只计数
 
   // 不带前缀的 XML、绝对 URL 的 href、小写前缀
   const x2 = '<multistatus xmlns="DAV:"><response><href>https://h.example/library/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>' +
@@ -873,10 +873,10 @@ const volList = (xml, dir) => C.volEntries(dir, C.shelfSplit(C.parsePropfind(xml
 
 test('volEntries：书架的书 -> 带 rel / ext 的列表（保持顺序，扩展名转小写，没有扩展名也不崩）', () => {
   const es = volList(SFTPGO_XML, '小说');
-  // 书架只列 epub / cbz / zip；rar / pdf 只计数，文件夹和隐藏文件不在书里
-  assert.deepEqual(es.map((e) => e.name), ['vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
-  assert.deepEqual(es.map((e) => e.ext), ['cbz', 'cbz', 'epub']);
-  assert.equal(es[0].rel, '小说/vol 2.CBZ'); assert.equal(es[0].isDir, false); assert.equal(es[2].size, 27483419);
+  // 书架只列 epub / cbz / zip / pdf；rar 只计数，文件夹和隐藏文件不在书里
+  assert.deepEqual(es.map((e) => e.name), ['a & b (1).pdf', 'vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
+  assert.deepEqual(es.map((e) => e.ext), ['pdf', 'cbz', 'cbz', 'epub']);
+  assert.equal(es[1].rel, '小说/vol 2.CBZ'); assert.equal(es[1].isDir, false); assert.equal(es[3].size, 27483419);
   assert.equal(C.volEntries('', [{ name: 'a.zip', size: 1 }])[0].rel, 'a.zip');           // 书库根：rel 不带前导 /
   assert.equal(C.volEntries('d', [{ name: 'noext', size: null }])[0].ext, '');
   assert.deepEqual(C.volEntries('d', []), []); assert.deepEqual(C.volEntries('d', null), []);
@@ -886,7 +886,7 @@ test('libClassify / libOpenable / libBooks', () => {
   for (const e of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr']) assert.equal(C.libClassify(e), e);
   assert.equal(C.libClassify('.CBZ'), 'cbz'); assert.equal(C.libClassify('EPUB'), 'epub');
   for (const e of ['txt', 'mobi', '7z', '', null, undefined, 'cbz2']) assert.equal(C.libClassify(e), 'other', String(e));
-  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other'].map(C.libOpenable), [true, true, true, false, false, false, false]);
+  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other'].map(C.libOpenable), [true, true, true, true, false, false, false]);
   const mixed = [{ name: 'd', rel: 'd', isDir: true, ext: '' }, { name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.txt', rel: 'b.txt', ext: 'txt' },
     { name: 'c.cbr', rel: 'c.cbr', ext: 'cbr' }, { name: 'd.epub', rel: 'd.epub', ext: 'epub' }];
   assert.deepEqual(C.libBooks(mixed).map((e) => e.name), ['a.pdf', 'c.cbr', 'd.epub']);       // 文件夹和 txt 不算书
@@ -895,11 +895,12 @@ test('libClassify / libOpenable / libBooks', () => {
 test('书架列出的书 = 换书能跳到的书（同一份「能打开」名单，不会出现书架有、换书却跳过）', () => {
   const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak'];
   const books = C.shelfSplit(names.map((name) => ({ name, isDir: false, size: 1 }))).books;
-  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip']);
+  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf']);
   const es = C.volEntries('', books);
   for (const e of es) assert.equal(C.libOpenable(C.libClassify(e.ext)), true, e.name);          // 书架上的每本，换书默认都放行
   assert.equal(C.nextBook(es, 'a.epub').name, 'b.CBZ');
   assert.equal(C.nextBook(es, 'b.CBZ').name, 'c.zip');
+  assert.equal(C.nextBook(es, 'c.zip').name, 'd.pdf');                                           // pdf 和 zip 系一样能换过去
   // 反过来：libOpenable 放行的扩展名，书架一定列（两处不能各写各的）
   for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other']) {
     const listed = C.shelfSplit([{ name: 'x.' + k, isDir: false, size: 1 }]).books.length === 1;
@@ -912,23 +913,174 @@ test('libParentRel', () => {
   assert.equal(C.libParentRel('a'), ''); assert.equal(C.libParentRel(''), ''); assert.equal(C.libParentRel('a/b/'), 'a');
 });
 
-test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（rar / 没接上的 pdf）', () => {
+test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（rar / cbr）', () => {
   const R = (n) => '小说/' + n;
   const es = volList(SFTPGO_XML, '小说');
-  // 书架的书：vol 2.CBZ, vol 10.cbz, チ…卷01.epub
+  // 书架的书：a & b (1).pdf, vol 2.CBZ, vol 10.cbz, チ…卷01.epub
   assert.equal(C.nextBook(es, R('vol 2.CBZ')).name, 'vol 10.cbz');
   assert.equal(C.nextBook(es, R('vol 10.cbz')).ext, 'epub');
   assert.equal(C.nextBook(es, R('チ。-关于地球的运动- - 卷01.epub')), null);      // 最后一本
-  assert.equal(C.prevBook(es, R('vol 2.CBZ')), null);                            // 第一本
+  assert.equal(C.prevBook(es, R('a & b (1).pdf')), null);                        // 第一本
+  assert.equal(C.prevBook(es, R('vol 2.CBZ')).ext, 'pdf');
   assert.equal(C.prevBook(es, R('vol 10.cbz')).name, 'vol 2.CBZ');
   assert.equal(C.nextBook(es, '小说/不存在.cbz'), null);                            // 当前书不在列表里
   assert.equal(C.nextBook([], 'x.cbz'), null);
-  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：默认跳过，pdf 阅读器接上之后（canOpen 放行 pdf）能到
+  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：rar 跳过，pdf 默认放行；调用方传的 canOpen 说了算（例如 pdf 阅读器被关掉时不放行 pdf）
   const full = [{ name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.rar', rel: 'b.rar', ext: 'rar' }, { name: 'c.cbz', rel: 'c.cbz', ext: 'cbz' },
     { name: 'd.cbz', rel: 'd.cbz', ext: 'cbz' }];
-  assert.equal(C.prevBook(full, 'c.cbz'), null);
-  const withPdf = (e) => C.libOpenable(C.libClassify(e.ext)) || e.ext === 'pdf';
-  assert.equal(C.prevBook(full, 'c.cbz', withPdf).name, 'a.pdf');
+  assert.equal(C.prevBook(full, 'c.cbz').name, 'a.pdf');
+  const noPdf = (e) => e.ext !== 'pdf' && C.libOpenable(C.libClassify(e.ext));
+  assert.equal(C.prevBook(full, 'c.cbz', noPdf), null);
   assert.equal(C.nextBook(full, 'c.cbz').name, 'd.cbz');
 
+});
+
+/* ====================== PDF：渲染比例 / 区间适配器（pdf.js 本体不在 Node 里跑，在 web_e2e 里用真浏览器测） ====================== */
+
+test('isPdfName：只认 .pdf 结尾（不分大小写）', () => {
+  for (const n of ['a.pdf', 'A.PDF', '小说/书 1.Pdf']) assert.equal(C.isPdfName(n), true, n);
+  for (const n of ['a.pdf.zip', 'pdf', 'a.pdfx', '', null, undefined]) assert.equal(C.isPdfName(n), false, String(n));
+});
+
+test('pdfAreaCap：桌面 1200 万 / 手机小屏 600 万 / 低内存 400 万', () => {
+  assert.equal(C.pdfAreaCap({}), 12e6);
+  assert.equal(C.pdfAreaCap({ small: true }), 6e6);
+  assert.equal(C.pdfAreaCap({ small: true, deviceMemory: 2 }), 4e6);
+  assert.equal(C.pdfAreaCap({ small: false, deviceMemory: 1 }), 4e6);
+  assert.equal(C.pdfAreaCap({ small: true, deviceMemory: 8 }), 6e6);
+  assert.equal(C.pdfAreaCap(), 12e6);
+});
+
+test('pdfScale：A4 手机约 3.46；A0 小于 1；小页封顶 4 倍；最长边 ≤ 4000、面积 ≤ 上限；0 / NaN 不炸', () => {
+  const sA4 = C.pdfScale(595, 842, { areaCap: 6e6, maxSide: 4000 });
+  assert.ok(Math.abs(sA4 - 3.46) < 0.01, String(sA4));
+  const z = C.pdfPixelSize(595, 842, sA4);
+  assert.ok(z.w * z.h <= 6e6 && z.w * z.h > 5.9e6, JSON.stringify(z));            // 面积用满上限（向下取整，所以不会超）
+  const sA0 = C.pdfScale(2384, 3370, { areaCap: 6e6, maxSide: 4000 });
+  assert.ok(sA0 < 1 && sA0 > 0.5, String(sA0));
+  assert.equal(C.pdfScale(100, 100, { areaCap: 6e6, maxSide: 4000 }), 4);            // 小页：4 倍封顶
+  assert.equal(C.pdfScale(10, 10, { areaCap: 12e6 }), 4);
+  // 细长页：最长边约束先起作用（5000x50pt 的横幅）
+  const sBan = C.pdfScale(5000, 50, { areaCap: 12e6, maxSide: 4000 });
+  assert.ok(Math.abs(sBan - 0.8) < 1e-9, String(sBan));
+  for (const [w, h] of [[612, 792], [5000, 5000], [300, 400], [841.89, 1190.55], [1, 20000], [20000, 1]]) {
+    for (const cap of [4e6, 6e6, 12e6]) {
+      const s = C.pdfScale(w, h, { areaCap: cap, maxSide: 4000 });
+      const p = C.pdfPixelSize(w, h, s);
+      assert.ok(p.w * p.h <= cap && Math.max(p.w, p.h) <= 4000 && p.w >= 1 && p.h >= 1, `${w}x${h} cap ${cap} -> ${JSON.stringify(p)}`);
+    }
+  }
+  for (const bad of [[0, 0], [0, 10], [NaN, 5], [5, Infinity], [-3, 4], [undefined, 4]]) assert.equal(C.pdfScale(bad[0], bad[1], {}), 1, String(bad));
+  assert.equal(C.pdfScale(612, 792), C.pdfScale(612, 792, {}));                   // 没传选项也行
+  // 比例只由页面尺寸决定：同一页多次算结果一样（旋转 / 改窗口大小不影响）
+  assert.equal(C.pdfScale(612, 792, { areaCap: 6e6, maxSide: 4000 }), C.pdfScale(612, 792, { areaCap: 6e6, maxSide: 4000 }));
+});
+
+test('pdfRangeAdapter：区间夹到文件大小、返回独立拷贝、统计字节', async () => {
+  const buf = Buffer.from(synthetic);
+  const src = memSource(buf);
+  const A = C.pdfRangeAdapter(src, buf.length, {});
+  const u8 = await A.requestRange(10, 20);
+  assert.deepEqual(Buffer.from(u8), buf.subarray(10, 20));
+  const tail = await A.requestRange(buf.length - 5, buf.length + 99999);              // 越界按文件尾截断
+  assert.equal(tail.length, 5);
+  assert.equal((await A.requestRange(50, 50)).length, 0);                            // 空区间 / 反向区间：空，不发读
+  assert.equal((await A.requestRange(60, 10)).length, 0);
+  assert.equal((await A.requestRange(-5, 3)).length, 3);                             // 负起点按 0
+  assert.equal(A.reads, 3);
+  assert.equal(A.bytes, 10 + 5 + 3);
+  // 拷贝：改返回值不会影响源缓冲（pdf.js 会 transfer 掉这块内存）
+  assert.notEqual(u8.buffer, buf.buffer);
+  assert.equal(u8.buffer.byteLength, u8.length);
+  u8.fill(0);
+  assert.notEqual(buf[10], 0);
+  assert.equal(A.fatal, null);
+});
+
+test('pdfRangeAdapter：读失败 -> 记 fatal、回调一次、之后的请求不再读（pdf.js 没有出错通道）', async () => {
+  let reads = 0, fatals = [];
+  const src = { size: 1000, read: async (off) => { reads++; if (off >= 500) { const e = new Error('boom'); e.status = 503; throw e; } return new Uint8Array(10); } };
+  const A = C.pdfRangeAdapter(src, 1000, { onFatal: (e) => fatals.push(e.message) });
+  await A.requestRange(0, 10);
+  await assert.rejects(A.requestRange(600, 610), /boom/);
+  assert.equal(A.fatal.message, 'boom');
+  assert.deepEqual(fatals, ['boom']);
+  await assert.rejects(A.requestRange(0, 10), /boom/);                               // 已经 fatal：直接拒绝
+  await assert.rejects(A.requestRange(700, 710), /boom/);
+  assert.equal(reads, 2, 'fatal 之后不再向源发读取');
+  assert.deepEqual(fatals, ['boom'], 'onFatal 只回调一次');
+  // 长度不对（短读）也是 fatal
+  const short = C.pdfRangeAdapter({ size: 100, read: async () => new Uint8Array(3) }, 100, {});
+  await assert.rejects(short.requestRange(0, 10), (e) => e.code === 'short');
+  assert.ok(short.fatal);
+});
+
+test('pdfRangeAdapter：401 -> 等 retryAuth（用户重新输入账号）-> true 就再读一次；false -> fatal', async () => {
+  let pass = 'old', gen = 0, asked = 0;
+  const src = { size: 100, read: async () => { if (pass !== 'new') { const e = new Error('401'); e.status = 401; throw e; } return new Uint8Array(4); } };
+  const A = C.pdfRangeAdapter(src, 100, {
+    gen: () => gen,
+    retryAuth: async (g) => { asked++; if (g !== gen) return true; pass = 'new'; gen++; return true; },
+  });
+  const u = await A.requestRange(0, 4);
+  assert.equal(u.length, 4);
+  assert.equal(asked, 1);
+  assert.equal(A.fatal, null);
+  // 用户取消（false）-> 401 变成 fatal
+  const src2 = { size: 100, read: async () => { const e = new Error('401'); e.status = 401; throw e; } };
+  const fa = [];
+  const B = C.pdfRangeAdapter(src2, 100, { retryAuth: async () => false, onFatal: (e) => fa.push(e.status) });
+  await assert.rejects(B.requestRange(0, 4), (e) => e.status === 401);
+  assert.deepEqual(fa, [401]);
+  // 没有 retryAuth -> 直接 fatal；重试最多 2 次，不会死循环
+  let n = 0;
+  const C3 = C.pdfRangeAdapter({ size: 100, read: async () => { n++; const e = new Error('401'); e.status = 401; throw e; } }, 100, { retryAuth: async () => true });
+  await assert.rejects(C3.requestRange(0, 4), (e) => e.status === 401);
+  assert.equal(n, 3, '首次 + 重试 2 次后放弃');
+});
+
+test('pdfRangeAdapter + UrlRangeSource：整条链 —— 只发 206 Range；服务器忽略 Range（200）-> fatal，不整本下载', async () => {
+  const big = Buffer.alloc(2 * 1024 * 1024, 5);
+  const ok = await startServer({ data: synthetic, auth: 'u:p' });
+  try {
+    const src = new C.UrlRangeSource(ok.url, { authHeader: C.basicAuth('u', 'p') });
+    await src.init();
+    const A = C.pdfRangeAdapter(src, src.size, {});
+    const got = await A.requestRange(1000, 1000 + 4096);
+    assert.deepEqual(Buffer.from(got), synthetic.subarray(1000, 5096));
+    const tail = await A.requestRange(synthetic.length - 65536, synthetic.length + 10);
+    assert.deepEqual(Buffer.from(tail), synthetic.subarray(synthetic.length - 65536));
+    assert.ok(ok.st.requests.every((r) => r.range && r.authorization), '全部带 Range 和账号头');
+    assert.ok(ok.st.requests.every((r) => !/u:p|Basic/.test(r.url)), '账号不进 URL');
+  } finally { await ok.close(); }
+  const bad = await startServer({ data: big, ignoreRange: true });
+  try {
+    const src = new C.UrlRangeSource(bad.url, {});
+    src.size = big.length;
+    const A = C.pdfRangeAdapter(src, big.length, {});
+    await assert.rejects(A.requestRange(0, 262144), (e) => e.code === 'norange');
+    assert.equal(A.fatal.code, 'norange');
+    assert.equal(bad.st.requests.length, 1, '只发了一次，没有重试、没有整本下载');
+  } finally { await bad.close(); }
+});
+
+test('UrlRangeSource：0 字节的文件 -> 明确的 empty 错误（各种服务器的空文件行为），不是「忽略 Range」/「取不到大小」', async () => {
+  const modes = {
+    cl0: (req, res) => { res.writeHead(200, { 'Content-Length': 0 }); res.end(); },                                   // 没做 Range：直接回 200 + 空
+    r416: (req, res) => { res.writeHead(416, { 'Content-Range': 'bytes */0', 'Content-Length': 0 }); res.end(); },    // Go http.ServeContent / Caddy / SFTPGo
+    head: (req, res) => {                                                                                              // 416 没带 Content-Range -> 退回 HEAD -> Content-Length: 0
+      if (req.method === 'HEAD') { res.writeHead(200, { 'Content-Length': 0 }); res.end(); return; }
+      res.writeHead(416, { 'Content-Length': 0 }); res.end();
+    }
+  };
+  for (const [mode, handler] of Object.entries(modes)) {
+    const reqs = [];
+    const srv = http.createServer((req, res) => { reqs.push(req.method + ' ' + (req.headers.range || '')); handler(req, res); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    try {
+      const src = new C.UrlRangeSource('http://127.0.0.1:' + srv.address().port + '/e.pdf', {});
+      await assert.rejects(src.init(), (e) => e.code === 'empty' && /空/.test(e.message) && !/Range/.test(e.message), mode);
+      assert.ok(reqs.length <= 2, mode + ': 请求数 ' + reqs.length);
+    } finally { await new Promise((r) => srv.close(r)); }
+  }
 });

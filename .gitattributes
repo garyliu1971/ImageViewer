@@ -8,3 +8,5 @@ tests/fixtures/** -text
 *.cbz binary
 *.cbr binary
 *.zip binary
+# 第三方库原样入库（含二进制字体 / cmap）：不做换行转换，保证哈希与 vendor/pdfjs/SHA256SUMS 一致
+vendor/** -text
