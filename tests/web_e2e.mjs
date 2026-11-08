@@ -2180,6 +2180,7 @@ function check(name, ok, detail) {
       const stL = await stateOf();
       check('第 5 页（横版 792×612）：宽 > 高', stL.decoded[4].w > stL.decoded[4].h, stL.decoded[4]);
       await gotoPage(6);
+      await waitFor(`window.__IV.pdfInfo() && !window.__IV.pdfInfo().busy && window.__IV.pdfInfo().queue === 0`, 15000);   // 邻页预渲染还在占着 canvas 时读 canvasPx 会偶发非 0
       const stH = await stateOf(), hi = await cdp.eval(`return window.__IV.pdfInfo();`), dH = stH.decoded[6];
       check('第 7 页（5000×5000pt 超大纸张）：像素数 ≤ 面积上限（桌面 1200 万）、最长边 ≤ 4000，不是 25M 像素', dH.w * dH.h <= hi.areaCap && Math.max(dH.w, dH.h) <= 4000 && dH.w * dH.h < 13e6, { dH, cap: hi.areaCap });
       const sH = await shot();

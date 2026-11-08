@@ -810,16 +810,16 @@ test('书架：parsePropfind / shelfSplit / 面包屑', () => {
     dirR('/library/%E5%B0%8F%E8%AF%B4/%E7%AC%AC%E4%BA%8C%E5%8D%B7/') +       // 子目录「第二卷」
     fileR('/library/%E5%B0%8F%E8%AF%B4/a%20b%231.epub', 1234, 'Sat, 07 Nov 2026 08:00:00 GMT') +
     fileR('/library/%E5%B0%8F%E8%AF%B4/vol10.cbz', 5, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/vol2.cbz', 6, 'x') +
-    fileR('/library/%E5%B0%8F%E8%AF%B4/x.pdf', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/.hidden.cbz', 9, 'x') +
+    fileR('/library/%E5%B0%8F%E8%AF%B4/x.pdf', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/y.rar', 9, 'x') + fileR('/library/%E5%B0%8F%E8%AF%B4/.hidden.cbz', 9, 'x') +
     fileR('/library/%E5%B0%8F%E8%AF%B4/a&amp;b.zip', 7, 'x'));
   const es = C.parsePropfind(xml, '/library/%E5%B0%8F%E8%AF%B4/');
-  assert.deepEqual(es.map((e) => e.name), ['第二卷', 'a b#1.epub', 'vol10.cbz', 'vol2.cbz', 'x.pdf', '.hidden.cbz', 'a&b.zip']);
+  assert.deepEqual(es.map((e) => e.name), ['第二卷', 'a b#1.epub', 'vol10.cbz', 'vol2.cbz', 'x.pdf', 'y.rar', '.hidden.cbz', 'a&b.zip']);
   assert.equal(es[0].isDir, true); assert.equal(es[1].isDir, false); assert.equal(es[1].size, 1234);
   assert.equal(es[1].mtime, Date.parse('2026-11-07T08:00:00Z')); assert.equal(es[2].mtime, null);
   const sp = C.shelfSplit(es);
   assert.deepEqual(sp.dirs.map((e) => e.name), ['第二卷']);
-  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz']);   // 自然排序，隐藏文件不列
-  assert.equal(sp.other, 1);                                                                          // x.pdf 只计数
+  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz', 'x.pdf']);   // 自然排序，隐藏文件不列；pdf 和 zip 系一样列出来
+  assert.equal(sp.other, 1);                                                                          // y.rar 只计数
 
   // 不带前缀的 XML、绝对 URL 的 href、小写前缀
   const x2 = '<multistatus xmlns="DAV:"><response><href>https://h.example/library/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>' +
@@ -873,10 +873,10 @@ const volList = (xml, dir) => C.volEntries(dir, C.shelfSplit(C.parsePropfind(xml
 
 test('volEntries：书架的书 -> 带 rel / ext 的列表（保持顺序，扩展名转小写，没有扩展名也不崩）', () => {
   const es = volList(SFTPGO_XML, '小说');
-  // 书架只列 epub / cbz / zip；rar / pdf 只计数，文件夹和隐藏文件不在书里
-  assert.deepEqual(es.map((e) => e.name), ['vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
-  assert.deepEqual(es.map((e) => e.ext), ['cbz', 'cbz', 'epub']);
-  assert.equal(es[0].rel, '小说/vol 2.CBZ'); assert.equal(es[0].isDir, false); assert.equal(es[2].size, 27483419);
+  // 书架只列 epub / cbz / zip / pdf；rar 只计数，文件夹和隐藏文件不在书里
+  assert.deepEqual(es.map((e) => e.name), ['a & b (1).pdf', 'vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
+  assert.deepEqual(es.map((e) => e.ext), ['pdf', 'cbz', 'cbz', 'epub']);
+  assert.equal(es[1].rel, '小说/vol 2.CBZ'); assert.equal(es[1].isDir, false); assert.equal(es[3].size, 27483419);
   assert.equal(C.volEntries('', [{ name: 'a.zip', size: 1 }])[0].rel, 'a.zip');           // 书库根：rel 不带前导 /
   assert.equal(C.volEntries('d', [{ name: 'noext', size: null }])[0].ext, '');
   assert.deepEqual(C.volEntries('d', []), []); assert.deepEqual(C.volEntries('d', null), []);
@@ -886,7 +886,7 @@ test('libClassify / libOpenable / libBooks', () => {
   for (const e of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr']) assert.equal(C.libClassify(e), e);
   assert.equal(C.libClassify('.CBZ'), 'cbz'); assert.equal(C.libClassify('EPUB'), 'epub');
   for (const e of ['txt', 'mobi', '7z', '', null, undefined, 'cbz2']) assert.equal(C.libClassify(e), 'other', String(e));
-  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other'].map(C.libOpenable), [true, true, true, false, false, false, false]);
+  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other'].map(C.libOpenable), [true, true, true, true, false, false, false]);
   const mixed = [{ name: 'd', rel: 'd', isDir: true, ext: '' }, { name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.txt', rel: 'b.txt', ext: 'txt' },
     { name: 'c.cbr', rel: 'c.cbr', ext: 'cbr' }, { name: 'd.epub', rel: 'd.epub', ext: 'epub' }];
   assert.deepEqual(C.libBooks(mixed).map((e) => e.name), ['a.pdf', 'c.cbr', 'd.epub']);       // 文件夹和 txt 不算书
@@ -895,11 +895,12 @@ test('libClassify / libOpenable / libBooks', () => {
 test('书架列出的书 = 换书能跳到的书（同一份「能打开」名单，不会出现书架有、换书却跳过）', () => {
   const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak'];
   const books = C.shelfSplit(names.map((name) => ({ name, isDir: false, size: 1 }))).books;
-  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip']);
+  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf']);
   const es = C.volEntries('', books);
   for (const e of es) assert.equal(C.libOpenable(C.libClassify(e.ext)), true, e.name);          // 书架上的每本，换书默认都放行
   assert.equal(C.nextBook(es, 'a.epub').name, 'b.CBZ');
   assert.equal(C.nextBook(es, 'b.CBZ').name, 'c.zip');
+  assert.equal(C.nextBook(es, 'c.zip').name, 'd.pdf');                                           // pdf 和 zip 系一样能换过去
   // 反过来：libOpenable 放行的扩展名，书架一定列（两处不能各写各的）
   for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other']) {
     const listed = C.shelfSplit([{ name: 'x.' + k, isDir: false, size: 1 }]).books.length === 1;
@@ -912,23 +913,24 @@ test('libParentRel', () => {
   assert.equal(C.libParentRel('a'), ''); assert.equal(C.libParentRel(''), ''); assert.equal(C.libParentRel('a/b/'), 'a');
 });
 
-test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（rar / 没接上的 pdf）', () => {
+test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（rar / cbr）', () => {
   const R = (n) => '小说/' + n;
   const es = volList(SFTPGO_XML, '小说');
-  // 书架的书：vol 2.CBZ, vol 10.cbz, チ…卷01.epub
+  // 书架的书：a & b (1).pdf, vol 2.CBZ, vol 10.cbz, チ…卷01.epub
   assert.equal(C.nextBook(es, R('vol 2.CBZ')).name, 'vol 10.cbz');
   assert.equal(C.nextBook(es, R('vol 10.cbz')).ext, 'epub');
   assert.equal(C.nextBook(es, R('チ。-关于地球的运动- - 卷01.epub')), null);      // 最后一本
-  assert.equal(C.prevBook(es, R('vol 2.CBZ')), null);                            // 第一本
+  assert.equal(C.prevBook(es, R('a & b (1).pdf')), null);                        // 第一本
+  assert.equal(C.prevBook(es, R('vol 2.CBZ')).ext, 'pdf');
   assert.equal(C.prevBook(es, R('vol 10.cbz')).name, 'vol 2.CBZ');
   assert.equal(C.nextBook(es, '小说/不存在.cbz'), null);                            // 当前书不在列表里
   assert.equal(C.nextBook([], 'x.cbz'), null);
-  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：默认跳过，pdf 阅读器接上之后（canOpen 放行 pdf）能到
+  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：rar 跳过，pdf 默认放行；调用方传的 canOpen 说了算（例如 pdf 阅读器被关掉时不放行 pdf）
   const full = [{ name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.rar', rel: 'b.rar', ext: 'rar' }, { name: 'c.cbz', rel: 'c.cbz', ext: 'cbz' },
     { name: 'd.cbz', rel: 'd.cbz', ext: 'cbz' }];
-  assert.equal(C.prevBook(full, 'c.cbz'), null);
-  const withPdf = (e) => C.libOpenable(C.libClassify(e.ext)) || e.ext === 'pdf';
-  assert.equal(C.prevBook(full, 'c.cbz', withPdf).name, 'a.pdf');
+  assert.equal(C.prevBook(full, 'c.cbz').name, 'a.pdf');
+  const noPdf = (e) => e.ext !== 'pdf' && C.libOpenable(C.libClassify(e.ext));
+  assert.equal(C.prevBook(full, 'c.cbz', noPdf), null);
   assert.equal(C.nextBook(full, 'c.cbz').name, 'd.cbz');
 
 });
