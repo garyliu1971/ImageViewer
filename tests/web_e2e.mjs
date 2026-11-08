@@ -1564,6 +1564,7 @@ function check(name, ok, detail) {
       /* ---- 8e) 打开云端书时的进度条（慢网络：每个 /library 请求慢 150ms） ---- */
       {
         await fresh(IVURL);
+        iv.log.length = 0;
         await cdp.eval(`window.__ops = []; window.__of = window.fetch;
           window.fetch = (u, i) => /\\/library\\//.test(String(u)) ? new Promise((r) => setTimeout(r, 150)).then(() => window.__of(u, i)) : window.__of(u, i);
           const e = document.querySelector('#openProg');
