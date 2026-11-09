@@ -59,6 +59,9 @@ LOCAL_PATH_ROUTES = {"/api/archive", "/api/data", "/api/thumb", "/api/pdf", "/ap
 # 浏览器选中的文件上传到后端的上限（只走 127.0.0.1，不跨机器）
 UPLOAD_MAX_BYTES = 512 * 1024 * 1024
 
+# 本机页面的在线朗读转发到这里（可用环境变量 IV_TTS_BASE 覆盖）
+TTS_BASE = "https://gary-pyreader.eastasia.cloudapp.azure.com"
+
 # 可选依赖，缺了就降级（网页版会收到 caps 提示）
 try:
     import rarfile
@@ -538,6 +541,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_html()
         if u.path.startswith("/vendor/pdfjs/"):
             return self._serve_pdfjs(u.path)
+        if u.path.startswith("/tts/v1/"):
+            return self._tts_relay(u.path)
         if u.path == "/api/ping":
             return self._json({"ok": True, "token": self.token, **capabilities()})
         if not self._ok_token(q):
@@ -549,6 +554,32 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         return self.do_GET()
+
+    def _tts_relay(self, route):
+        """本机页面的在线朗读中转：浏览器不能跨域直连线上 /tts/（线上不回 CORS 预检），
+        所以由本地后端把 /tts/v1/{speak,voices,usage} 原样转给线上 PyReader TTS 服务。
+        令牌就是请求里的 Authorization，后端不保存、不检查；只放行这三条路径，请求体 ≤ 8KB。"""
+        name = route[len("/tts/v1/"):]
+        if name not in ("speak", "voices", "usage"):
+            return self._err("未知接口 %s" % route, 404)
+        import urllib.request
+        base = (os.environ.get("IV_TTS_BASE") or TTS_BASE).rstrip("/")
+        n = int(self.headers.get("Content-Length") or 0) if self.command == "POST" else 0
+        if n > 8192:
+            return self._err("请求太大", 413)
+        data = self.rfile.read(n) if n else None
+        req = urllib.request.Request(
+            "%s/tts/v1/%s" % (base, name), data=data, method=self.command,
+            headers={"Authorization": self.headers.get("Authorization", ""),
+                     "Content-Type": self.headers.get("Content-Type", "application/json")})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                body, code, ctype = r.read(), r.status, r.headers.get("Content-Type", "application/octet-stream")
+        except urllib.error.HTTPError as e:
+            body, code, ctype = e.read(), e.code, e.headers.get("Content-Type", "application/json")
+        except Exception as e:
+            return self._err("在线朗读服务连不上：%s: %s" % (type(e).__name__, e), 502)
+        return self._bytes(body, ctype, code, extra={"Cache-Control": "no-store"})
 
     def _serve_pdfjs(self, path):
         """只读托管 vendor/pdfjs（浏览器端 pdf.js 要用）：限定在该目录内，拒绝 .. 穿越。"""
@@ -709,6 +740,8 @@ class Handler(BaseHTTPRequestHandler):
         self._write(urlparse(self.path).path, parse_qs(urlparse(self.path).query))
 
     def _write(self, route, q):
+        if route.startswith("/tts/v1/") and self.command == "POST":
+            return self._tts_relay(route)
         if not self._ok_token(q):
             return self._err("缺少 token", 403)
         try:
