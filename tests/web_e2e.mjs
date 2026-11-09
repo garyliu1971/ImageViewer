@@ -262,7 +262,7 @@ function startIvServer(books) {
       const ok = f.startsWith(path.join(ROOT, 'vendor') + path.sep) && fs.existsSync(f) && fs.statSync(f).isFile();
       S.vendor.push({ path: p, status: ok ? 200 : 404, auth: !!req.headers.authorization, range: !!req.headers.range });
       if (!ok) return send(404, 'text/plain', 'nf');
-      return send(200, /\.js$/.test(f) ? 'text/javascript' : 'application/octet-stream', fs.readFileSync(f),
+      return send(200, /\.js$/.test(f) ? 'text/javascript' : /\.wasm$/.test(f) ? 'application/wasm' : 'application/octet-stream', fs.readFileSync(f),
         { 'Cache-Control': 'no-cache', 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff' });
     }
     if (p === '/reader/') return send(200, 'text/html; charset=utf-8', '<title>reader</title>reader');
@@ -1718,13 +1718,15 @@ function check(name, ok, detail) {
       await cdp.eval(`document.querySelector('#btnBack').click(); return 1;`);
       await sleep(900);
       check('点「← 返回」回到 back 指定的同源页面', iv.hits.some((h) => h === 'GET /reader/'), iv.hits.slice(0, 5));
+      const libReq0 = () => iv.vendor.filter((v) => /\/vendor\/libarchive\//.test(v.path)).length;
       /* ======== [23c] 读书时上一本 / 下一本：从云端书架打开 / #open= 打开 / rar·pdf 说明 ======== */
       log('\n[23c] 云端书：读书时「上一本 / 下一本」（同一文件夹相邻的书）；#open= 指向 rar / cbr / pdf 的说明');
+      check('懒加载：[23c] 之前的所有 zip / cbz / epub / 本地 / 云端流程，没有发出任何 vendor/libarchive 请求', libReq0() === 0, iv.vendor.filter((v) => /libarchive/.test(v.path)).map((v) => v.path));
       const mkCbz = (hexes) => buildZip(hexes.map((h, i) => ({ name: String(i + 1).padStart(2, '0') + '.png', store: true, data: pngBytes(120, 180, h) })));
       const SER = 'lib/系列A/';
       bookBufs[SER + 'vol 1.cbz'] = mkCbz(['aa0000', '00aa00', '0000aa']);
       bookBufs[SER + 'vol 2.cbz'] = mkCbz(['aa5500', '55aa00', '0055aa']);
-      bookBufs[SER + 'vol 3.rar'] = Buffer.from('Rar!\x1a\x07\x00 not a real rar');
+      bookBufs[SER + 'vol 3.mobi'] = Buffer.from('BOOKMOBI not a supported kind');
       bookBufs[SER + 'vol 5.epub'] = epubBuf;
       bookBufs[SER + 'vol 10.cbz'] = mkCbz(['aa00aa', '00aaaa', 'aaaa00', '888888']);
       bookBufs[SER + '第二部/ch1.cbz'] = mkCbz(['123456']);
@@ -1765,7 +1767,7 @@ function check(name, ok, detail) {
       await cdp.eval(`localStorage.setItem('iv.home.shelf.v1', '0'); localStorage.setItem('iv.shelf.dir.v1', 'lib/系列A'); document.querySelector('#startShelf').click(); return 1;`);
       await waitFor(shelfIs('lib/系列A'), 8000);
       const serRows = await cdp.eval(`return Array.from(document.querySelectorAll('#shelfList .shelf-row')).map((b) => b.querySelector('.nm').textContent);`);
-      check('书架只列 epub / cbz / zip（rar / txt 不列），书按自然顺序（vol 2 < vol 10）', JSON.stringify(serRows) === JSON.stringify(['第二部', 'vol 1.cbz', 'vol 2.cbz', 'vol 5.epub', 'vol 10.cbz']), serRows);
+      check('书架只列能打开的书（vol 3.mobi / txt 不列），书按自然顺序（vol 2 < vol 10）', JSON.stringify(serRows) === JSON.stringify(['第二部', 'vol 1.cbz', 'vol 2.cbz', 'vol 5.epub', 'vol 10.cbz']), serRows);
       check('书架列过的文件夹进了「换书」缓存', (await cdp.eval(`return window.__IV.volCache();`)).includes('lib/系列A'));
       const g0 = iv.log.length, pn = plog().length;
       await cdp.eval(`document.querySelector('#shelfList .shelf-row[data-book="lib/系列A/vol 2.cbz"]').click(); return 1;`);
@@ -1793,7 +1795,7 @@ function check(name, ok, detail) {
       await waitFor(bookKeyIs(SER + 'vol 2.cbz', 3), 8000);
       await key('n');
       await waitFor(bookKeyIs(SER + 'vol 5.epub', 5), 8000);
-      check('N 键：vol 2 → vol 5.epub（5 页；书架不列 vol 3.rar，换书也不会落到它）', (await stateOf()).bookTitle === 'vol 5.epub');
+      check('N 键：vol 2 → vol 5.epub（5 页；书架不列 vol 3.mobi，换书也不会落到它）', (await stateOf()).bookTitle === 'vol 5.epub');
       await cdp.eval(`document.querySelector('#btnVolNext').click(); return 1;`);
       await waitFor(bookKeyIs(SER + 'vol 10.cbz', 4), 8000);
       check('→ vol 10.cbz（4 页）；已是最后一本：下一本按钮变灰', await cdp.eval(`return document.querySelector('#btnVolNext').disabled;`));
@@ -1849,13 +1851,12 @@ function check(name, ok, detail) {
       await cdp.eval(`document.querySelector('#davBase').value = '${iv.origin}'; document.querySelector('#davUser').value = 'viewer'; document.querySelector('#davPass').value = 'pä ss'; document.querySelector('#davSave').click(); return 1;`);
       await waitFor(`!${dlgOpen}`, 5000);
       const gRar = iv.log.length;
-      await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor(SER + 'vol 3.rar'))}); return 1;`);
-      await sleep(500);
-      check('#open= 指向 rar：解释为什么打不开（浏览器不能随机读取 → 先转成 cbz），没打开任何书', /这是 rar.*不能随机读取.*cbz/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
-      check('指向 rar 没有向服务器取这个文件', iv.log.slice(gRar).every((e) => !/vol%203\.rar/.test(e.path)));
+      /* rar / cbr 现在由 libarchive.js 读（见 [23f]）：下载整个文件（一次 GET，没有 Range）再解；这里的文件不是真压缩包 → 明确的失败提示，没打开任何书 */
       await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/old.cbr'))}); return 1;`);
-      await sleep(400);
-      check('#open= 指向 cbr 同样解释，同样没请求这个文件', /这是 cbr.*cbz/.test(await toastText()) && iv.log.slice(gRar).every((e) => !/old\.cbr/.test(e.path)), await toastText());
+      await waitFor(`/压缩包(打开失败|里没有找到)/.test(document.querySelector('#toast').textContent)`, 20000);
+      check('#open= 指向（假的）cbr：整本下载后交给解压组件，失败给出「压缩包…」提示，没打开任何书', /压缩包(打开失败|里没有找到)/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
+      const oldReq = iv.log.slice(gRar).filter((e) => /old\.cbr/.test(e.path));
+      check('指向 cbr：只取了一次这个文件（整本 GET，不是 Range）', oldReq.length === 1 && oldReq[0].status === 200 && !oldReq[0].range, oldReq);
       await cdp.eval(`window.__IV.setDavPdfHook(null); return 1;`);      // 默认就接了真的 pdf 阅读器（见 [23e]）；这里测钩子没接上时的行为
       await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor('lib/doc.pdf'))}); return 1;`);
       await sleep(400);
@@ -2077,6 +2078,167 @@ function check(name, ok, detail) {
       await fresh(IVURL);
       }
       {   // [23e] 用块作用域：这一节的 const 很多（s1 / w1 …），别和前面的重名
+      /* ======== [23f] rar / cbr / 7z / cb7 / tar / cbt / tgz（libarchive.js，WASM，module worker）======== */
+      log('\n[23f] rar / 7z / tar 系：云端（整本下载）+ 本地选文件；同一条页面管线；懒加载；CSP 零违规；加密 / 损坏 / 无图；关书释放 worker 与 blob 地址');
+      const FX = (n) => fs.readFileSync(path.join(HERE, 'fixtures', n));
+      const archRels = { 'arch/flat.rar': 'arch_flat.rar', 'arch/flat.cbr': 'arch_flat.cbr', 'arch/flat.7z': 'arch_flat.7z', 'arch/flat.cb7': 'arch_flat.cb7',
+        'arch/flat.tar': 'arch_flat.tar', 'arch/flat.cbt': 'arch_flat.cbt', 'arch/flat.tgz': 'arch_flat.tgz', 'arch/flat.tar.gz': 'arch_flat.tar.gz' };
+      for (const [rel, fx] of Object.entries(archRels)) bookBufs[rel] = FX(fx);
+      bookBufs['arch/chapters.tar'] = FX('arch_chapters.tar');
+      bookBufs['arch/old3.cbr'] = fs.readFileSync(path.join(HERE, 'fixtures', 'sample.cbr'));      // RAR3 stored（make_web_fixtures.py 手拼的）
+      bookBufs['arch/enc.7z'] = FX('arch_enc.7z');
+      bookBufs['arch/noimg.tar'] = FX('arch_noimg.tar');
+      bookBufs['arch/bad.rar'] = FX('arch_bad.rar');
+      bookBufs['arch/ok.cbz'] = buildZip([{ name: '1.png', store: true, data: pngBytes(40, 60, '336699') }, { name: '2.png', store: true, data: pngBytes(40, 60, '996633') }]);
+      const archHook = (await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source:
+        "try{localStorage.setItem('iv.ui.v1',JSON.stringify({thumbs:false}))}catch(e){};window.__workers=[];window.__urls={c:0,r:0};" +
+        "(function(){var W=window.Worker;window.Worker=function(u,o){var rec={url:String(u),term:false};var w=new W(u,o);var t=w.terminate.bind(w);w.terminate=function(){rec.term=true;t()};window.__workers.push(rec);return w};window.Worker.prototype=W.prototype;" +
+        "var C=URL.createObjectURL.bind(URL),R=URL.revokeObjectURL.bind(URL);URL.createObjectURL=function(b){window.__urls.c++;return C(b)};URL.revokeObjectURL=function(u){window.__urls.r++;return R(u)}})();" })).identifier;
+      const colorOfShown = () => cdp.eval(`const im = document.querySelector('#pageBox .page img'); if (!im) return null;
+        await new Promise((r) => (im.complete ? r() : (im.onload = r)));
+        const cv = document.createElement('canvas'); cv.width = 8; cv.height = 8; const g = cv.getContext('2d', { willReadFrequently: true });
+        g.drawImage(im, 0, 0, 8, 8); const d = g.getImageData(4, 4, 1, 1).data; return [d[0], d[1], d[2]];`);
+      const near3 = (c, w) => c && c.every((v, i) => Math.abs(v - w[i]) < 40);
+      const archToast = () => cdp.eval(`return document.querySelector('#toast').textContent;`);
+      const cspNow = () => cdp.eval(`return window.__csp;`);
+      const libReq = (since) => iv.vendor.slice(since || 0).filter((v) => /\/vendor\/libarchive\//.test(v.path));
+      const NAMES = ['01.jpg', '02.png', '03.png', '10.jpg'];
+      const COLORS4 = [[200, 40, 40], [40, 200, 40], [40, 40, 200], [200, 200, 40]];
+
+      /* ---- 0) 懒加载：先打开一本 cbz（zip 路径不变），一个字节的 libarchive 都不该取；之后才有 ---- */
+      await fresh(IVURL + hashFor('arch/ok.cbz'));
+      const okZip = await waitFor(`window.__IV.state().total === 2 && document.querySelector('#pageBox img')`, 15000);
+      const lazy0 = iv.vendor.length, libN0 = libReq().length;
+      check('zip / cbz 路径不受影响：cbz 照常打开，没有再取 vendor/libarchive，也没有起 worker', !!okZip && libReq().length === libN0 && (await cdp.eval(`return window.__workers.length;`)) === 0 && (await cdp.eval(`return window.__IV.archInfo();`)) === null,
+        { total: (await stateOf()).total, lib: libReq().length, libN0 });
+
+      /* ---- 1) 8 种后缀 × 云端（#open=）：自然排序、解出正确的图、书 key、整本下载 ---- */
+      let firstLog = null;
+      for (const rel of Object.keys(archRels)) {
+        const l0 = iv.log.length, v0 = iv.vendor.length;
+        await fresh(IVURL + hashFor(rel));
+        const ok = await waitFor(`window.__IV.state().total === 4 && window.__IV.state().decoded[0] && window.__IV.state().decoded[0].w > 0 && document.querySelector('#pageBox img')`, 20000);
+        const st = await stateOf();
+        const reqs = iv.log.slice(l0).filter((e) => e.path === '/library/' + rel.split('/').map(encodeURIComponent).join('/'));
+        if (!firstLog) firstLog = reqs;
+        check(rel + '：打开 4 页（readme.txt / __MACOSX 被丢掉），自然排序 01 02 03 10，书 key = dav:' + rel + '，标题 = 文件名',
+          !!ok && st.decoded.map((d) => d.name).join() === NAMES.join() && st.bookKey === 'dav:' + rel && st.bookTitle === rel.split('/').pop() && !st.chapters,
+          { names: st.decoded.map((d) => d.name), key: st.bookKey, title: st.bookTitle, toast: await archToast() });
+        check(rel + '：整本下载一次（GET、带 Authorization、没有 Range、200），没有别的请求打这个文件', reqs.length === 1 && reqs[0].method === 'GET' && reqs[0].auth && !reqs[0].range && reqs[0].status === 200, reqs);
+        check(rel + '：第 1 页是红色（01.jpg），翻到第 2 页是绿色（02.png）— 解出来的是对的字节', near3(await colorOfShown(), COLORS4[0]), await colorOfShown());
+        await cdp.eval(`window.__IV.showPage(1); return 1;`);
+        await waitFor(`window.__IV.state().index === 1 && (() => { const m = document.querySelector('#pageBox .page img'); return m && m.complete && m.naturalWidth > 0; })()`, 8000);
+        check(rel + '：第 2 页绿色', near3(await colorOfShown(), COLORS4[1]), await colorOfShown());
+        const lr = libReq(v0);
+        check(rel + '：libarchive 从 /iv/vendor/libarchive/ 同源加载（js + worker + wasm 全 200，没有账号头 / Range），CSP 零违规',
+          lr.every((v) => v.status === 200 && !v.auth && !v.range) && (await cspNow()).length === 0, { lr: lr.slice(0, 4), csp: await cspNow() });
+      }
+      check('整个运行里 vendor/libarchive 的 js / worker / wasm 都取过且全是 200（没带账号头 / Range；之后的打开走 service worker 缓存）', ['libarchive.js', 'worker-bundle.js', 'libarchive.wasm'].every((n) => libReq().some((v) => v.path.endsWith('/' + n))) && libReq().every((v) => v.status === 200 && !v.auth && !v.range), libReq());
+
+      /* ---- 2) 章节目录 / 进度 / 方向 / 双页：和 zip 一样 ---- */
+      await fresh(IVURL + hashFor('arch/chapters.tar'));
+      const okCh = await waitFor(`window.__IV.state().total === 6 && window.__IV.state().chapters && document.querySelector('#pageBox img')`, 20000);
+      const stCh = await stateOf();
+      check('tar 里的子目录 = 章节（ch1 有 4 张、ch2 有 2 张），和 zip 一样', !!okCh && stCh.chapters.length === 2 && stCh.chapters[0].n === 4 && stCh.chapters[1].n === 2 && /ch1/.test(stCh.chapters[0].title), stCh);
+      await cdp.eval(`window.__IV.switchChapter(1); return 1;`);
+      await waitFor(`window.__IV.state().chapterIndex === 1 && window.__IV.state().pages === 2`, 8000);
+      await cdp.eval(`window.__IV.showPage(1); window.__IV.saveProgress(); return 1;`);
+      await waitFor(`window.__IV.state().index === 1`, 4000);
+      const progKey = (await stateOf()).bookKey;
+      await fresh(IVURL + hashFor('arch/chapters.tar'));
+      const okCh2 = await waitFor(`window.__IV.state().total === 6 && window.__IV.state().chapterIndex === 1 && window.__IV.state().index === 1 && document.querySelector('#pageBox img')`, 20000);
+      check('进度（章节 + 页码）按书 key 保存，重新打开自动续读', !!okCh2 && progKey === 'dav:arch/chapters.tar', await stateOf());
+      await cdp.eval(`window.__IV.toggleDirection(); return 1;`);
+      await cdp.eval(`window.__IV.showPage(0); return 1;`);
+      const stRtl = await stateOf();
+      check('rtl / 双页等开关照常（切方向后 S.direction=rtl 且仍然是同一本书）', stRtl.S.direction === 'rtl' && stRtl.bookKey === 'dav:arch/chapters.tar', { dir: stRtl.S.direction });
+      await cdp.eval(`window.__IV.toggleDirection(); return 1;`);
+
+      /* ---- 3) RAR3（make_web_fixtures 手拼的 stored .cbr，含中文章节目录）也能读 ---- */
+      await fresh(IVURL + hashFor('arch/old3.cbr'));
+      const okR3 = await waitFor(`window.__IV.state().total === 4 && window.__IV.state().chapters && document.querySelector('#pageBox img')`, 20000);
+      const stR3 = await stateOf();
+      check('RAR3（.cbr）：4 张图（00_cover.png 在根 + 第1话 2 张 + 第2话 1 张）= 3 个章节，标题是中文', !!okR3 && stR3.chapters.length === 3 && stR3.chapters.some((c) => c.title === '第1话' && c.n === 2) && stR3.chapters.some((c) => c.title === '第2话' && c.n === 1), stR3);
+
+      /* ---- 4) 本地：📦 选文件（file input）和 drop ---- */
+      await fresh(IVURL);
+      const acc = await cdp.eval(`return document.querySelector('#zipInput').getAttribute('accept');`);
+      check('📦 的 accept 含 .rar .cbr .7z .cb7 .tar .cbt .tgz .tar.gz（手机选择器才不会把它们灰掉）', ['.rar', '.cbr', '.7z', '.cb7', '.tar', '.cbt', '.tgz', '.tar.gz'].every((x) => acc.split(',').includes(x)), acc);
+      for (const [fx, key] of [['arch_flat.cbr', 'arch_flat.cbr'], ['arch_flat.7z', 'arch_flat.7z'], ['arch_flat.tar.gz', 'arch_flat.tar.gz']]) {
+        await fresh(IVURL);
+        const v0 = iv.vendor.length, h0 = iv.hits.length;
+        await setInputFiles('#zipInput', [path.join(HERE, 'fixtures', fx)]);
+        const okL = await waitFor(`window.__IV.state().total === 4 && window.__IV.state().decoded[0] && window.__IV.state().decoded[0].w > 0`, 20000);
+        const stL = await stateOf();
+        check('📦 选 ' + fx + '：4 页、自然排序、书 key 是本地书（arch:…，不是 dav:）、不发任何 /library 请求', !!okL && stL.decoded.map((d) => d.name).join() === NAMES.join() && /^arch:/.test(stL.bookKey) && stL.bookTitle === key &&
+          iv.hits.slice(h0).every((h) => !/\/library\//.test(h)), { names: stL.decoded.map((d) => d.name), key: stL.bookKey, title: stL.bookTitle });
+      }
+      /* drop：合成的 drop 事件（DataTransfer 里放 File）走 handleDrop 的真实代码路径 */
+      for (const [fx, nm] of [['arch_flat.cb7', 'dropped.cb7'], ['arch_flat.rar', 'dropped.rar']]) {
+        await fresh(IVURL);
+        await cdp.eval(`const bin = atob(${JSON.stringify(FX(fx).toString('base64'))}); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+          const dt = new DataTransfer(); dt.items.add(new File([u], ${JSON.stringify(nm)}));
+          window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return 1;`);
+        const okD = await waitFor(`window.__IV.state().total === 4 && window.__IV.state().decoded[0] && window.__IV.state().decoded[0].w > 0`, 20000);
+        const stD = await stateOf();
+        check('拖进来 ' + nm + '：和选文件一样打开 4 页（压缩包走 libarchive，不当成图片跳过）', !!okD && stD.bookTitle === nm && /^arch:/.test(stD.bookKey), { title: stD.bookTitle, key: stD.bookKey, toast: await archToast() });
+      }
+
+      /* ---- 5) 加密 / 损坏 / 没有图片：清楚的提示，不留半开的书，worker 不泄漏 ---- */
+      const errCase = async (rel, re, label) => {
+        await fresh(IVURL + hashFor('arch/ok.cbz'));
+        await waitFor(`window.__IV.state().total === 2`, 15000);
+        await cdp.eval(`window.__workers.length = 0; return 1;`);
+        await cdp.eval(`window.__IV.applyLaunchHash(${JSON.stringify(hashFor(rel))}); return 1;`);
+        await waitFor(`${re.toString()}.test(document.querySelector('#toast').textContent)`, 20000);
+        await sleep(300);
+        const t = await archToast(), st = await stateOf(), ws = await cdp.eval(`return window.__workers.map((w) => w.term);`);
+        check(label + '：提示「' + t.slice(0, 40) + '」，还是上一本书（没有半开的书）', re.test(t) && st.bookKey === 'dav:arch/ok.cbz' && st.total === 2, { t, key: st.bookKey });
+        check(label + '：失败后起过的 worker 全部被终止', ws.every((x) => x === true), ws);
+      };
+      await errCase('arch/enc.7z', /有密码/, '加密的 7z');
+      await errCase('arch/bad.rar', /压缩包打开失败/, '损坏的 .rar（不是压缩包）');
+      await errCase('arch/noimg.tar', /没有找到浏览器能显示的图片/, '只有文本的 tar');
+
+      /* ---- 6) 云端 401：弹账号框重输（和 zip 一样），404：提示 ---- */
+      await fresh(IVURL + hashFor('arch/missing.rar'));
+      await waitFor(`/找不到|404|云端打开失败/.test(document.querySelector('#toast').textContent)`, 10000);
+      check('云端没有这个 rar：提示（404），没有打开任何书', /404|找不到|云端打开失败/.test(await archToast()) && (await stateOf()).total === 0, await archToast());
+
+      /* ---- 7) >300MB 提醒（把阈值调小来触发）；关书 / 换书：worker 终止、blob 地址 revoke、archInfo 清空 ---- */
+      await fresh(IVURL + hashFor('arch/flat.cbr'));
+      await waitFor(`window.__IV.state().total === 4 && document.querySelector('#pageBox img')`, 20000);
+      for (let i = 0; i < 4; i++) { await cdp.eval(`window.__IV.showPage(${i}); return 1;`); await sleep(250); }
+      const live = await cdp.eval(`return { info: window.__IV.archInfo(), w: window.__workers.map((w) => ({ term: w.term, url: w.url.replace(/^.*\\/vendor\\//, '') })), urls: window.__urls };`);
+      check('读书时：archInfo 在线、解过页、只有 1 个 worker 且没终止（worker-bundle.js）', live.info && !live.info.closed && live.info.extracts >= 2 && live.w.length === 1 && !live.w[0].term && /libarchive\/worker-bundle\.js$/.test(live.w[0].url), live);
+      const cbzBytes = bookBufs['arch/ok.cbz'];
+      await cdp.eval(`const bin = atob(${JSON.stringify(cbzBytes.toString('base64'))}); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+        await window.__IV.openZipFile(new File([u], 'next.cbz')); return 1;`);
+      await waitFor(`window.__IV.state().total === 2 && window.__IV.state().bookTitle === 'next.cbz'`, 10000);
+      await sleep(2200);
+      const after = await cdp.eval(`return { info: window.__IV.archInfo(), w: window.__workers.map((w) => w.term), urls: window.__urls };`);
+      check('换书（打开 cbz）：archInfo 清空、worker 被 terminate()', after.info === null && after.w.length === 1 && after.w[0] === true, after);
+      check('换书后旧书的 blob: 地址被 revoke（create 的比 revoke 多不过本书新开的那几张）', after.urls.r >= live.urls.c - 1 && after.urls.r > 0, { live: live.urls, after: after.urls });
+
+      await fresh(IVURL);
+      await cdp.eval(`window.IVCore.ARCH_WARN_BYTES = 1000; window.__toasts = []; new MutationObserver(() => window.__toasts.push(document.querySelector('#toast').textContent)).observe(document.querySelector('#toast'), { childList: true, characterData: true, subtree: true }); return 1;`);
+      await setInputFiles('#zipInput', [path.join(HERE, 'fixtures', 'arch_flat.tar')]);
+      await waitFor(`window.__IV.state().total === 4`, 15000);
+      const toasts = await cdp.eval(`return window.__toasts;`);
+      check('超过阈值（这里调成 1000 字节）：先提示「整本要读进内存」，随后仍然照常打开 4 页', toasts.some((t) => /arch_flat\.tar.*整本要读进内存/.test(t)) && (await stateOf()).total === 4, toasts);
+
+      /* ---- 8) service worker：libarchive 进独立的 iv-vendor-libarchive-2.0.2 缓存；cleanup 不动别人的缓存；Range / Authorization 仍不缓存 ---- */
+      await fresh(IVURL + hashFor('arch/flat.7z'));
+      await waitFor(`window.__IV.state().total === 4`, 20000);
+      const swcL = await waitFor(`(async () => { const ks = await caches.keys(); const out = {}; for (const k of ks) { out[k] = (await (await caches.open(k)).keys()).map((r) => new URL(r.url).pathname); }
+        return out['iv-vendor-libarchive-2.0.2'] && out['iv-vendor-libarchive-2.0.2'].length >= 3 ? out : null; })()`, 12000);
+      check('SW 缓存 iv-vendor-libarchive-2.0.2 里有 libarchive.js / worker-bundle.js / libarchive.wasm', swcL && ['libarchive.js', 'worker-bundle.js', 'libarchive.wasm'].every((n) => swcL['iv-vendor-libarchive-2.0.2'].some((u) => u.endsWith('/vendor/libarchive/' + n))), swcL);
+      check('书本数据（/library/…）一个字节都没进任何缓存；外壳缓存里也没有 libarchive', swcL && Object.entries(swcL).every(([k, v]) => v.every((u) => !/\/library\//.test(u)) && (k === 'iv-vendor-libarchive-2.0.2' || !/libarchive/.test(v.join()))), swcL);
+
+      await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: archHook });      // 别影响后面各节（缩略图默认开、Worker / URL 原样）
+      await fresh(IVURL);
+      await cdp.eval(`try { localStorage.removeItem('iv.ui.v1'); localStorage.removeItem('iv.books.v1'); } catch (e) {} return 1;`);
+
       /* ======== [23e] PDF（pdf.js）：按需取字节（Range）/ 渲染进现有页面管线 / CSP / 面积上限 / 401 / 加密 / 损坏 ======== */
       log('\n[23e] PDF：只发 Range、懒读（>100 页）、页面管线（适配 / 旋转 / 双页 / 裁边 / 缩略图 / 进度）、手机面积上限、CSP 零违规、401 重输、加密 / 损坏');
       const pdfKinds = (n) => Array.from({ length: n }, (_, i) => {
