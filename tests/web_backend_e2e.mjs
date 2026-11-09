@@ -155,6 +155,8 @@ class CDP {
     check('BE.on = true（页面由后端供）', be0.on === true, be0);
     check('token 已注入页面', await cdp.eval(`return typeof window.__IV_TOKEN === 'string' && window.__IV_TOKEN.length > 8`));
     check('caps 报告完整', typeof be0.caps.rar === 'boolean' && typeof be0.caps.pdf === 'boolean', be0.caps);
+    check('后端托管 pdf.js → 选 PDF 不再上传后端渲染（保留文字层，书签/朗读可用）',
+      be0.caps.pdfjs === true && (await cdp.eval(`return window.__IV.canServeFile('a.pdf')`)) === false);
     const shown = await cdp.eval(`
       for (let i = 0; i < 40; i++) {
         if (document.body.classList.contains('has-backend')) break;
