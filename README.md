@@ -171,6 +171,11 @@ python web_backend.py            # 起服务并自动在默认浏览器打开
 （不是任意文件读取器）。缺依赖时自动降级，页面会写明 `rar/cbr ✗` / `PDF ✗`。
 注意 `file://` 双击打开时没有后端，`rar/cbr/pdf` 会直接提示「需要本地后端」，不会静默失败。
 
+**部署成 `/iv/`（纯静态）时不需要后端也能读 rar / cbr / 7z / cb7 / tar / cbt / tgz（.tar.gz）**：浏览器里用 vendor 的 libarchive.js（WASM，module worker，
+第一次打开这类包才加载）整本读进内存再按页解压（云端的包先整本下载、带进度）；zip / cbz / epub / pdf 的路径不变。限制：超过约 300MB 会先提醒（手机内存），
+solid 压缩的包越靠后的页越慢，不支持加密包；需要 CSP 加 `'wasm-unsafe-eval'`（见 `deploy/README-iv-deploy.md` 第 7f 节）。样本：`python tests/make_archive_fixtures.py`；
+压测：`python tests/make_archive_fixtures.py --bench <目录> 430` 后 `node tests/web_arch_bench.mjs <目录>/bench_*.tar`。
+
 ### 手机 / 平板 / VLC（同一 Wi-Fi）
 
 后端默认只绑 `127.0.0.1`。要让手机能访问，显式开局域网模式：
@@ -198,7 +203,7 @@ python web_backend.py --lan      # 或双击 启动网页版(局域网).bat
 ```bash
 python tests/make_web_fixtures.py    # 生成 zip/cbz 测试包（首次）
 python tests/make_web_demo.py        # 生成 网页版测试样本/（17 页漫画 + cbz + GBK zip + 超宽图 + tif/pdf/rar）
-node --test tests/web_core.test.mjs  # IVCore 纯逻辑 14 项：对齐 viewer_core / media_source
+node --test tests/web_core.test.mjs  # IVCore 纯逻辑：对齐 viewer_core / media_source（含 rar/7z/tar 系的纯函数）
 node tests/web_e2e.mjs               # 真 Chrome 跑 file:// 页面，122 项断言
 node tests/web_demo_check.mjs        # 用上面那份真实样本再过一遍，22 项
 node tests/web_backend_e2e.mjs       # 起后端 + 真 Chrome，40 项（rar/cbr、PDF、磁盘路径、共享进度）
