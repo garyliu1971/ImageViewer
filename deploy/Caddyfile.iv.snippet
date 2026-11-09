@@ -13,6 +13,8 @@
 # 注意 3：读 PDF 用的 pdf.js 放在 /iv/vendor/pdfjs/（同源 module 脚本 + module worker），已经被下面这条 CSP 覆盖，不用改。
 #         唯一的例外是 JPEG2000（JPXDecode）图片：它的解码器是 WebAssembly，要 script-src 加 'wasm-unsafe-eval' 才不空白。
 #         默认不加（安全优先）；要加的取舍见 README-iv-deploy.md 第 7d 节。
+# 注意 4：在线朗读（/iv/ 里的 🔊）从同源的 /tts/v1/speak 取音频，用 <audio> 播放 blob: 地址，所以 CSP 多了 media-src 'self' blob:
+#         （没有这一条，默认的 default-src 'self' 会拦掉 blob: 音频）。/tts/ 这个块本身不用动，connect-src 'self' 已经够取音频。
 
 	redir /iv /iv/ 308
 
@@ -24,7 +26,7 @@
 		header X-Content-Type-Options "nosniff"
 		header Referrer-Policy "no-referrer"
 		header X-Frame-Options "DENY"
-		header Content-Security-Policy "default-src 'self'; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+		header Content-Security-Policy "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 		# sw.js 默认 Service-Worker-Allowed 就是它所在目录（/iv/），不要放宽
 		file_server
 	}

@@ -2489,6 +2489,194 @@ function check(name, ok, detail) {
       check('file:// 页面选 PDF：提示要通过网址（http / https）打开，不会卡住', /http/.test(await toastText()) && (await stateOf()).total === 0, await toastText());
       }
       }
+      /*BMTTS-BEGIN*/
+      {   // [23f] 书签 + 朗读（带文字层的 PDF、假引擎）。块作用域：变量别和前后重名
+      log('\n[23f] 书签（加 / 取消 / 列表 / 备注 / 删除 / 跨设备合并）+ 朗读（文字层提取 / 假引擎 / 翻页 / 暂停 / 跨页半句 / 无文字停下 / CSP media-src）');
+      const textPdf = path.join(HERE, 'fixtures', 'sample_text.pdf');
+      if (!fs.existsSync(textPdf)) { check('书签 / 朗读', 'skip', '没有 tests/fixtures/sample_text.pdf（先跑 python tests/make_web_fixtures.py）'); }
+      else {
+      bookBufs['pdf/text.pdf'] = fs.readFileSync(textPdf);
+      const TKEY = 'dav:pdf/text.pdf';
+      const CSPH = (/header Content-Security-Policy "([^"]+)"/.exec(fs.readFileSync(path.join(ROOT, 'deploy', 'Caddyfile.iv.snippet'), 'utf8')) || [])[1];
+      const C_live = (l) => (l || []).filter((b) => !b.x);
+      const has = (sel, cls) => cdp.eval(`const e = document.querySelector(${JSON.stringify(sel)}); return !!e && e.classList.contains(${JSON.stringify(cls)});`);
+      const K = (k, o) => cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ key: ${JSON.stringify(k)}, bubbles: true }, ${JSON.stringify(o || {})}))); return 1;`);
+      const q = (sel, prop) => cdp.eval(`const e = document.querySelector(${JSON.stringify(sel)}); return e ? e.${prop} : null;`);
+      const hidden = (id) => cdp.eval(`return document.querySelector('#${id}').classList.contains('hidden');`);
+      const openText = async (syncOn) => {
+        await fresh(IVURL);
+        await cdp.eval(`localStorage.removeItem('iv.books.v1'); localStorage.removeItem('iv.tts.v1'); await window.__IV.davStore(Object.assign({ base: '${iv.origin}', library: 'library', user: 'viewer', pass: 'pä ss' }, ${syncOn ? `{ syncDir: 'users/gary/iv-progress', syncUser: 'writer', syncPass: 'w pass' }` : `{ syncDir: '' }`})); return 1;`);
+        await fresh(IVURL + hashFor('pdf/text.pdf'));
+        return waitFor(`window.__IV.state().total === 8 && window.__IV.state().decoded[0] && window.__IV.state().decoded[0].w > 0 && document.querySelector('#pageBox img')`, 25000);
+      };
+      const fakeEngine = (delay) => cdp.eval(`window.__fake = { spoken: [], idx: [], cancels: 0, paused: false, delay: ${delay}, lastError: null, _gen: 0, _wait: null,
+        speak(t) { const g = this._gen; return new Promise((res) => { const fin = () => { if (g !== this._gen) return res('cancel'); this.spoken.push(t); this.idx.push(window.__IV.state().index); res('end'); };
+          const go = () => { if (this.paused) this._wait = fin; else fin(); };        // 暂停时正在读的这一句不结束（真引擎也是：音频停住）
+          setTimeout(go, this.delay); }); },
+        prefetch() {}, cancel() { this._gen++; this.cancels++; this.paused = false; }, pause() { this.paused = true; },
+        resume() { this.paused = false; const w = this._wait; this._wait = null; if (w) setTimeout(w, 5); } };
+        window.__IV.tts.useEngine(window.__fake); return 1;`);
+      iv.pass = 'pä ss';                                   // [23e] 末尾把服务器密码改成 changed：这一节用原来的账号
+      const bmRec = () => cdp.eval(`const r = window.__IV.books()[${JSON.stringify(TKEY)}]; return r ? (r.bookmarks || []) : null;`);
+
+      /* ---- 1) 文字层提取：页眉 / 页码 / 脚注被清掉，缩进开新段，跨页标记，没文字的页是空的 ---- */
+      const openedText = !!(await openText(false)) && (await stateOf()).bookKey === TKEY;
+      check('打开带文字层的 PDF（8 页）', openedText, { toast: await toastText(), errs: await cdp.eval(`return (window.__errs || []).slice(0, 3)`), csp: await cdp.eval(`return window.__csp`), s: (await stateOf()).bookKey });
+      if (openedText) {
+      const T = (p) => cdp.eval(`const o = await window.__IV.tts.page(${p}); return o && { paras: o.paras, indentFirst: o.indentFirst, open: o.open };`);
+      const t1 = await T(1), t2 = await T(2), t3 = await T(3), t4 = await T(4);
+      check('第 1 页：2 段，页眉「示例：朗读测试书」/ 页码 / 脚注「〔1〕…」都不在里面',
+        t1 && t1.paras.length === 2 && t1.paras[0].startsWith('春天到了，山上的雪慢慢融化。') && !/示例|脚注|〔1〕/.test(t1.paras.join('')) && !/(^|\D)1$/.test(t1.paras.join('')), t1);
+      check('第 1 页最后一行顶满、没有句号 = 句子跨页（open）；第 2 页开头不缩进（indentFirst=false）', t1.open === true && t2.indentFirst === false && t2.paras[0].startsWith('红薯。'), { t1, t2 });
+      check('第 2 页：中文段 + 英文段，页码「2」不在里面', t2.paras.length === 3 && t2.paras[2] === 'Reading aloud works with English too. It is fine.' && !t2.paras.some((p) => /^2$/.test(p)), t2);
+      check('第 3 页：「第二章 旅途」标题自成一段（大字号）', t3.paras.length === 2 && /^第二章/.test(t3.paras[0]) && t3.paras[1].startsWith('路上遇到了一位旅人'), t3);
+      check('第 4 页没有文字层 → paras 为空', t4 && t4.paras.length === 0, t4);
+
+      /* ---- 2) 书签：K / 按钮 / 列表 / 备注 / 删除 ---- */
+      check('刚打开：没有书签，按钮不亮，书签条不显示', (await bmRec()) === null || (await bmRec()).length === 0, await bmRec());
+      await K('k'); await sleep(150);
+      let bm = await bmRec();
+      check('按 K：给当前页（第 1 页）加书签；按钮亮起、书签条出现、有提示', bm.length === 1 && bm[0].i === 0 && bm[0].c === 0 && !bm[0].x && /已加书签：第 1 页/.test(await toastText()) &&
+        (await has('#btnBm', 'on')) && (await has('#bmRibbon', 'show')), { bm, toast: await toastText() });
+      await sleep(600);
+      bm = await bmRec();
+      check('PDF 有文字层：书签标题自动用这一页开头的 24 个字（异步补上）', bm[0].s === t1.paras[0].slice(0, 24) && bm[0].s.length === 24, bm);
+      await cdp.eval(`window.__IV.showPage(4); return 1;`); await sleep(400);
+      check('翻到没有书签的页：按钮 / 书签条熄灭', !(await has('#btnBm', 'on')) && !(await has('#bmRibbon', 'show')));
+      await cdp.eval(`document.querySelector('#btnBm').click(); return 1;`); await sleep(150);
+      bm = await bmRec();
+      check('点 🔖 按钮：给第 5 页加书签（点一下就是加 / 取消，不弹窗）', C_live(bm).length === 2 && C_live(bm).some((b) => b.i === 4) && (await hidden('bm')), bm);
+      await K('K', { shiftKey: true }); await sleep(200);
+      const rows = await cdp.eval(`return Array.from(document.querySelectorAll('#bmList .bm-row')).map((r) => ({ pg: r.querySelector('.bm-pg').textContent, tx: r.querySelector('.bm-tx').textContent, cur: r.classList.contains('cur') }));`);
+      check('Shift+K 打开书签列表：按页序 2 条，当前页高亮，第 1 条带页首文字', !(await hidden('bm')) && rows.length === 2 && rows[0].pg === '第 1 页' && rows[1].pg === '第 5 页' && rows[1].cur && !rows[0].cur && /春天到了/.test(rows[0].tx), rows);
+      await cdp.eval(`document.querySelectorAll('#bmList .bm-row')[0].querySelector('.bm-go').click(); return 1;`); await sleep(400);
+      check('点列表第 1 条：跳到第 1 页，列表关闭', (await stateOf()).index === 0 && (await hidden('bm')), await stateOf());
+      await K('K', { shiftKey: true }); await sleep(150);
+      await cdp.eval(`document.querySelectorAll('#bmList .bm-row')[1].querySelector('.bm-ed').click(); return 1;`); await sleep(100);
+      await cdp.eval(`const i = document.querySelector('#bmList .bm-in'); i.value = '最后一页的故事'; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return 1;`); await sleep(200);
+      bm = C_live(await bmRec());
+      const rows2 = await cdp.eval(`return Array.from(document.querySelectorAll('#bmList .bm-row .bm-tx')).map((e) => e.textContent);`);
+      check('✎ 写备注：保存进书签并显示在列表里（Enter 提交）', bm.find((b) => b.i === 4).n === '最后一页的故事' && rows2[1] === '最后一页的故事', { bm, rows2 });
+      await cdp.eval(`document.querySelectorAll('#bmList .bm-row')[0].querySelector('.bm-del').click(); return 1;`); await sleep(200);
+      const raw = await bmRec();
+      check('✕ 删除：从列表消失，留一条墓碑（x=1，用来同步删除）', C_live(raw).length === 1 && raw.some((b) => b.x === 1 && b.i === 0), raw);
+      await cdp.eval(`document.querySelector('[data-close=bm]').click(); return 1;`);
+      await K('k'); await sleep(150); await K('k'); await sleep(150);
+      const raw2 = await bmRec();
+      check('当前页（第 1 页）按 K 加、再按 K 取消：不重复，最后是取消状态', C_live(raw2).length === 1 && C_live(raw2)[0].i === 4, raw2);
+      const persisted = await cdp.eval(`return JSON.parse(localStorage.getItem('iv.books.v1'))[${JSON.stringify(TKEY)}].bookmarks.length;`);
+      check('书签写进了 localStorage 的进度记录（刷新后还在）', persisted >= 2, persisted);
+
+      /* ---- 3) 书签跟着云端进度走：推上去带 bm；另一台设备的书签合并（不是覆盖）、它删的我这边也删 ---- */
+      check('（同步）重新打开，开启进度同步', !!(await openText(true)));
+      iv.progLog.length = 0;
+      await K('k'); await sleep(200);
+      await cdp.eval(`window.__IV.showPage(2); return 1;`); await sleep(300);
+      await K('k'); await sleep(200);
+      await cdp.eval(`await window.__IV.syncPush(false); return 1;`);
+      for (let i = 0; i < 30 && !iv.progLog.some((e) => e.method === 'PUT' && e.status === 201); i++) await sleep(100);
+      const lastPut = iv.progLog.filter((e) => e.method === 'PUT' && e.status === 201).map((e) => JSON.parse(e.body)).pop();
+      check('推到云端的进度 JSON 带 bm（2 条，页 0 和 2），其余字段照旧', lastPut && lastPut.v === 1 && lastPut.key === TKEY && Array.isArray(lastPut.bm) && lastPut.bm.length === 2 &&
+        lastPut.bm.map((b) => b.i).sort().join() === '0,2', lastPut);
+      const h53 = await cdp.eval(`return window.IVCore.hash53(${JSON.stringify(TKEY)});`);
+      const progPath = '/users/gary/iv-progress/' + h53 + '.json';
+      const mineIds = lastPut.bm.map((b) => b.id);
+      const other = { v: 1, key: TKEY, at: Date.now() - 5000, index: 6, chapter: 0, total: 8, direction: 'ltr', title: 'text.pdf', dev: '手机/平板',
+        bm: [{ id: 'other1', c: 0, i: 6, n: '手机上加的', s: '', t: Date.now() - 4000, u: Date.now() - 4000 },
+          { id: mineIds[0], c: 0, i: lastPut.bm[0].i, n: '', s: '', t: lastPut.bm[0].t, u: Date.now() + 5000, x: 1 }] };       // 手机上把我的第一条删了（比我新）
+      await cdp.send('Page.navigate', { url: 'about:blank' }); await sleep(500);        // 离开页面时 pagehide 会把本地进度推上去：先让它推完，再放进「另一台设备写的」
+      iv.prog[progPath] = JSON.stringify(other);
+      await fresh(IVURL + hashFor('pdf/text.pdf'));
+      await waitFor(`window.__IV.state().total === 8 && document.querySelector('#pageBox img')`, 25000);
+      await sleep(500);
+      const merged = await bmRec();
+      check('再打开：云端的书签合并进来（手机加的第 7 页有了；我的另一条还在；手机删的那条消失）—— 合并不是覆盖',
+        C_live(merged).some((b) => b.id === 'other1' && b.i === 6) && C_live(merged).some((b) => b.id === mineIds[1]) && !C_live(merged).some((b) => b.id === mineIds[0]) && merged.some((b) => b.id === mineIds[0] && b.x), { merged, gets: iv.progLog.filter((e) => e.method === 'GET').map((e) => e.path + ' ' + e.status), progPath, keys: Object.keys(iv.prog) });
+      iv.progLog.length = 0;
+      await cdp.eval(`window.__IV.showPage(3); return 1;`); await sleep(300);
+      await cdp.eval(`await window.__IV.syncPush(false); return 1;`);
+      for (let i = 0; i < 30 && !iv.progLog.some((e) => e.method === 'PUT' && e.status === 201); i++) await sleep(100);
+      const put2 = iv.progLog.filter((e) => e.method === 'PUT' && e.status === 201).map((e) => JSON.parse(e.body)).pop();
+      check('之后的推送带的是合并结果（含手机的书签和我删掉的墓碑），不会把手机的书签冲掉', put2 && put2.bm && put2.bm.some((b) => b.id === 'other1' && !b.x) && put2.bm.some((b) => b.id === mineIds[0] && b.x), put2);
+      const oldFormat = { v: 1, key: TKEY, at: Date.now() - 1000, index: 1, chapter: 0, total: 8, direction: 'ltr', title: 'text.pdf', dev: '电脑' };       // 旧版本写的：没有 bm
+      const before = C_live(await bmRec()).length;
+      await cdp.send('Page.navigate', { url: 'about:blank' }); await sleep(500);
+      iv.prog[progPath] = JSON.stringify(oldFormat);
+      await fresh(IVURL + hashFor('pdf/text.pdf'));
+      await waitFor(`window.__IV.state().total === 8 && document.querySelector('#pageBox img')`, 25000);
+      check('云端是旧格式（没有 bm）：本地书签不丢', C_live(await bmRec()).length === before, { before, now: await bmRec() });
+
+      /* ---- 4) 朗读：假引擎，V 开始，一路读到最后；页眉 / 页码 / 脚注不读；跨页半句拼成一句；跟着翻页；没文字的页停下并解释 ---- */
+      check('（朗读）重新打开', !!(await openText(false)));
+      await fakeEngine(4);
+      await K('v');
+      await waitFor(`window.__IV.tts.state().state === 'idle' && window.__fake.spoken.length > 5`, 20000);
+      const said = await cdp.eval(`return { spoken: window.__fake.spoken, idx: window.__fake.idx };`);
+      const expect = ['春天到了，山上的雪慢慢融化。', '溪水从石缝里流出来，带着泥土的气息。', '村里的孩子们早早起床，拿着竹篮去河边捡柴。', '老人坐在门口晒太阳，他说今年的收成一定不错。',
+        '孩子们听了都很高兴，因为这意味着秋天可以吃到更多的甜瓜，还有妈妈亲手在灶台边做出来的那些香喷喷的红薯。', '夜里，月亮升起来，整个山谷安静得像一幅画。', '第二天一早，他们又出发了。',
+        'Reading aloud works with English too.', 'It is fine.', '第二章旅途', '路上遇到了一位旅人，他背着一个很大的包袱。', '他说自己从很远的地方来，要去看望多年不见的朋友。', '最后一页的故事很短。'];
+      check('读出来的就是这 13 句（页眉 / 页码 / 脚注没读；第 1 页的半句和第 2 页开头拼成一句；没文字的第 4 页被跳过）', JSON.stringify(said.spoken) === JSON.stringify(expect), said.spoken);
+      check('读到哪页，画面就翻到哪页（第 1 页的 4 句在第 1 页；拼出来的那句在第 2 页；英文在第 2 页；标题在第 3 页；最后一句在第 5 页）',
+        JSON.stringify(said.idx) === JSON.stringify([0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 4]), said.idx);
+      const endSt = await stateOf();
+      check('后面连续 3 页（6、7、8）没有文字层 → 停在第 8 页并解释「是扫描图片，需要先 OCR」', endSt.index === 7 && /扫描的图片/.test(await toastText()) && /OCR/.test(await toastText()), { index: endSt.index, toast: await toastText() });
+      check('朗读条显示、按钮回到 ▶', !(await hidden('ttsBar')) && (await q('#ttsPlay', 'textContent')) === '▶', await q('#ttsPlay', 'textContent'));
+
+      /* ---- 5) 暂停 / 继续 / 自己翻页 / 速度 / 停止 / 换书 ---- */
+      await cdp.eval(`window.__IV.showPage(0); return 1;`); await sleep(200);
+      await fakeEngine(60);
+      await K('v'); await waitFor(`window.__fake.spoken.length >= 1`, 5000);
+      check('朗读中：按钮是 ⏸，状态 playing', (await q('#ttsPlay', 'textContent')) === '⏸' && (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'playing');
+      await K('v'); await sleep(40);
+      const n1 = await cdp.eval(`return window.__fake.spoken.length;`); await sleep(250);
+      check('按 V 暂停：状态 paused、按钮 ▶，250ms 内不再前进', (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'paused' && (await cdp.eval(`return window.__fake.spoken.length;`)) === n1 && (await q('#ttsPlay', 'textContent')) === '▶', n1);
+      await K('v');
+      await waitFor(`window.__fake.spoken.length > ${n1}`, 5000);
+      check('再按 V 继续：接着读', (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'playing');
+      await cdp.eval(`window.__fake.spoken.length = 0; window.__fake.idx.length = 0; return 1;`);
+      const idxBefore = (await stateOf()).index;
+      await K('ArrowRight'); await waitFor(`window.__fake.spoken.length >= 1`, 5000);
+      const nav = await cdp.eval(`return { first: window.__fake.spoken[0], idx: window.__fake.idx[0], page: window.__IV.state().index };`);
+      const pageFirst = { 1: '红薯。', 2: '第二章旅途', 4: '最后一页的故事很短。' };
+      check('朗读中自己翻页（→）：从新页开头重新读（不接着读旧页，也不带上一页的半句）', nav.page === idxBefore + 1 && nav.idx === nav.page && nav.first === pageFirst[nav.page], { idxBefore, nav });
+      await cdp.eval(`document.querySelector('#ttsRate').value = '1.5'; document.querySelector('#ttsRate').dispatchEvent(new Event('change')); return 1;`);
+      check('语速选择存进设置（rate = 1.5）', (await cdp.eval(`return window.__IV.tts.cfg().rate;`)) === 1.5);
+      await cdp.eval(`document.querySelector('#ttsPrev').click(); return 1;`); await sleep(300);
+      check('⏮ 上一页：翻到上一页并从那页读', (await stateOf()).index <= 1 && (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'playing', await stateOf());
+      await cdp.eval(`document.querySelector('#ttsStop').click(); return 1;`); await sleep(100);
+      const cancels = await cdp.eval(`return window.__fake.cancels;`);
+      const nStop = await cdp.eval(`return window.__fake.spoken.length;`); await sleep(200);
+      check('⏹ 停止：引擎被取消、状态 idle、之后不再读', (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'idle' && cancels > 0 && (await cdp.eval(`return window.__fake.spoken.length;`)) === nStop && !(await hidden('ttsBar')));
+      await K('v'); await waitFor(`window.__IV.tts.state().state === 'playing'`, 3000);
+      await cdp.eval(`window.__IV.openItems([await __mk('x1.png', 'zz/x1.png', 100, 150)], { kind: 'dir', title: 'zz' }); return 1;`); await sleep(400);
+      check('读着读着换了一本书：朗读停止、朗读条收起', (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'idle' && (await hidden('ttsBar')));
+      await K('v'); await sleep(200);
+      check('不是 PDF（没有文字层）按 V：提示只支持带文字层的 PDF，不会开始', /只支持 PDF/.test(await toastText()) && (await cdp.eval(`return window.__IV.tts.state().state;`)) === 'idle');
+
+      /* ---- 6) 朗读设置：在线语音要令牌 + 同意；保存进 localStorage；CSP 允许 blob: 音频 ---- */
+      check('（设置）重新打开', !!(await openText(false)));
+      await fakeEngine(200);
+      await K('v'); await sleep(150);
+      await cdp.eval(`window.__IV.tts.stop(false); return 1;`);
+      await cdp.eval(`document.querySelector('#ttsCfg').click(); return 1;`); await sleep(100);
+      check('⚙ 打开朗读设置', !(await hidden('ttsSet')));
+      await cdp.eval(`const s = (id, v) => { const e = document.querySelector(id); e.value = v; }; s('#ttsEngine', 'cloud'); s('#ttsToken', ''); document.querySelector('#ttsConsent').checked = false; document.querySelector('#ttsSave').click(); return 1;`);
+      check('选在线语音但没填令牌 / 没同意：不保存，提示原因，对话框不关', /令牌/.test(await q('#ttsSetMsg', 'textContent')) && !(await hidden('ttsSet')) && (await cdp.eval(`return localStorage.getItem('iv.tts.v1');`)) === null);
+      await cdp.eval(`document.querySelector('#ttsToken').value = 'secret-token'; document.querySelector('#ttsConsent').checked = true; document.querySelector('#ttsVoice').value = 'zh-CN-YunxiNeural'; document.querySelector('#ttsSave').click(); return 1;`);
+      const sv = await cdp.eval(`return JSON.parse(localStorage.getItem('iv.tts.v1'));`);
+      check('填令牌 + 同意后保存：写进 localStorage（只在这台设备）、对话框关闭', sv && sv.engine === 'cloud' && sv.token === 'secret-token' && sv.consent === true && sv.voice === 'zh-CN-YunxiNeural' && (await hidden('ttsSet')), sv);
+      check('令牌没有出现在页面地址 / 进度同步里（只在设置和 Authorization 头）', !(await cdp.eval(`return location.href;`)).includes('secret-token'));
+      const cspProbe = await cdp.eval(`window.__csp.length = 0;
+        const wav = new Uint8Array([82,73,70,70,36,0,0,0,87,65,86,69,102,109,116,32,16,0,0,0,1,0,1,0,64,31,0,0,64,31,0,0,1,0,8,0,100,97,116,97,0,0,0,0]);
+        const a = new Audio(); a.src = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+        const r = await new Promise((res) => { a.onloadedmetadata = () => res('loaded'); a.onerror = () => res('error:' + (a.error && a.error.code)); setTimeout(() => res('timeout'), 3000); });
+        await new Promise((r2) => setTimeout(r2, 100));
+        return { r, csp: window.__csp.slice() };`);
+      check('页面 CSP 带 media-src \'self\' blob:，blob: 音频能加载、没有 CSP 违规（在线朗读要用）', /media-src 'self' blob:/.test(CSPH) && cspProbe.csp.length === 0 && cspProbe.r !== 'timeout', cspProbe);
+      }
+      }
+      }
+      /*BMTTS-END*/
       /*SCROLLFIX-BEGIN*/
       {   // [11b] 真实输入：命中层 / 滚轮 / 拖拽 / 方向键 / 点击分区 / UI 在命中层之上（块作用域，别和前面的变量重名）
       /* ======== [11b] 为什么要单独一节：[11] 里的手势测试是 vp.dispatchEvent(...)，事件直接塞给监听器，根本不经过命中测试，

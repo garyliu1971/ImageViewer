@@ -272,6 +272,60 @@ class TestHttpApi(FixtureCase):
         self.assertTrue(j["ok"])
         self.assertEqual(j["token"], self.token)
 
+    def test_pdfjs_static_route(self):
+        # 后端模式下 PDF 要走浏览器端 pdf.js，所以后端得托管 vendor/pdfjs（只读、限目录内）
+        self.assertTrue(json.loads(http_get(self.base + "/api/ping")[2])["pdfjs"])
+        st, hd, body = http_get(self.base + "/vendor/pdfjs/pdf.min.js")
+        self.assertEqual(st, 200)
+        self.assertIn("javascript", hd.get("Content-Type", ""))
+        self.assertGreater(len(body), 1000)
+        for bad in ("/vendor/pdfjs/../../web_backend.py", "/vendor/pdfjs/%2e%2e/%2e%2e/web_backend.py",
+                    "/vendor/pdfjs/C:/Windows/win.ini", "/vendor/pdfjs/nope.js", "/vendor/pdfjs/"):
+            self.assertEqual(http_get(self.base + bad)[0], 404, bad)
+
+    def test_tts_relay_forwards_bearer_and_body(self):
+        import http.server, threading
+        seen = {}
+
+        class Up(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                seen["auth"], seen["path"], seen["body"] = self.headers.get("Authorization"), self.path, self.rfile.read(n)
+                ok = seen["auth"] == "Bearer good"
+                data = b"MP3DATA" if ok else b'{"error":"bad token"}'
+                self.send_response(200 if ok else 401)
+                self.send_header("Content-Type", "audio/mpeg" if ok else "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+        up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Up)
+        threading.Thread(target=up.serve_forever, daemon=True).start()
+        old = os.environ.get("IV_TTS_BASE")
+        os.environ["IV_TTS_BASE"] = "http://127.0.0.1:%d" % up.server_address[1]
+        try:
+            def post(path, auth, body=b'{"text":"hi"}'):
+                req = urllib.request.Request(self.base + path, data=body, method="POST",
+                                             headers={"Authorization": auth, "Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        return r.status, r.read()
+                except urllib.error.HTTPError as e:
+                    return e.code, e.read()
+            # 注意：不带后端的 t= 令牌也能走（浏览器 fetch 只带用户自己的 Bearer）
+            self.assertEqual(post("/tts/v1/speak", "Bearer good"), (200, b"MP3DATA"))
+            self.assertEqual(seen["path"], "/tts/v1/speak")
+            self.assertEqual(seen["body"], b'{"text":"hi"}')
+            self.assertEqual(post("/tts/v1/speak", "Bearer bad")[0], 401)       # 上游状态码原样回传
+            self.assertEqual(post("/tts/v1/evil", "Bearer good")[0], 404)        # 只放行 speak/voices/usage
+            self.assertEqual(post("/tts/v1/speak", "Bearer good", b"x" * 9000)[0], 413)
+        finally:
+            up.shutdown()
+            if old is None: os.environ.pop("IV_TTS_BASE", None)
+            else: os.environ["IV_TTS_BASE"] = old
+
     def test_api_requires_token(self):
         st, _, body = http_get(self.base + "/api/ls?path=" + urllib.parse.quote(self.book))
         self.assertEqual(st, 403)
