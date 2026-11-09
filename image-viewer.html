@@ -2550,7 +2550,7 @@
       if (it.skind === 'video' || it.skind === 'audio') { skipped.push({ name: n, why: '视频/音频需桌面版' }); return; }
       if (it.skind === 'pdf' || it.skind === 'archive') { skipped.push({ name: n, why: BE.on ? '请单独打开' : '需桌面版' }); return; }
       if (C.WEB_IMAGE_EXTS.test(n)) keep.push(it);
-      else if (C.ARCHIVE_EXTS.test(n) || C.archKind(n)) skipped.push({ name: n, why: '压缩包请单独打开' });
+      else if (C.ARCHIVE_EXTS.test(n) || ((BE.on || /^https?:$/.test(location.protocol)) && C.archKind(n))) skipped.push({ name: n, why: '压缩包请单独打开' });
       else if (C.DESKTOP_EXTS.test(n)) skipped.push({ name: n, why: BE.on ? '请单独打开' : '需桌面版' });
       else if (C.MEDIA_EXTS.test(n)) skipped.push({ name: n, why: '视频/音频需桌面版' });
       else skipped.push({ name: n, why: '非图片' });
@@ -3626,8 +3626,10 @@
         job.res(new Blob([file], { type: mimeOf(job.p.name) }));
       }, function (e) { job.rej(e); }).then(function () { ctx.busy = false; pump(); });
     }
+    ctx.pre = new Map();                                       // 打开时探测过的页（证明能解开、不是加密包），按 CompressedFile 记；第一次真正读这页时直接给，不解两遍
     ctx.extract = function (p, low) {
       if (ctx.closed) return Promise.reject(archClosed());
+      if (ctx.pre.has(p.cf)) { var hit = ctx.pre.get(p.cf); ctx.pre['delete'](p.cf); return Promise.resolve(hit); }
       return new Promise(function (res, rej) { ctx.queue.push({ p: p, low: !!low, res: res, rej: rej }); pump(); });
     };
     ctx.destroy = function () {
@@ -3684,6 +3686,16 @@
       var ents = list.map(function (x) { return { path: (x.path || '') + (x.file && x.file.name || ''), size: x.file ? x.file.size : 0, cf: x.file }; });
       var imgs = C.archPickImages(ents);
       if (!imgs.length) { toast('压缩包里没有找到浏览器能显示的图片（png / jpg / webp / gif / bmp / avif）'); return false; }
+      pg.set('检查压缩包…', null);
+      /* 先真解一页：libarchive 对「只加密数据、不加密文件名」的 7z / rar 列得出目录，hasEncryptedData 也可能报 false，但一解压才报错；
+         所以打开时就探测第一页，加密 / 损坏当场提示，不会开出一本每页都打不开的书 */
+      return ctx.extract({ path: imgs[0].path, name: imgs[0].name, cf: imgs[0].cf }, false).then(function (blob) {
+        ctx.pre.set(imgs[0].cf, blob);
+        return imgs;
+      });
+    }).then(function (imgs) {
+      if (imgs === false) return false;
+      if (opts.stale && opts.stale()) throw archClosed();
       pg.set('读取书籍结构…', null);
       var items = imgs.map(function (en) {
         return { kind: 'arch', name: en.name, path: en.path, ar: ctx, cf: en.cf, size: en.size };
