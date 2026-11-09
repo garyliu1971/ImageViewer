@@ -272,6 +272,17 @@ class TestHttpApi(FixtureCase):
         self.assertTrue(j["ok"])
         self.assertEqual(j["token"], self.token)
 
+    def test_pdfjs_static_route(self):
+        # 后端模式下 PDF 要走浏览器端 pdf.js，所以后端得托管 vendor/pdfjs（只读、限目录内）
+        self.assertTrue(json.loads(http_get(self.base + "/api/ping")[2])["pdfjs"])
+        st, hd, body = http_get(self.base + "/vendor/pdfjs/pdf.min.js")
+        self.assertEqual(st, 200)
+        self.assertIn("javascript", hd.get("Content-Type", ""))
+        self.assertGreater(len(body), 1000)
+        for bad in ("/vendor/pdfjs/../../web_backend.py", "/vendor/pdfjs/%2e%2e/%2e%2e/web_backend.py",
+                    "/vendor/pdfjs/C:/Windows/win.ini", "/vendor/pdfjs/nope.js", "/vendor/pdfjs/"):
+            self.assertEqual(http_get(self.base + bad)[0], 404, bad)
+
     def test_api_requires_token(self):
         st, _, body = http_get(self.base + "/api/ls?path=" + urllib.parse.quote(self.book))
         self.assertEqual(st, 403)

@@ -352,6 +352,7 @@ def capabilities():
         "api": API_VERSION,
         "rar": bool(rar_ok),
         "pdf": fitz is not None,
+        "pdfjs": os.path.isfile(os.path.join(_RES, "vendor", "pdfjs", "pdf.min.js")),
         "pillow": Image is not None,
         "webdav": True,
         "lan": bool(getattr(Handler, "lan", False)),
@@ -535,6 +536,8 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path in ("/", "/image-viewer.html"):
             return self._serve_html()
+        if u.path.startswith("/vendor/pdfjs/"):
+            return self._serve_pdfjs(u.path)
         if u.path == "/api/ping":
             return self._json({"ok": True, "token": self.token, **capabilities()})
         if not self._ok_token(q):
@@ -546,6 +549,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         return self.do_GET()
+
+    def _serve_pdfjs(self, path):
+        """只读托管 vendor/pdfjs（浏览器端 pdf.js 要用）：限定在该目录内，拒绝 .. 穿越。"""
+        root = os.path.realpath(os.path.join(_RES, "vendor", "pdfjs"))
+        rel = urllib.parse.unquote(path[len("/vendor/pdfjs/"):])
+        full = os.path.realpath(os.path.join(root, rel))
+        try:
+            inside = bool(rel) and os.path.commonpath([root, full]) == root
+        except ValueError:                      # Windows 上 rel 带盘符会落到别的盘
+            inside = False
+        if not inside or not os.path.isfile(full):
+            return self._err("not found", 404)
+        ctype = ("text/javascript" if full.endswith((".js", ".mjs"))
+                 else mimetypes.guess_type(full)[0] or "application/octet-stream")
+        with open(full, "rb") as f:
+            return self._bytes(f.read(), ctype, extra={"Cache-Control": "max-age=3600"})
 
     def _serve_html(self):
         try:

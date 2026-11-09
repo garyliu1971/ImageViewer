@@ -2209,8 +2209,13 @@
   function canServeFile(name) {
     if (!BE.on) return false;
     if (/\.(rar|cbr)$/i.test(name)) return !!BE.caps.rar;
-    if (/\.pdf$/i.test(name)) return !!BE.caps.pdf;
+    if (/\.pdf$/i.test(name)) return !!BE.caps.pdf && !usePdfJs(name);
     return false;
+  }
+  /* 后端模式下 PDF 也优先走浏览器端 pdf.js：保留文字层，书签 / 朗读才可用。
+     后端托管了 vendor/pdfjs（caps.pdfjs）才这样；否则仍交给后端 PyMuPDF 渲染成图片 */
+  function usePdfJs(name) {
+    return /\.pdf$/i.test(name) && /^https?:$/.test(location.protocol) && (!BE.on || !!BE.caps.pdfjs);
   }
   function openViaBackend(file) {
     var name = (file && file.name) || '文件';
@@ -4106,7 +4111,7 @@
         return;
       }
       var pdfs = entries.filter(function (e) { return e.file && /\.pdf$/i.test(e.name); });
-      if (pdfs.length && pdfs.length === entries.length && !BE.on) {      // 只拖了 PDF：浏览器里直接读（一次一本）
+      if (pdfs.length && pdfs.length === entries.length && (!BE.on || usePdfJs(pdfs[0].name))) {      // 只拖了 PDF：浏览器里直接读（一次一本）
         if (pdfs.length > 1) toast('PDF 一次只开一个，已打开第一个');
         openPdfFile(pdfs[0].file);
         return;
@@ -4527,6 +4532,7 @@
     if (list.length === 1 && list[0].file && canServeFile(list[0].name)) {
       openViaBackend(list[0].file); return;
     }
+    if (list.length === 1 && list[0].file && usePdfJs(list[0].name)) { openPdfFile(list[0].file); return; }
     if (list.length === 1) openItems(list, { kind: 'files', title: list[0].name });
     else openItems(list, { kind: 'files', title: list.length + ' 张图片' });
   });
@@ -4536,7 +4542,7 @@
     if (!f) return;
     if (canServeFile(f.name)) { openViaBackend(f); return; }
     if (/\.pdf$/i.test(f.name)) {
-      if (BE.on) toast('后端没装 PyMuPDF，读不了 PDF（pip install pymupdf）');
+      if (BE.on && !usePdfJs(f.name)) toast('后端没装 PyMuPDF，读不了 PDF（pip install pymupdf）');
       else openPdfFile(f);
       return;
     }
