@@ -465,7 +465,7 @@
     <button class="btn" id="btnBack" title="回到打开这本书的页面">← 返回</button>
     <button class="btn primary" id="btnFolder" title="打开文件夹（子目录自动识别为章节）">📂 文件夹</button>
     <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 图片</button>
-    <button class="btn" id="btnZip" title="打开压缩包 zip / cbz / epub 或 pdf（连上本地后端后也支持 rar / cbr）">📦 压缩包</button>
+    <button class="btn" id="btnZip" title="打开压缩包 zip / cbz / epub / rar / cbr / 7z / cb7 / tar / cbt / tgz 或 pdf">📦 压缩包</button>
     <button class="btn" id="btnShelf" title="云端书架（L）：浏览书库目录">📚 书架</button>
     <button class="btn" id="btnDisk" title="按磁盘路径打开（目录 / rar·cbr / PDF，需本地后端）">🖧 磁盘路径</button>
   </div>
@@ -557,7 +557,7 @@
 <div id="start">
   <div class="start-card">
     <h1>🖼 图片 / 漫画浏览器</h1>
-    <p>打开文件夹（子目录自动识别为章节）/ 多张图片 / zip·cbz 压缩包。<br>
+    <p>打开文件夹（子目录自动识别为章节）/ 多张图片 / zip·cbz·rar·cbr·7z·cb7·tar·cbt·tgz 压缩包。<br>
       支持双页、日漫右→左、裁白边、纸质质感、缩略图、自动翻页、断点续读。</p>
     <div class="start-actions">
       <button class="btn primary" id="startFolder">📂 打开文件夹</button>
@@ -574,8 +574,8 @@
     </p>
     <p class="start-note">
       纯本地单文件，不联网、不上传（只有部署成 /iv/ 页面、并填了「☁ 书库账号」时，才会向<b>你自己的</b> WebDAV 发只读的分段请求）。<br>
-      PDF 部署成 /iv/ 页面后可直接读（加密 PDF 除外）；rar·cbr 需连本地后端（<code>python web_backend.py</code> 或双击
-      <code>启动网页版.bat</code>）；视频播放 / 实时字幕 / tif / 网盘 / 投屏
+      PDF 部署成 /iv/ 页面后可直接读（加密 PDF 除外）；rar·cbr·7z·cb7·tar·cbt·tgz 部署成 /iv/ 后由浏览器里的 libarchive.js 读（要网址打开、整本进内存，加密包除外；
+      直接双击本文件时 rar 需连本地后端 <code>python web_backend.py</code>）；视频播放 / 实时字幕 / tif / 网盘 / 投屏
       仍需桌面版 <code>图片漫画浏览器.exe</code>（或 <code>python image_viewer.py</code>）。
     </p>
   </div>
@@ -613,10 +613,10 @@
       <tr><td>📦 压缩包 / 拖拽（需本地后端）</td><td>选或拖 <code>.rar</code> <code>.cbr</code> <code>.pdf</code>
         也行：浏览器拿不到真实路径，会先传到后端临时目录再按路径打开（单包上限 512MB）。</td></tr>
       <tr><td>☁ 云端书库（部署在 <code>/iv/</code> 时）</td><td>打开 <code>/iv/#open=书的相对路径</code>，第一次填一个<b>只读</b> WebDAV 账号；
-        zip / cbz / epub / pdf 只按需取用到的页或字节段（HTTP Range），不整本下载。账号只存在这台设备的浏览器里。
+        zip / cbz / epub / pdf 只按需取用到的页或字节段（HTTP Range），不整本下载；rar / cbr / 7z / cb7 / tar / cbt / tgz 要整本下载（带进度）再在浏览器里解压。账号只存在这台设备的浏览器里。
         账号框里的「跨设备续读」可把读到哪页写到 WebDAV 的进度文件夹，换设备打开同一本书自动接上。
-        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip / pdf 就读；读书时
-        <kbd>N</kbd> / <kbd>P</kbd> 或「上一本 / 下一本」切到同一文件夹里相邻的书。rar / cbr 要先转成 cbz（浏览器不能随机读取 rar）；pdf 可直接读（每页渲染成图片，按页宽显示，字小可捏合放大）。</td></tr>
+        <b>📚 云端书架</b>（起始页按钮 / 工具栏 / 快捷键 <kbd>L</kbd>）直接浏览书库目录，点 epub / cbz / zip / pdf / rar / cbr / 7z / tar 系就读；读书时
+        <kbd>N</kbd> / <kbd>P</kbd> 或「上一本 / 下一本」切到同一文件夹里相邻的书。rar / 7z / tar 系由浏览器里的 libarchive.js（WASM）整本读进内存再按页解压，超过约 300MB 手机可能撑不住，solid 压缩的包越靠后的页越慢，不支持加密的包，建议大书转 cbz；pdf 可直接读（每页渲染成图片，按页宽显示，字小可捏合放大）。</td></tr>
       <tr><td>断点续读</td><td>页码、章节、双页 / 方向 / 去边 / 质感 存在浏览器本地（localStorage）。
         浏览器拿不到磁盘绝对路径，所以重新打开时要<b>再选一次同一个文件夹 / 同一个压缩包</b>才会续上。</td></tr>
       <tr><td>📱 手机 / VLC</td><td>桌面版菜单「网页版（局域网，手机可访问）」或
@@ -624,7 +624,7 @@
         （rar/cbz/pdf 都能用）。视频用手机 VLC 的「网络串流」：在网页版按 <kbd>I</kbd>
         详情里有可一键复制的播放列表链接（<code>/api/m3u</code>）。</td></tr>
       <tr><td>仍不支持</td><td>tif / heic（浏览器不解码）、视频与实时字幕、网盘、投屏 → 用桌面版；
-        rar / cbr 在<b>后端模式</b>下可用（磁盘路径 / 压缩包按钮 / 拖拽都行）；
+        rar / cbr 在<b>后端模式</b>下走后端（磁盘路径 / 压缩包按钮 / 拖拽都行），通过网址（http / https）打开本页时 rar·cbr·7z·cb7·tar·cbt·tgz 浏览器自己解压（libarchive.js，不支持加密包）；
         PDF 通过网址（http / https）打开本页就能直接读（📦 / 拖拽 / 云端书库），加密 PDF 除外</td></tr>
     </table>
   </div>
@@ -768,7 +768,7 @@
 <input type="file" id="folderInput" webkitdirectory multiple hidden>
 <input type="file" id="fileInput" multiple
        accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.jfif,.apng,.svg" hidden>
-<input type="file" id="zipInput" accept=".zip,.cbz,.epub,.pdf,application/zip,application/epub+zip,application/pdf" hidden>
+<input type="file" id="zipInput" accept=".zip,.cbz,.epub,.pdf,.rar,.cbr,.7z,.cb7,.tar,.cbt,.tgz,.tar.gz,.gz,application/zip,application/epub+zip,application/pdf,application/vnd.rar,application/x-rar-compressed,application/x-7z-compressed,application/x-tar,application/gzip" hidden>
 
 <script id="iv-core">
 /* ============================================================================
@@ -783,9 +783,19 @@
 
   /* 浏览器能原生解码的图片（tif / heic 实测 Chrome 解不了，归到 DESKTOP_EXTS 提示） */
   var WEB_IMAGE_EXTS = /\.(png|jpe?g|gif|webp|bmp|jfif|apng|avif|svg)$/i;
-  var DESKTOP_EXTS = /\.(rar|cbr|7z|tar|gz|zip|cbz|pdf|epub|tif|tiff)$/i;
+  var DESKTOP_EXTS = /\.(rar|cbr|7z|cb7|tar|cbt|tgz|gz|zip|cbz|pdf|epub|tif|tiff)$/i;
   var MEDIA_EXTS = /\.(mp4|mkv|avi|webm|mov|wmv|flv|m4v|ts|mpg|mpeg|3gp|mp3|flac|wav|m4a|aac|ogg|opus|wma)$/i;
   var ARCHIVE_EXTS = /\.(zip|cbz|epub)$/i;
+  /* rar / 7z / tar 系：浏览器里用 libarchive.js（WASM，vendor/libarchive/）整本读进内存再按页解压；zip 系仍走上面的 Range 读 */
+  var ARCH_EXTS = /\.(rar|cbr|7z|cb7|tar|cbt|tgz|tar\.gz)$/i;
+  var ARCH_WARN_BYTES = 300 * 1024 * 1024;          // 超过这个大小先提醒：整本要读进 wasm 内存，手机可能撑不住
+  /** 文件名 -> 'rar'|'7z'|'tar'|'tgz'|null（cbr=rar、cb7=7z、cbt=tar；只有 .tar.gz 算 tgz，单独的 .gz 不是书） */
+  function archKind(name) {
+    var m = ARCH_EXTS.exec(String(name == null ? '' : name));
+    if (!m) return null;
+    var e = m[1].toLowerCase();
+    return e === 'rar' || e === 'cbr' ? 'rar' : e === '7z' || e === 'cb7' ? '7z' : e === 'tar' || e === 'cbt' ? 'tar' : 'tgz';
+  }
 
   function clamp(v, a, b) { return Math.min(Math.max(v, a), b); }
 
@@ -1512,9 +1522,9 @@
     return out;
   }
   /** 浏览器现在能直接读的书（Range 读 zip 系 + pdf.js 读 pdf）。书架列哪些、换书跳不跳过，都从这一份名单来：接上新格式只改这里 */
-  var LIB_OPEN_KINDS = ['zip', 'cbz', 'epub', 'pdf'];
-  var SHELF_BOOK_RE = new RegExp('[.](' + LIB_OPEN_KINDS.join('|') + ')$', 'i');
-  /** 目录在前、书在后，各自自然排序；能打开的只有 LIB_OPEN_KINDS 里的，其余（rar / cbr …）只计数不列出 */
+  var LIB_OPEN_KINDS = ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz'];
+  var SHELF_BOOK_RE = new RegExp('[.](' + LIB_OPEN_KINDS.join('|') + '|tar[.]gz)$', 'i');
+  /** 目录在前、书在后，各自自然排序；能打开的只有 LIB_OPEN_KINDS 里的（含 libarchive.js 读的 rar / 7z / tar 系），其余只计数不列出 */
   function shelfSplit(entries) {
     var dirs = [], bks = [], other = 0;
     (entries || []).forEach(function (e) {
@@ -1533,13 +1543,13 @@
   }
 
   /* ---------------- 读书时「上一本 / 下一本」：同一文件夹里相邻的书（纯函数，Node 可测）---------------- */
-  var LIB_BOOK_KINDS = LIB_OPEN_KINDS.concat(['rar', 'cbr']);
-  /** 扩展名 -> 'zip'|'cbz'|'epub'|'pdf'|'rar'|'cbr'|'other' */
+  var LIB_BOOK_KINDS = LIB_OPEN_KINDS;
+  /** 扩展名 -> LIB_OPEN_KINDS 里的一种或 'other'（tar.gz 的扩展名是 gz：调用方先用 volExt 折成 tgz） */
   function libClassify(ext) {
     var e = String(ext == null ? '' : ext).replace(/^\./, '').toLowerCase();
     return LIB_BOOK_KINDS.indexOf(e) >= 0 ? e : 'other';
   }
-  /** 浏览器现在能直接读的（Range 读 zip 系 / pdf.js 读 pdf）；rar / cbr 另说 */
+  /** 浏览器现在能直接读的（Range 读 zip 系 / pdf.js 读 pdf / libarchive.js 读 rar·7z·tar 系） */
   function libOpenable(kind) { return LIB_OPEN_KINDS.indexOf(kind) >= 0; }
   /** 书（非文件夹、受支持的类型），保持传入顺序 */
   function libBooks(entries) {
@@ -1549,7 +1559,8 @@
   function volEntries(dirRel, books) {
     return (books || []).map(function (b) {
       var dot = b.name.lastIndexOf('.');
-      return { name: b.name, rel: relJoin(dirRel, b.name), isDir: false, size: b.size == null ? null : b.size, ext: dot > 0 ? b.name.slice(dot + 1).toLowerCase() : '' };
+      return { name: b.name, rel: relJoin(dirRel, b.name), isDir: false, size: b.size == null ? null : b.size,
+        ext: /[.]tar[.]gz$/i.test(b.name) ? 'tgz' : dot > 0 ? b.name.slice(dot + 1).toLowerCase() : '' };
     });
   }
   function libParentRel(rel) { return String(rel || '').replace(/\/+$/, '').replace(/\/?[^\/]*$/, ''); }
@@ -2096,6 +2107,67 @@
     return E;
   }
 
+  /* ---------------- rar / 7z / tar 系（libarchive.js）的纯逻辑 ---------------- */
+  /** 压缩包条目 -> 能当页面的图片，按路径自然排序。entries: [{path, size, ...}]；丢掉目录、打包工具留下的元数据、非浏览器可解码的图片 */
+  function archPickImages(entries) {
+    var out = [];
+    (entries || []).forEach(function (en) {
+      var clean = String(en.path == null ? '' : en.path).replace(/[\\]/g, '/').replace(/^\/+/, '');
+      if (!clean || /\/$/.test(clean)) return;
+      if (/^__MACOSX\//.test(clean) || /(^|\/)\.[^\/]+$/.test(clean) || /(^|\/)thumbs\.db$/i.test(clean)) return;
+      if (!WEB_IMAGE_EXTS.test(clean)) return;
+      var o = {}; for (var k in en) if (Object.prototype.hasOwnProperty.call(en, k)) o[k] = en[k];
+      o.path = clean; o.name = baseName(clean);
+      out.push(o);
+    });
+    return out.sort(function (a, b) { return naturalCompare(a.path, b.path); });
+  }
+  /** libarchive / wasm 抛出的错 -> 给用户看的中文原因 */
+  function archErrorMessage(e) {
+    var m = String((e && e.message) || e || '');
+    if (e && e.encrypted) return '这个压缩包有密码（已加密），暂不支持打开加密的压缩包';
+    if (/passphrase|encrypt|password|decrypt/i.test(m)) return '这个压缩包有密码（已加密），暂不支持打开加密的压缩包';
+    if (/WebAssembly|wasm|unsafe-eval|CompileError/i.test(m)) return '浏览器没能运行 WebAssembly 解压组件（服务器的 CSP 需要 script-src \'wasm-unsafe-eval\'）：' + m;
+    if (/Unrecognized archive format|Unsupported|not.*archive/i.test(m)) return '不是有效的压缩包，或这种压缩格式不支持：' + m;
+    return m || '未知错误';
+  }
+  /** 把整个远程文件下载成一个 Blob（rar / 7z 没法随机读，只能整本取）。
+      opts: authHeader（字符串或函数）、fetch、onProgress(done, total|null)、onAuthFail(err)、signal。401 / 403 / 404 / 5xx 带 status（同 UrlRangeSource）。 */
+  function fetchWhole(url, opts) {
+    opts = opts || {};
+    var h = {}, a = typeof opts.authHeader === 'function' ? opts.authHeader() : opts.authHeader;
+    if (a) h['Authorization'] = a;
+    var f = opts.fetch || function (u, i) { return fetch(u, i); };
+    return f(url, { method: 'GET', headers: h, credentials: 'omit', cache: 'no-store', signal: opts.signal }).then(function (res) {
+      var st = res.status;
+      if (st !== 200) {
+        var err = st === 401 ? httpError('账号或密码不对（HTTP 401）', 401, 'auth')
+          : st === 403 ? httpError('没有读取权限（HTTP 403）', 403, 'forbidden')
+          : st === 404 ? httpError('云端找不到这本书（HTTP 404）', 404, 'notfound')
+          : httpError('读取失败（HTTP ' + st + '）', st, 'http');
+        if (st === 401 && opts.onAuthFail) { try { opts.onAuthFail(err); } catch (e) { /* 回调出错不影响主流程 */ } }
+        return dropBody(res).then(function () { throw err; });
+      }
+      var total = +res.headers.get('Content-Length') || null;
+      if (!res.body || !res.body.getReader) {
+        return res.blob().then(function (b) { if (opts.onProgress) opts.onProgress(b.size, b.size); return b; });
+      }
+      var rd = res.body.getReader(), chunks = [], got = 0;
+      function pump() {
+        return rd.read().then(function (r) {
+          if (r.done) {
+            if (!got) throw httpError('云端这个文件是空的（0 字节），没有内容可读', st, 'empty');
+            return new Blob(chunks);
+          }
+          chunks.push(r.value); got += r.value.length;
+          if (opts.onProgress) opts.onProgress(got, total);
+          return pump();
+        });
+      }
+      return pump();
+    });
+  }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
@@ -2108,7 +2180,8 @@
     epubSpineItems: epubSpineItems, epubImageRefs: epubImageRefs, epubPageOrder: epubPageOrder,
     MIN_ZOOM: MIN_ZOOM, MAX_ZOOM: MAX_ZOOM, MIN_VISIBLE: MIN_VISIBLE,
     WEB_IMAGE_EXTS: WEB_IMAGE_EXTS, DESKTOP_EXTS: DESKTOP_EXTS, MEDIA_EXTS: MEDIA_EXTS,
-    ARCHIVE_EXTS: ARCHIVE_EXTS,
+    ARCHIVE_EXTS: ARCHIVE_EXTS, ARCH_EXTS: ARCH_EXTS, ARCH_WARN_BYTES: ARCH_WARN_BYTES, archKind: archKind, archPickImages: archPickImages,
+    archErrorMessage: archErrorMessage, fetchWhole: fetchWhole,
     clamp: clamp, naturalCompare: naturalCompare, baseName: baseName, topDir: topDir,
     commonRoot: commonRoot, rotatedSize: rotatedSize, computeZoom: computeZoom,
     clampPan: clampPan, zoomAtPan: zoomAtPan,
@@ -2264,18 +2337,15 @@
       $('#statusNote').textContent += ' · 局域网 ' + String(caps.lan_url).replace(/^http:\/\//, '').replace(/\/$/, '');
     }
     /* 手机选择器按 accept 过滤：rar 和 pdf 要同时放开，并补上系统常给的 MIME */
+    var ARCH_ACCEPT = ['.rar', '.cbr', '.7z', '.cb7', '.tar', '.cbt', '.tgz', '.tar.gz', '.gz', 'application/vnd.rar', 'application/x-rar-compressed',
+      'application/vnd.comicbook-rar', 'application/x-cbr', 'application/x-7z-compressed', 'application/x-cb7', 'application/x-tar', 'application/x-cbt',
+      'application/gzip', 'application/x-gzip'];
     var acc = ['.zip', '.cbz', '.epub', 'application/zip', 'application/epub+zip',
-      'application/vnd.comicbook+zip', 'application/x-cbz'];
-    var kinds = ['zip', 'cbz', 'epub'];
-    if (caps.rar) {
-      acc.push('.rar', '.cbr', 'application/vnd.rar', 'application/x-rar-compressed', 'application/vnd.comicbook-rar');
-      kinds.push('rar', 'cbr');
-    }
+      'application/vnd.comicbook+zip', 'application/x-cbz'].concat(ARCH_ACCEPT);
+    var kinds = ['zip', 'cbz', 'epub', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz'];
     if (caps.pdf) { acc.push('.pdf', 'application/pdf'); kinds.push('pdf'); }
-    if (kinds.length > 3) {
-      $('#zipInput').setAttribute('accept', acc.join(','));
-      $('#btnZip').title = '打开压缩包 ' + kinds.join(' / ');
-    }
+    $('#zipInput').setAttribute('accept', acc.join(','));
+    $('#btnZip').title = '打开压缩包 ' + kinds.join(' / ');
   }
 
   /* ================= 本地配置 / 断点续读 ================= */
@@ -2375,9 +2445,10 @@
   var pageSeq = 0;
   function makePage(o) {
     return { id: ++pageSeq, name: o.name, path: o.path || o.name, size: o.size || 0,
-      kind: o.kind,                       /* 'file' | 'fsa' | 'zip' | 'url' | 'pdf' */
+      kind: o.kind,                       /* 'file' | 'fsa' | 'zip' | 'url' | 'pdf' | 'arch'（rar / 7z / tar 系） */
       file: o.file || null, handle: o.handle || null,
       zf: o.zf || null, entry: o.entry || null, url: o.url || null,
+      ar: o.ar || null, cf: o.cf || null,            /* kind 'arch'：所属压缩包的运行时 + libarchive.js 的 CompressedFile */
       spath: o.spath || null, sentry: o.sentry || null, isImage: !!o.isImage,
       pdf: o.pdf || null, pno: o.pno || 0,         /* kind 'pdf'：所属 PDF 的运行时 + 第几页（从 1 开始） */
       bmpW: 0, bmpH: 0, crop: null, probeDone: false };
@@ -2396,6 +2467,16 @@
       }, function (e) { if (p._bp === bp) p._bp = null; throw e; });
       p._bp = bp; p._bpLow = !!low;
       return bp;
+    }
+    if (p.kind === 'arch') {                                 /* rar / 7z / tar：libarchive.js 按页解压；同页在途共用，规则同 zip */
+      if (p._bp && (low || !p._bpLow)) return p._bp;
+      var ap = p.ar.extract(p, !!low).then(function (blob) {
+        if (p._bp === ap) p._bp = null;
+        if (!p._blob) p._blob = blob;
+        return p._blob;
+      }, function (e) { if (p._bp === ap) p._bp = null; throw e; });
+      p._bp = ap; p._bpLow = !!low;
+      return ap;
     }
     if (p.kind === 'pdf') {                                  /* 渲染成 JPEG；同页在途共用，规则同 zip */
       if (p._bp && (low || !p._bpLow)) return p._bp;
@@ -2469,7 +2550,7 @@
       if (it.skind === 'video' || it.skind === 'audio') { skipped.push({ name: n, why: '视频/音频需桌面版' }); return; }
       if (it.skind === 'pdf' || it.skind === 'archive') { skipped.push({ name: n, why: BE.on ? '请单独打开' : '需桌面版' }); return; }
       if (C.WEB_IMAGE_EXTS.test(n)) keep.push(it);
-      else if (C.ARCHIVE_EXTS.test(n) || (BE.on && /\.(rar|cbr|7z)$/i.test(n))) skipped.push({ name: n, why: '压缩包请单独打开' });
+      else if (C.ARCHIVE_EXTS.test(n) || C.archKind(n)) skipped.push({ name: n, why: '压缩包请单独打开' });
       else if (C.DESKTOP_EXTS.test(n)) skipped.push({ name: n, why: BE.on ? '请单独打开' : '需桌面版' });
       else if (C.MEDIA_EXTS.test(n)) skipped.push({ name: n, why: '视频/音频需桌面版' });
       else skipped.push({ name: n, why: '非图片' });
@@ -2545,6 +2626,7 @@
     probing.clear();
     tQueue.length = 0;
     ttsStop(true);                                                      /* 朗读跟着这本书：换书 / 关书就停（先于销毁 pdf，免得它还在取下一页的文字） */
+    if (activeArch) { activeArch.destroy(); activeArch = null; }       /* 上一本是 rar / 7z / tar：终止 libarchive 的 worker（wasm 堆随之释放），页面的 blob: 地址上面已经 revoke */
     if (activePdf) { activePdf.destroy(); activePdf = null; }          /* 上一本是 PDF：终止它的 worker、清掉渲染队列 */
     pdfSpread = null;                                                   /* PDF 的单页是书级覆盖，没碰过全局 S.spread，这里清掉就行 */
     if (pdfDefaults) {                                                  /* 还原打开 PDF 时临时改的默认值：下一本（比如漫画）不该继承「按页宽」 */
@@ -3010,7 +3092,7 @@
 
   function showDetails() {
     var p = pages[index];
-    var kindLabel = { dir: '本地文件夹', zip: '压缩包 (zip/cbz)', files: '多选文件', pdf: 'PDF（pdf.js 按页渲染）' }[bookKind] || bookKind;
+    var kindLabel = { dir: '本地文件夹', zip: '压缩包 (zip/cbz)', arch: '压缩包 (rar/7z/tar，libarchive.js)', files: '多选文件', pdf: 'PDF（pdf.js 按页渲染）' }[bookKind] || bookKind;
     function on(v) { return v ? '开' : '关'; }
     var size = p && isKnown(p) ? pageSize(displayPair()) : null;
     var rows = [
@@ -3503,6 +3585,143 @@
     opts = opts || {};
     var src = new C.UrlRangeSource(url, { authHeader: opts.authHeader, fetch: opts.fetch, onAuthFail: opts.onAuthFail });
     return openZipSource(src, opts.title || C.baseName(url.split('?')[0]), opts);
+  }
+
+  /* ================= rar / cbr / 7z / cb7 / tar / cbt / tgz（libarchive.js，第一次打开这类书才加载）=================
+     这些格式没法像 zip 那样靠中央目录做 Range 随机读，所以：整本读进来（本地文件直接用 File；云端先下载成 Blob，带进度），
+     交给 libarchive.js（WASM，跑在 module worker 里）列目录，再按页解压（每页一次 extractSingleFile，结果进现有的 urlMap LRU，
+     被挤出去就再解一次）。解压请求在页面这边串行排队（当前页优先、缩略图靠后），同一时刻 worker 里只有一个在跑。
+     内存：libarchive.js 2.0.2 会把整个压缩包复制进 wasm 堆（≈ 文件大小，另有 File / 临时拷贝），>300MB 先提醒；
+     换书 / 关书 = worker.terminate()，wasm 堆整块释放。solid 压缩的包每解一页都要从头解到那一页，越靠后越慢（README 里写明）。
+     CSP：wasm 要 script-src 'wasm-unsafe-eval'（见 deploy/Caddyfile.iv.snippet）。不支持密码。 */
+  var libarchP = null;      // import() 的 Promise（失败会清掉，下次再试）
+  var activeArch = null;    // 当前书的压缩包上下文：换书 / 关书时销毁（终止 worker）
+  var ARCH_OPEN_TIMEOUT = 45000;
+  function archBase() { return new URL('vendor/libarchive/', document.baseURI).href; }
+  function loadLibarchive() {
+    if (libarchP) return libarchP;
+    libarchP = import(archBase() + 'libarchive.js').then(function (lib) {
+      if (!lib || !lib.Archive || !lib.Archive.open) throw new Error('libarchive.js 不完整');
+      return lib;
+    }).then(null, function (e) {
+      libarchP = null;
+      throw new Error('压缩包解压组件加载失败（' + ((e && e.message) || e) + '）：旧浏览器可能不支持，或网络不通');
+    });
+    return libarchP;
+  }
+  function archClosed() { var e = new Error('压缩包已关闭'); e.cancelled = true; return e; }
+  /** 一本 rar / 7z / tar 的运行时：archive（libarchive.js 的 ArchiveReader）+ 串行解压队列 */
+  function makeArchBook(archive, worker, name) {
+    var ctx = { archive: archive, worker: worker, name: name, closed: false, queue: [], busy: false, extracts: 0 };
+    function pump() {
+      if (ctx.busy || !ctx.queue.length) return;
+      var k = 0;
+      for (var i = 0; i < ctx.queue.length; i++) if (!ctx.queue[i].low) { k = i; break; }   // 页面读排在缩略图读前面
+      var job = ctx.queue.splice(k, 1)[0];
+      if (ctx.closed) { job.rej(archClosed()); return pump(); }
+      ctx.busy = true;
+      Promise.resolve().then(function () { return job.p.cf.extract(); }).then(function (file) {
+        if (!file) throw new Error('压缩包里取不到 ' + job.p.name);
+        ctx.extracts++;
+        job.res(new Blob([file], { type: mimeOf(job.p.name) }));
+      }, function (e) { job.rej(e); }).then(function () { ctx.busy = false; pump(); });
+    }
+    ctx.extract = function (p, low) {
+      if (ctx.closed) return Promise.reject(archClosed());
+      return new Promise(function (res, rej) { ctx.queue.push({ p: p, low: !!low, res: res, rej: rej }); pump(); });
+    };
+    ctx.destroy = function () {
+      if (ctx.closed) return;
+      ctx.closed = true;
+      var q = ctx.queue; ctx.queue = [];
+      q.forEach(function (j) { j.rej(archClosed()); });
+      try { ctx.worker.terminate(); } catch (e) { /* 忽略 */ }
+      try { var r = ctx.archive.close(); if (r && r.then) r.then(null, function () {}); } catch (e) { /* 忽略 */ }
+    };
+    return ctx;
+  }
+
+  /** file = File（带 name）。opts 同 openZipSource：key / dir / stale / prog / rethrow */
+  function openArchiveFile(file, name, opts) {
+    opts = opts || {};
+    name = name || file.name || '压缩包';
+    if (!/^https?:$/.test(location.protocol)) {            /* file:// 不让加载 module 脚本 / worker：和 PDF 一样给明确说明，别静默失败 */
+      toast('rar / 7z / tar 需要通过网址（http / https）打开本页才能解压；直接双击本文件时 rar / cbr 需要本地后端：先跑 python web_backend.py（或双击 启动网页版.bat）', 7000);
+      return Promise.resolve(false);
+    }
+    var own = !opts.prog, pg = opts.prog || openProgBegin(name);
+    var lib = null, worker = null, archive = null, ctx = null, adopted = false;
+    function cleanup() {
+      if (adopted) return;
+      if (ctx) ctx.destroy();
+      else { try { if (worker) worker.terminate(); } catch (e) { /* 忽略 */ } }
+    }
+    if ((file.size || 0) > C.ARCH_WARN_BYTES) {
+      toast(name + ' 有 ' + fmtSize(file.size) + '：整本要读进内存，手机可能撑不住（建议先转成 cbz 再看）', 7000);
+    }
+    pg.set('加载解压组件…', null);
+    return loadLibarchive().then(function (l) {
+      lib = l;
+      if (opts.stale && opts.stale()) throw archClosed();
+      pg.set('读取压缩包目录…', null);
+      return new Promise(function (resolve, reject) {
+        var timer = setTimeout(function () { reject(new Error('解压组件启动超时（WebAssembly 没有加载起来）')); }, ARCH_OPEN_TIMEOUT);
+        lib.Archive.init({ getWorker: function () {
+          worker = new Worker(archBase() + 'worker-bundle.js', { type: 'module' });
+          worker.addEventListener('error', function (ev) { clearTimeout(timer); reject(new Error((ev && ev.message) || 'worker 启动失败')); });
+          return worker;
+        } });
+        lib.Archive.open(file).then(function (a) { clearTimeout(timer); archive = a; resolve(a); }, function (e) { clearTimeout(timer); reject(e); });
+      });
+    }).then(function (a) {
+      ctx = makeArchBook(a, worker, name);
+      return Promise.resolve(a.hasEncryptedData()).then(function (enc) {
+        if (enc === true) { var e = new Error('encrypted'); e.encrypted = true; throw e; }
+        return a.getFilesArray();
+      });
+    }).then(function (list) {
+      if (opts.stale && opts.stale()) throw archClosed();
+      var ents = list.map(function (x) { return { path: (x.path || '') + (x.file && x.file.name || ''), size: x.file ? x.file.size : 0, cf: x.file }; });
+      var imgs = C.archPickImages(ents);
+      if (!imgs.length) { toast('压缩包里没有找到浏览器能显示的图片（png / jpg / webp / gif / bmp / avif）'); return false; }
+      pg.set('读取书籍结构…', null);
+      var items = imgs.map(function (en) {
+        return { kind: 'arch', name: en.name, path: en.path, ar: ctx, cf: en.cf, size: en.size };
+      });
+      var o = { kind: 'arch', title: name, dir: opts.dir || null };
+      if (opts.key) o.key = opts.key;
+      openItems(items, o);                                   // 里面会先 closeBook()（销毁上一本），所以 activeArch 要在它之后设
+      var live = (pages[0] && pages[0].ar === ctx) || (allPages && allPages[0] && allPages[0].ar === ctx);
+      if (!live) return false;
+      activeArch = ctx; adopted = true;
+      return true;
+    }).then(null, function (e) {
+      cleanup();
+      if (e && e.cancelled) return false;                    // 过期的链接 / 已被取代：不打扰用户
+      if (opts.rethrow && e && e.status) throw e;
+      toast('压缩包打开失败：' + C.archErrorMessage(e), 6000);
+      return false;
+    }).then(function (r) { cleanup(); if (own) pg.end(); return r; }, function (e) { if (own) pg.end(); throw e; });
+  }
+  /** 云端 rar / 7z / tar 系：整本下载（带进度）再交给 libarchive.js */
+  function openArchiveUrl(url, opts) {
+    opts = opts || {};
+    var name = opts.title || C.baseName(url.split('?')[0]);
+    var own = !opts.prog, pg = opts.prog || openProgBegin(name);
+    pg.set('下载压缩包…', null);
+    return C.fetchWhole(url, { authHeader: opts.authHeader, fetch: opts.fetch, onAuthFail: opts.onAuthFail,
+      onProgress: function (got, total) {
+        pg.set('下载压缩包 ' + fmtSize(got) + (total ? ' / ' + fmtSize(total) : ''), total ? got / total : null);
+      } }).then(function (blob) {
+      if (opts.stale && opts.stale()) return false;
+      var f = new File([blob], C.baseName(url.split('?')[0]) || name, { type: 'application/octet-stream' });
+      return openArchiveFile(f, name, { key: opts.key, dir: opts.dir, stale: opts.stale, prog: pg, rethrow: opts.rethrow });
+    }).then(function (r) { if (own) pg.end(); return r; }, function (e) {
+      if (own) pg.end();
+      if (opts.rethrow) throw e;
+      toast('压缩包打开失败：' + ((e && e.message) || e));
+      return false;
+    });
   }
 
   /* ================= PDF（pdf.js，第一次读 PDF 时才加载）=================
@@ -4116,11 +4335,11 @@
         openPdfFile(pdfs[0].file);
         return;
       }
-      var zips = entries.filter(function (e) { return C.ARCHIVE_EXTS.test(e.name) && e.file; });
-      var imgs = entries.filter(function (e) { return !C.ARCHIVE_EXTS.test(e.name); });
+      var zips = entries.filter(function (e) { return (C.ARCHIVE_EXTS.test(e.name) || C.archKind(e.name)) && e.file; });
+      var imgs = entries.filter(function (e) { return !C.ARCHIVE_EXTS.test(e.name) && !C.archKind(e.name); });
       if (zips.length && !imgs.length) {
         if (zips.length > 1) toast('压缩包一次只开一个，已打开第一个');
-        openZipFile(zips[0].file);
+        if (C.archKind(zips[0].name)) openArchiveFile(zips[0].file, zips[0].name); else openZipFile(zips[0].file);
         return;
       }
       if (zips.length) toast('压缩包和图片不能混开，已忽略压缩包（用 📦 按钮单独打开）');
@@ -4546,11 +4765,8 @@
       else openPdfFile(f);
       return;
     }
-    if (/\.(rar|cbr)$/i.test(f.name)) {
-      toast(BE.on ? '后端没装 rarfile 或 7-Zip/WinRAR，读不了 rar/cbr'
-                  : 'rar/cbr 需要本地后端：先跑 python web_backend.py（或双击 启动网页版.bat）');
-      return;
-    }
+    if (C.archKind(f.name)) { openArchiveFile(f, f.name); return; }       // rar / 7z / tar 系：浏览器里 libarchive.js 读（后端能读 rar 时上面已经交给后端）
+    if (/\.gz$/i.test(f.name)) { toast('只支持 .tar.gz / .tgz（不是单个 .gz 文件）'); return; }
     openZipFile(f);
   });
   window.addEventListener('resize', function () {
@@ -4782,12 +4998,8 @@
   var openDavPdfHook = openDavPdf;  // pdf 阅读器挂在这里：function (p, ctx) -> Promise<boolean>；设成 null 时点 pdf 只提示「暂不支持 PDF」（测试钩子 setDavPdfHook）
   function openDavBook(p, token) {
     function stale() { return token !== launchSeq; }
-    /* 按扩展名分流：rar / cbr 浏览器没法随机读取（发布时转成 cbz）；pdf 走钩子；其余 zip 系走 Range 源 */
-    var kind = C.libClassify((/\.([^.\/]+)$/.exec(p.rel) || [])[1]);
-    if (kind === 'rar' || kind === 'cbr') {
-      toast('这是 ' + kind + '：浏览器不能随机读取，请先转成 cbz 再上传', 5000);
-      return Promise.resolve(false);
-    }
+    /* 按扩展名分流：rar / 7z / tar 系整本下载后交给 libarchive.js；pdf 走钩子；其余 zip 系走 Range 源 */
+    var kind = C.archKind(p.rel) ? 'arch' : C.libClassify((/\.([^.\/]+)$/.exec(p.rel) || [])[1]);
     if (kind === 'pdf' && !openDavPdfHook) { toast('暂不支持 PDF'); return Promise.resolve(false); }
     return davEnsure().then(function (cfg) {
       return cfg || askDav('第一次从云端书库打开：请填 WebDAV 账号（建议只读账号）');
@@ -4805,6 +5017,8 @@
         var url = C.davBookUrl(cfg.base, cfg.library, p.rel);
         if (kind === 'pdf') return openDavPdfHook(p, { url: url, key: key, stale: stale, authHeader: davAuthHeader, askDav: askDav, prog: pg,
           onFail: function (why) { davOpenErr = why; } });     // PDF 的失败自己 toast 后返回 false（不抛）：原因记下来，volStep 的「打不开」提示要带上
+        if (kind === 'arch') return openArchiveUrl(url, { title: p.title, key: key, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale, prog: pg,
+          onAuthFail: function () { if (!opening && !stale()) askDav('账号或密码不对（HTTP 401），请重新输入'); } });
         return openZipUrl(url, {
           title: p.title, key: key, dir: p.dir, rethrow: true, authHeader: davAuthHeader, stale: stale, prog: pg,
           /* 打开之后翻页时才遇到 401（密码被改了 / 账号被禁）：弹框重输；打开阶段的 401 走下面的 catch */
@@ -5265,7 +5479,7 @@
 
   /* 测试钩子（不影响正常使用） */
   window.__IV = {
-    openItems: openItems, openZipFile: openZipFile, openZipSource: openZipSource, openZipUrl: openZipUrl, scanDir: scanDir,
+    openItems: openItems, openArchiveFile: openArchiveFile, openArchiveUrl: openArchiveUrl, archInfo: function () { var c = activeArch; return c ? { closed: c.closed, extracts: c.extracts, queue: c.queue.length } : null; }, openZipFile: openZipFile, openZipSource: openZipSource, openZipUrl: openZipUrl, scanDir: scanDir,
     openShelf: openShelf, loadShelf: loadShelf, shelfState: function () { return { rel: shelfRel, data: shelfData }; },
     syncPush: syncPush, pullProgress: pullProgress, syncState: function () { return { off: syncOff, sent: syncSent }; },
     applyLaunchHash: applyLaunchHash, askDav: askDav, davEnsure: davEnsure, davStore: davStore, davForget: davForget,

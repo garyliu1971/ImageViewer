@@ -818,8 +818,8 @@ test('书架：parsePropfind / shelfSplit / 面包屑', () => {
   assert.equal(es[1].mtime, Date.parse('2026-11-07T08:00:00Z')); assert.equal(es[2].mtime, null);
   const sp = C.shelfSplit(es);
   assert.deepEqual(sp.dirs.map((e) => e.name), ['第二卷']);
-  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz', 'x.pdf']);   // 自然排序，隐藏文件不列；pdf 和 zip 系一样列出来
-  assert.equal(sp.other, 1);                                                                          // y.rar 只计数
+  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz', 'x.pdf', 'y.rar']);   // 自然排序，隐藏文件不列；pdf / rar（libarchive.js 读）和 zip 系一样列出来
+  assert.equal(sp.other, 0);
 
   // 不带前缀的 XML、绝对 URL 的 href、小写前缀
   const x2 = '<multistatus xmlns="DAV:"><response><href>https://h.example/library/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>' +
@@ -873,36 +873,37 @@ const volList = (xml, dir) => C.volEntries(dir, C.shelfSplit(C.parsePropfind(xml
 
 test('volEntries：书架的书 -> 带 rel / ext 的列表（保持顺序，扩展名转小写，没有扩展名也不崩）', () => {
   const es = volList(SFTPGO_XML, '小说');
-  // 书架只列 epub / cbz / zip / pdf；rar 只计数，文件夹和隐藏文件不在书里
-  assert.deepEqual(es.map((e) => e.name), ['a & b (1).pdf', 'vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
-  assert.deepEqual(es.map((e) => e.ext), ['pdf', 'cbz', 'cbz', 'epub']);
-  assert.equal(es[1].rel, '小说/vol 2.CBZ'); assert.equal(es[1].isDir, false); assert.equal(es[3].size, 27483419);
+  // 书架列 epub / cbz / zip / pdf / rar 系；文件夹和隐藏文件不在书里
+  assert.deepEqual(es.map((e) => e.name), ['a & b (1).pdf', 'vol 1.rar', 'vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
+  assert.deepEqual(es.map((e) => e.ext), ['pdf', 'rar', 'cbz', 'cbz', 'epub']);
+  assert.equal(es[2].rel, '小说/vol 2.CBZ'); assert.equal(es[2].isDir, false); assert.equal(es[4].size, 27483419);
+  assert.equal(C.volEntries('d', [{ name: 'x.tar.gz', size: 1 }])[0].ext, 'tgz');             // .tar.gz 的扩展名折成 tgz；单独的 .gz 不是书（shelfSplit 不列）
   assert.equal(C.volEntries('', [{ name: 'a.zip', size: 1 }])[0].rel, 'a.zip');           // 书库根：rel 不带前导 /
   assert.equal(C.volEntries('d', [{ name: 'noext', size: null }])[0].ext, '');
   assert.deepEqual(C.volEntries('d', []), []); assert.deepEqual(C.volEntries('d', null), []);
 });
 
 test('libClassify / libOpenable / libBooks', () => {
-  for (const e of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr']) assert.equal(C.libClassify(e), e);
+  for (const e of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz']) assert.equal(C.libClassify(e), e);
   assert.equal(C.libClassify('.CBZ'), 'cbz'); assert.equal(C.libClassify('EPUB'), 'epub');
-  for (const e of ['txt', 'mobi', '7z', '', null, undefined, 'cbz2']) assert.equal(C.libClassify(e), 'other', String(e));
-  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other'].map(C.libOpenable), [true, true, true, true, false, false, false]);
+  for (const e of ['txt', 'mobi', 'gz', '', null, undefined, 'cbz2']) assert.equal(C.libClassify(e), 'other', String(e));
+  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz', 'other'].map(C.libOpenable), [...Array(11).fill(true), false]);
   const mixed = [{ name: 'd', rel: 'd', isDir: true, ext: '' }, { name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.txt', rel: 'b.txt', ext: 'txt' },
     { name: 'c.cbr', rel: 'c.cbr', ext: 'cbr' }, { name: 'd.epub', rel: 'd.epub', ext: 'epub' }];
   assert.deepEqual(C.libBooks(mixed).map((e) => e.name), ['a.pdf', 'c.cbr', 'd.epub']);       // 文件夹和 txt 不算书
 });
 
 test('书架列出的书 = 换书能跳到的书（同一份「能打开」名单，不会出现书架有、换书却跳过）', () => {
-  const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak'];
+  const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak', 'k.tar.gz', 'l.gz'];
   const books = C.shelfSplit(names.map((name) => ({ name, isDir: false, size: 1 }))).books;
-  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf']);
+  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'i.7z', 'k.tar.gz']);
   const es = C.volEntries('', books);
   for (const e of es) assert.equal(C.libOpenable(C.libClassify(e.ext)), true, e.name);          // 书架上的每本，换书默认都放行
   assert.equal(C.nextBook(es, 'a.epub').name, 'b.CBZ');
   assert.equal(C.nextBook(es, 'b.CBZ').name, 'c.zip');
   assert.equal(C.nextBook(es, 'c.zip').name, 'd.pdf');                                           // pdf 和 zip 系一样能换过去
   // 反过来：libOpenable 放行的扩展名，书架一定列（两处不能各写各的）
-  for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other']) {
+  for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz', 'other']) {
     const listed = C.shelfSplit([{ name: 'x.' + k, isDir: false, size: 1 }]).books.length === 1;
     assert.equal(listed, C.libOpenable(k), k);
   }
@@ -913,24 +914,27 @@ test('libParentRel', () => {
   assert.equal(C.libParentRel('a'), ''); assert.equal(C.libParentRel(''), ''); assert.equal(C.libParentRel('a/b/'), 'a');
 });
 
-test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（rar / cbr）', () => {
+test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的', () => {
   const R = (n) => '小说/' + n;
   const es = volList(SFTPGO_XML, '小说');
-  // 书架的书：a & b (1).pdf, vol 2.CBZ, vol 10.cbz, チ…卷01.epub
+  // 书架的书：a & b (1).pdf, vol 1.rar, vol 2.CBZ, vol 10.cbz, チ…卷01.epub
   assert.equal(C.nextBook(es, R('vol 2.CBZ')).name, 'vol 10.cbz');
   assert.equal(C.nextBook(es, R('vol 10.cbz')).ext, 'epub');
   assert.equal(C.nextBook(es, R('チ。-关于地球的运动- - 卷01.epub')), null);      // 最后一本
   assert.equal(C.prevBook(es, R('a & b (1).pdf')), null);                        // 第一本
-  assert.equal(C.prevBook(es, R('vol 2.CBZ')).ext, 'pdf');
+  assert.equal(C.prevBook(es, R('vol 2.CBZ')).ext, 'rar');
+  assert.equal(C.prevBook(es, R('vol 1.rar')).ext, 'pdf');
   assert.equal(C.prevBook(es, R('vol 10.cbz')).name, 'vol 2.CBZ');
   assert.equal(C.nextBook(es, '小说/不存在.cbz'), null);                            // 当前书不在列表里
   assert.equal(C.nextBook([], 'x.cbz'), null);
-  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：rar 跳过，pdf 默认放行；调用方传的 canOpen 说了算（例如 pdf 阅读器被关掉时不放行 pdf）
+  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：rar / pdf 默认放行；调用方传的 canOpen 说了算（例如 pdf 阅读器被关掉时不放行 pdf，没有 WebAssembly 时不放行 rar 系）
   const full = [{ name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.rar', rel: 'b.rar', ext: 'rar' }, { name: 'c.cbz', rel: 'c.cbz', ext: 'cbz' },
     { name: 'd.cbz', rel: 'd.cbz', ext: 'cbz' }];
-  assert.equal(C.prevBook(full, 'c.cbz').name, 'a.pdf');
+  assert.equal(C.prevBook(full, 'c.cbz').name, 'b.rar');
   const noPdf = (e) => e.ext !== 'pdf' && C.libOpenable(C.libClassify(e.ext));
-  assert.equal(C.prevBook(full, 'c.cbz', noPdf), null);
+  assert.equal(C.prevBook(full, 'c.cbz', noPdf).name, 'b.rar');
+  const noPdfNoRar = (e) => noPdf(e) && e.ext !== 'rar';
+  assert.equal(C.prevBook(full, 'c.cbz', noPdfNoRar), null);
   assert.equal(C.nextBook(full, 'c.cbz').name, 'd.cbz');
 
 });
@@ -1527,4 +1531,61 @@ test('本机引擎：按文字选语言和声音、语速、cancel / 出错 / �
   const canceled = { getVoices: () => [], speak(u) { setTimeout(() => u.onerror({ error: 'canceled' }), 0); }, cancel() {} };
   assert.equal(await C.makeBrowserEngine({ synth: canceled, Utterance: U, getCfg: () => ({}) }).speak('甲。'), 'cancel');
   assert.equal(C.ttsRate('x'), 1); assert.equal(C.ttsRate(0.1), 0.5); assert.equal(C.ttsRate(9), 2.5);
+});
+
+/* ====================== rar / 7z / tar 系（libarchive.js）的纯逻辑 ====================== */
+
+test('archKind：rar / cbr / 7z / cb7 / tar / cbt / tgz / tar.gz（不分大小写）；zip 系、单个 .gz、别的都不是', () => {
+  const want = { 'a.rar': 'rar', 'A.CBR': 'rar', 'b.7z': '7z', 'b.CB7': '7z', 'c.tar': 'tar', 'c.cbt': 'tar', 'd.tgz': 'tgz', 'd.tar.gz': 'tgz', 'D.TAR.GZ': 'tgz', '小说/第1卷.cbr': 'rar' };
+  for (const [n, k] of Object.entries(want)) assert.equal(C.archKind(n), k, n);
+  for (const n of ['a.cbz', 'a.zip', 'a.epub', 'a.pdf', 'a.gz', 'a.tar.gz.bak', 'a.rar.txt', 'rar', 'a.7zip', '', null, undefined]) assert.equal(C.archKind(n), null, String(n));
+  assert.equal(C.ARCH_EXTS.test('x.cb7'), true);
+  assert.equal(C.ARCH_WARN_BYTES, 300 * 1024 * 1024);
+});
+
+test('桌面式扩展名表（DESKTOP_EXTS / classify 用）认得新增的后缀；zip 系的 ARCHIVE_EXTS 不变', () => {
+  for (const n of ['a.rar', 'a.cbr', 'a.7z', 'a.cb7', 'a.tar', 'a.cbt', 'a.tgz', 'a.tar.gz', 'a.gz', 'a.zip', 'a.cbz', 'a.pdf', 'a.epub']) assert.equal(C.DESKTOP_EXTS.test(n), true, n);
+  for (const n of ['a.cbr', 'a.7z', 'a.tar', 'a.tgz']) assert.equal(C.ARCHIVE_EXTS.test(n), false, n);      // 走 libarchive，不走 ZipReader
+  for (const n of ['a.zip', 'a.cbz', 'a.epub']) assert.equal(C.ARCHIVE_EXTS.test(n), true, n);
+  for (const e of ['rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz']) assert.ok(C.LIB_OPEN_KINDS.includes(e), e);
+});
+
+test('archPickImages：只留浏览器能显示的图片、丢元数据、自然排序、带 name', () => {
+  const ents = ['10.jpg', 'readme.txt', '03.png', '__MACOSX/._01.jpg', '01.jpg', 'dir/', 'Thumbs.db', '.hidden.png', 'sub/2.PNG', 'sub\\1.jpg', '/abs/9.webp', 'a.tif', 'b.svg', 'c.avif', 'x.heic']
+    .map((path, i) => ({ path, size: i, cf: { i } }));
+  const got = C.archPickImages(ents);
+  assert.deepEqual(got.map((e) => e.path), ['01.jpg', '03.png', '10.jpg', 'abs/9.webp', 'b.svg', 'c.avif', 'sub/1.jpg', 'sub/2.PNG']);
+  assert.deepEqual(got.map((e) => e.name).slice(0, 2), ['01.jpg', '03.png']);
+  assert.equal(got[0].cf.i, 4);                                                    // 其它字段原样带着
+  assert.deepEqual(C.archPickImages([]), []); assert.deepEqual(C.archPickImages(null), []);
+  assert.deepEqual(C.archPickImages([{ path: 'p2.jpg' }, { path: 'p10.jpg' }, { path: 'p1.jpg' }]).map((e) => e.path), ['p1.jpg', 'p2.jpg', 'p10.jpg']);
+});
+
+test('archErrorMessage：加密 / WebAssembly 被 CSP 拦 / 格式不支持 / 其它', () => {
+  assert.match(C.archErrorMessage(Object.assign(new Error('encrypted'), { encrypted: true })), /有密码/);
+  assert.match(C.archErrorMessage(new Error('Passphrase required for this entry')), /有密码/);
+  assert.match(C.archErrorMessage(new Error("WebAssembly.instantiate(): Refused to compile ... 'unsafe-eval'")), /wasm-unsafe-eval/);
+  assert.match(C.archErrorMessage(new Error('Unrecognized archive format')), /不是有效的压缩包/);
+  assert.equal(C.archErrorMessage(new Error('boom')), 'boom');
+  assert.equal(C.archErrorMessage(null), '未知错误');
+});
+
+test('fetchWhole：整本下载成 Blob，带 Authorization、不带 Range、报告进度；401 / 404 / 空文件带 status', async () => {
+  const body = Buffer.from('x'.repeat(100000));
+  const seen = [];
+  const mk = (status, data) => (u, init) => { seen.push({ u, init }); return Promise.resolve(new Response(data, { status, headers: data ? { 'Content-Length': String(data.length) } : {} })); };
+  const prog = [];
+  const b = await C.fetchWhole('https://h/library/a.cbr', { authHeader: () => 'Basic QQ==', fetch: mk(200, body), onProgress: (g, t) => prog.push([g, t]) });
+  assert.equal(b.size, 100000);
+  assert.equal(seen[0].init.headers.Authorization, 'Basic QQ=='); assert.equal(seen[0].init.headers.Range, undefined);
+  assert.equal(seen[0].init.credentials, 'omit'); assert.equal(seen[0].init.cache, 'no-store');
+  assert.ok(prog.length >= 1 && prog[prog.length - 1][0] === 100000 && prog[prog.length - 1][1] === 100000);
+  let authFail = 0;
+  for (const [st, code] of [[401, 'auth'], [403, 'forbidden'], [404, 'notfound'], [500, 'http']]) {
+    await assert.rejects(C.fetchWhole('u', { fetch: mk(st, st === 500 ? 'e' : 'no'), onAuthFail: () => authFail++ }), (e) => e.status === st && e.code === code);
+  }
+  assert.equal(authFail, 1);                                                        // 只有 401 触发 onAuthFail
+  await assert.rejects(C.fetchWhole('u', { fetch: (u, i) => Promise.resolve(new Response(new Uint8Array(0), { status: 200 })) }), (e) => e.code === 'empty');
+  const plain = await C.fetchWhole('u', { authHeader: 'Basic Z', fetch: () => Promise.resolve({ status: 200, headers: new Headers(), blob: () => Promise.resolve(new Blob(['abc'])) }) });
+  assert.equal(plain.size, 3);                                                      // 没有 body.getReader 的环境退回 blob()
 });
