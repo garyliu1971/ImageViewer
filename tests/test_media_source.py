@@ -54,6 +54,41 @@ class TestMediaFilesIn(unittest.TestCase):
         self.assertEqual(names, ["a.txt"])
 
 
+class TestJunkFilter(unittest.TestCase):
+    """打包工具元数据不该变成一页 / 一个章节（桌面版和网页版共用这段逻辑）。"""
+
+    def test_is_junk(self):
+        for n in ("__MACOSX/._1.jpg", ".DS_Store", "sub/.hidden.jpg", "Thumbs.db",
+                  "desktop.ini", ""):
+            self.assertTrue(ms.is_junk(n), n)
+        for n in ("1.jpg", "sub/2.png", "a.b.c.jpg", "第1话/01.png"):
+            self.assertFalse(ms.is_junk(n), n)
+        self.assertTrue(ms.is_junk("__macosx\._1.jpg"))   # 反斜杠也认
+
+    def test_zip_chapters_skip_macosx(self):
+        names = ["1.jpg", "__MACOSX/._1.jpg", ".DS_Store", "ch2/2.jpg", "ch2/Thumbs.db"]
+        chs = ms.build_zip_chapters("/x.cbz", names)
+        self.assertEqual([c["title"] for c in chs], ["根目录", "ch2"])
+        self.assertEqual([n for _, n in chs[0]["sources"]], ["1.jpg"])
+
+    def test_media_files_in_skips_junk(self):
+        d = tempfile.mkdtemp()
+        try:
+            for n in ("1.jpg", "2.jpg"):
+                open(os.path.join(d, n), "w").close()
+            os.makedirs(os.path.join(d, "__MACOSX"))
+            open(os.path.join(d, "__MACOSX", "._1.jpg"), "w").close()
+            open(os.path.join(d, ".DS_Store"), "w").close()
+            os.makedirs(os.path.join(d, "sub"))
+            open(os.path.join(d, "sub", "3.jpg"), "w").close()
+            open(os.path.join(d, "sub", "Thumbs.db"), "w").close()
+            got = sorted(os.path.relpath(p, d).replace(os.sep, "/") for p in ms.media_files_in(d))
+            self.assertEqual(got, ["1.jpg", "2.jpg", "sub/3.jpg"])
+        finally:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestBuildZipChapters(unittest.TestCase):
     def _make_zip(self):
         buf = tempfile.mkstemp(suffix=".zip")[1]

@@ -1,0 +1,12 @@
+# 文本文件统一按 LF 存库，工作区允许 CRLF（Windows）
+* text=auto
+
+# 测试样本是二进制格式：不能被 core.autocrlf 换成 CRLF
+# （sample.pdf 内是绝对字节偏移的 xref 表，换行被改会直接损坏）
+tests/fixtures/** -text
+*.pdf binary
+*.cbz binary
+*.cbr binary
+*.zip binary
+# 第三方库原样入库（含二进制字体 / cmap）：不做换行转换，保证哈希与 vendor/pdfjs/SHA256SUMS 一致
+vendor/** -text
