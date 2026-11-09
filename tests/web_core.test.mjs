@@ -1084,3 +1084,447 @@ test('UrlRangeSource：0 字节的文件 -> 明确的 empty 错误（各种服�
     } finally { await new Promise((r) => srv.close(r)); }
   }
 });
+
+/* ================= 书签 ================= */
+test('书签：加 / 取消 / 备注 / 删除 —— 同一页再点一次是取消；u 总比已有的大', () => {
+  const t0 = 1760000000000;
+  const r = C.bmToggle([], 0, 4, t0, { s: '春天到了' }, 0.5);
+  assert.ok(r.added && !r.removed);
+  assert.equal(r.added.i, 4); assert.equal(r.added.c, 0); assert.equal(r.added.s, '春天到了'); assert.equal(r.added.u, t0);
+  assert.equal(C.bmLive(r.list).length, 1);
+  assert.equal(C.bmAtPage(r.list, 0, 4).id, r.added.id);
+  assert.equal(C.bmAtPage(r.list, 1, 4), null);                       // 不同章的同一页下标不是同一个书签
+  const l2 = C.bmUpdate(r.list, r.added.id, { n: '备注' }, t0 + 5);
+  assert.equal(C.bmLive(l2)[0].n, '备注'); assert.equal(C.bmLive(l2)[0].u, t0 + 5);
+  const r2 = C.bmToggle(l2, 0, 4, t0 + 10, null);                     // 再点 = 取消（留墓碑）
+  assert.ok(r2.removed && !r2.added); assert.equal(C.bmLive(r2.list).length, 0);
+  assert.equal(r2.list.length, 1); assert.equal(r2.list[0].x, 1); assert.equal(r2.list[0].u, t0 + 10);
+  const r3 = C.bmToggle(r2.list, 0, 4, t0 + 20, null);                // 取消之后再加 = 新 id
+  assert.ok(r3.added && r3.added.id !== r.added.id);
+  // 时钟倒退（别的设备的 u 更大）：本次改动的 u 仍要比已有的大，合并时才赢
+  const future = [{ id: 'a1', c: 0, i: 2, n: '', s: '', t: t0 + 1e6, u: t0 + 1e6 }];
+  const r4 = C.bmToggle(future, 0, 2, t0, null);
+  assert.ok(r4.list.find((b) => b.id === 'a1').u > t0 + 1e6);
+  const l5 = C.bmRemove(r3.list, r3.added.id, t0 + 30);
+  assert.equal(C.bmLive(l5).length, 0);
+});
+
+test('书签：合并 —— 按 id 取 u 大的，删除（墓碑）传播，过期墓碑清掉，脏数据丢弃，活书签最多 200', () => {
+  const now = 1760000000000, day = 864e5;
+  const A = [{ id: 'x', c: 0, i: 1, n: 'A改的', s: '', t: 1, u: now - 5000 }, { id: 'y', c: 0, i: 2, n: '', s: '', t: 1, u: now - 9000 }];
+  const B = [{ id: 'x', c: 0, i: 1, n: 'B改的', s: '', t: 1, u: now - 1000 }, { id: 'y', c: 0, i: 2, n: '', s: '', t: 1, u: now - 100, x: 1 },
+    { id: 'z', c: 0, i: 3, n: '', s: '', t: 1, u: now - 50 }];
+  const m = C.bmMerge(A, B, now);
+  assert.equal(m.find((b) => b.id === 'x').n, 'B改的');                // 较新的赢
+  assert.equal(m.find((b) => b.id === 'y').x, 1);                      // B 删了 y，A 的旧副本不能复活它
+  assert.equal(C.bmLive(m).map((b) => b.id).join(), 'x,z');
+  assert.deepEqual(C.bmMerge(B, A, now), m);                           // 交换律：两台设备合并出同一个结果
+  assert.deepEqual(C.bmMerge(m, m, now), m);                           // 幂等
+  assert.ok(C.bmSame(m, C.bmMerge(m, A, now)));
+  // 同一时刻：墓碑赢
+  const tie = C.bmMerge([{ id: 'q', c: 0, i: 0, n: '', s: '', t: 5, u: 7 }], [{ id: 'q', c: 0, i: 0, n: '', s: '', t: 5, u: 7, x: 1 }], 0);
+  assert.equal(tie[0].x, 1);
+  // 过期墓碑清掉；活的不清
+  const old = C.bmNormalize([{ id: 'o', c: 0, i: 0, t: 1, u: now - 61 * day, x: 1 }, { id: 'p', c: 0, i: 1, t: 1, u: now - 61 * day }], now);
+  assert.deepEqual(old.map((b) => b.id), ['p']);
+  // 脏数据
+  const dirty = C.bmNormalize([null, 5, { id: '', i: 1, u: 1 }, { id: 'a', i: -1, u: 1 }, { id: 'b', i: 1 }, { id: 'c!<b>', i: 2.7, u: 3, n: 'x'.repeat(999), s: 5 },
+    { id: 'd', i: 1e12, u: 4, c: -3 }], now);
+  assert.deepEqual(dirty.map((b) => b.id).sort(), ['cb', 'd']);        // 'c!<b>' 去掉非法字符后是 'cb'
+  const cb = dirty.find((b) => b.id === 'cb');
+  assert.equal(cb.i, 2); assert.equal(cb.n.length, 200); assert.equal(cb.s, '');
+  assert.equal(dirty.find((b) => b.id === 'd').i, 1e6); assert.equal(dirty.find((b) => b.id === 'd').c, 0);
+  // 上限 200：留最新的
+  const many = Array.from({ length: 230 }, (_, k) => ({ id: 'm' + k, c: 0, i: k, t: 1, u: 1000 + k }));
+  const cap = C.bmNormalize(many, now);
+  assert.equal(C.bmLive(cap).length, 200); assert.ok(cap.some((b) => b.id === 'm229')); assert.ok(!cap.some((b) => b.id === 'm0'));
+  assert.deepEqual(C.bmNormalize('nope', now), []);
+});
+
+test('书签：跟着进度走（bm 字段）；没有书签的进度和旧版本完全一样', () => {
+  const key = 'dav:lib/a.pdf', now = Date.now();
+  const bm = [{ id: 'k1', c: 0, i: 7, n: '备注', s: '片段', t: now, u: now }, { id: 'k2', c: 1, i: 0, n: '', s: '', t: now, u: now + 1, x: 1 }];
+  const out = C.toRemoteProgress({ index: 7, chapter: 0, total: 30, direction: 'ltr', title: 'T', at: 1760000000123, bookmarks: bm }, key, '电脑');
+  assert.deepEqual(out.bm.map((b) => b.id), ['k1', 'k2']);
+  assert.ok(!('bm' in C.toRemoteProgress({ index: 7, chapter: 0, total: 30, at: 1760000000123 }, key, '')));
+  assert.ok(!('bm' in C.toRemoteProgress({ index: 7, chapter: 0, total: 30, at: 1760000000123, bookmarks: [] }, key, '')));
+  const back = C.normalizeProgress(JSON.parse(JSON.stringify(out)), key);
+  assert.deepEqual(back.bm, C.bmNormalize(bm, now));
+  const legacy = C.normalizeProgress({ key, at: 5, index: 1 }, key);
+  assert.ok(!('bm' in legacy));                                        // 旧文件没有 bm：不凭空多字段
+  assert.ok(!('bm' in C.normalizeProgress({ key, at: 5, index: 1, bm: 'x' }, key)));
+});
+
+/* ================= PDF 文字层 → 可朗读文字 ================= */
+// 造一页：行 = [x, y(自顶向下), 字号, 文字]；perChar = 每个汉字一个 item（逼近最坏的 OCR 文字层：逐字断开）
+function mkItems(lines, perChar) {
+  const out = [];
+  for (const [x, y, fs, text] of lines) {
+    if (perChar && /[㐀-鿿]/.test(text)) { let cx = x; for (const ch of text) { out.push({ s: ch, x: cx, y, w: fs, fs }); cx += fs; } }
+    else out.push({ s: text, x, y, w: text.length * fs * (/[㐀-鿿]/.test(text) ? 1 : 0.5), fs });
+  }
+  return out;
+}
+const W = 400, H = 600;
+function bodyLines(texts, y0, indent, n = 24) {            // 每行 n 个字，缩进段第一行缩进 2 字
+  const lines = [];
+  texts.forEach((t, k) => {
+    const ind = indent[k] !== false;
+    const parts = ind ? [t.slice(0, n - 2)].concat(Array.from({ length: Math.ceil(Math.max(0, t.length - (n - 2)) / n) }, (_, j) => t.slice(n - 2 + j * n, n - 2 + (j + 1) * n)))
+      : Array.from({ length: Math.ceil(t.length / n) }, (_, j) => t.slice(j * n, (j + 1) * n));
+    parts.forEach((p, j) => { lines.push([50 + (ind && j === 0 ? 24 : 0), y0, 12, p]); y0 += 18; });
+    y0 += 4;
+  });
+  return lines;
+}
+
+test('文字层：逐字断开的 OCR 也能拼回一行；页眉 / 页码 / 脚注 / 〔n〕注号被清掉；缩进开新段；中文标点旁边不多出空格', () => {
+  const tr = C.ttsTracker();
+  const head = [150, 30, 9, '示例：朗读测试书'];
+  const mk = (n, extra) => [head].concat(extra).concat([[195, 575, 9, String(n)]]);
+  const p1 = mk(1, bodyLines(['春天到了，山上的雪慢慢融化。溪水从石缝里流出来，带着泥土的气息。', '老人坐在门口晒太阳，他说今年的收成一定不错。'], 80, [true, true])
+    .concat([[50, 540, 7, '〔1〕这里是脚注，朗读时应该被跳过。']]));
+  const p2 = mk(2, bodyLines(['夜里，月亮升起来，整个山谷安静得像一幅画。'], 80, [true]));
+  const p3 = mk(3, bodyLines(['路上遇到了一位旅人。'], 80, [true]));
+  [p1, p2, p3].forEach((p, k) => { C.pdfPageParas(mkItems(p, true), W, H, tr, k + 1); });
+  const o = C.pdfPageParas(mkItems(p1, true), W, H, tr, 1);
+  assert.equal(o.paras.length, 2);
+  assert.equal(o.paras[0], '春天到了，山上的雪慢慢融化。溪水从石缝里流出来，带着泥土的气息。');
+  assert.equal(o.paras[1], '老人坐在门口晒太阳，他说今年的收成一定不错。');
+  assert.ok(o.indentFirst);
+  assert.ok(!o.paras.join('').includes('示例') && !o.paras.join('').includes('脚注'), '页眉 / 脚注不该出现');
+  assert.ok(!/\s/.test(o.paras.join('')), '中文里不能有空格');
+  // 注号 〔2〕 [3] 在句中被去掉；句尾被截断的「〔」「〔0」也去掉
+  assert.equal(C.ttsClean('他说〔2〕这样。[3]好。〔'), '他说这样。好。');
+  assert.equal(C.ttsClean('快乐”〔0'), '快乐”');
+  assert.equal(C.ttsClean('a\u0000b\u0007  c'), 'a b c');
+});
+
+test('文字层：页眉页脚只有在书里反复出现才丢；单独一页的页码也丢；标题自成一段；弯引号旁不补空格', () => {
+  const tr = C.ttsTracker();
+  const lines = [[100, 40, 9, 'CHAPTER ONE'], [50, 80, 20, '第一章'], ...bodyLines(['他说“你好”。她笑了。'], 130, [true]), [195, 575, 9, '- 12 -']];
+  // 只看过这一页：页码（数字）丢，「CHAPTER ONE」暂时当正文（还不知道它是不是每页都有）
+  const a = C.pdfPageParas(mkItems(lines, true), W, H, tr, 12);
+  assert.ok(a.paras.some((p) => /CHAPTER/.test(p)));
+  assert.ok(!a.paras.some((p) => /12/.test(p)));
+  assert.equal(a.paras[a.paras.length - 2], '第一章');                   // 大字号 = 标题，自成一段
+  assert.equal(a.paras[a.paras.length - 1], '他说“你好”。她笑了。');
+  // 又看过一页同样的页眉 → 以后都丢
+  C.pdfPageParas(mkItems([[100, 40, 9, 'CHAPTER ONE'], ...bodyLines(['下一页。'], 80, [true])], true), W, H, tr, 13);
+  const b = C.pdfPageParas(mkItems(lines, true), W, H, tr, 12);
+  assert.ok(!b.paras.some((p) => /CHAPTER/.test(p)));
+  assert.ok(tr.isRepeat('CHAPTER ONE'));
+  // 页眉里的页码变了（Chapter 7 → 8）也算同一个
+  const t2 = C.ttsTracker();
+  C.pdfPageParas(mkItems([[100, 40, 9, 'Chapter 7 · Light'], ...bodyLines(['甲。'], 80, [true])], true), W, H, t2, 7);
+  C.pdfPageParas(mkItems([[100, 40, 9, 'Chapter 8 · Light'], ...bodyLines(['乙。'], 80, [true])], true), W, H, t2, 8);
+  assert.ok(t2.isRepeat('Chapter 9 · Light'));
+});
+
+test('文字层：缩进的块引用不断成一行一段；英文行尾连字符拼回；中英混排只在英文之间补空格；索引页（数字比字多）整页不读', () => {
+  const quote = [[70, 80, 12, '我从来没有被女性如此强烈地拒绝'], [70, 98, 12, '过，即使发生过这样的事，也从未'], [70, 116, 12, '像这次这么多人。']];
+  const o = C.pdfPageParas(mkItems([[50, 60, 12, '他在信里写道：'], ...quote], false), W, H, null, 1);
+  assert.equal(o.paras.length, 2);
+  assert.equal(o.paras[1], '我从来没有被女性如此强烈地拒绝过，即使发生过这样的事，也从未像这次这么多人。');
+  const en = C.pdfPageParas(mkItems([[50, 80, 12, 'The scientist was astonish-'], [50, 98, 12, 'ed by the result of the experi-'], [50, 116, 12, 'ment, and said so.']], false), W, H, null, 1);
+  assert.equal(en.paras[0], 'The scientist was astonished by the result of the experiment, and said so.');
+  const mix = C.pdfPageParas([{ s: '使用', x: 50, y: 80, w: 24, fs: 12 }, { s: 'Azure', x: 74, y: 80, w: 30, fs: 12 }, { s: 'Speech', x: 108, y: 80, w: 36, fs: 12 }, { s: '服务。', x: 146, y: 80, w: 36, fs: 12 }], W, H, null, 1);
+  assert.equal(mix.paras[0], '使用Azure Speech服务。');
+  const idx = mkItems(Array.from({ length: 10 }, (_, k) => [50, 80 + k * 18, 10, '72，74，76，77，79，84，85，86，89，90，92，93，113，122']), false);
+  assert.deepEqual(C.pdfPageParas(idx, W, H, null, 1).paras, []);
+  assert.deepEqual(C.pdfPageParas([], W, H, null, 1).paras, []);
+  assert.deepEqual(C.pdfPageParas([{ s: '   ', x: 1, y: 2, w: 3, fs: 12 }], W, H, null, 1).paras, []);
+});
+
+test('文字层：下方小字号的行 = 脚注，从那一行起到页尾都不读；「open」= 最后一行顶到右边距且没有句号（句子跨页）', () => {
+  const txt = ('他把论文寄给了远在比利时经商的舅舅。科赫曾经资助过他。这个计划碰到了相当大的麻烦因为这样一来我必须至少大上两岁才行。').repeat(2).slice(0, 94);   // 22 + 24 × 3：最后一行刚好顶满
+  const body = bodyLines([txt], 80, [true]);
+  const o = C.pdfPageParas(mkItems(body.concat([[50, 520, 7, 'Frank 1947, 17; Maja Einstein, 27.'], [50, 531, 7, '“某某”，夏，1895。']]), false), W, H, null, 1);
+  assert.equal(o.paras.length, 1);
+  assert.ok(!/Frank|1895/.test(o.paras[0]));
+  assert.equal(o.open, true);
+  const closed = C.pdfPageParas(mkItems(bodyLines(['这一段到此结束。'], 80, [true]), false), W, H, null, 1);
+  assert.equal(closed.open, false);
+});
+
+test('切句：中文按 。！？；…，引号 / 括号跟在句末；英文按「句点 + 空白」且不在缩写 / 小数处断；超长的在逗号处再切', () => {
+  assert.deepEqual(C.splitSentences('他说：“今天天气很好！”然后走了。你呢？我也是……好吧；再见。'),
+    ['他说：“今天天气很好！”', '然后走了。', '你呢？', '我也是……', '好吧；', '再见。']);
+  assert.deepEqual(C.splitSentences('Dr. Smith paid $3.50 for it. Mr. Lee said: "Fine!" Then they left. e.g. nothing.'),
+    ['Dr. Smith paid $3.50 for it.', 'Mr. Lee said: "Fine!"', 'Then they left.', 'e.g. nothing.']);
+  const long = '这是一个很长很长的句子，'.repeat(30);               // 没有句号：靠逗号切
+  const parts = C.splitSentences(long, 60);
+  assert.ok(parts.length > 3 && parts.every((p) => p.length <= 61), parts.map((p) => p.length));
+  assert.equal(parts.join(''), long);
+  assert.ok(C.splitSentences('甲'.repeat(500), 150).every((p) => p.length <= 150));      // 没有任何断点：硬切，不死循环
+  assert.deepEqual(C.splitSentences('”'), []);                      // 只有标点：不读
+  assert.deepEqual(C.splitSentences('……。'), []);
+  assert.equal(C.pageSentences({ paras: ['甲乙丙。', '丁戊。'] }, '半句', 150).join('|'), '半句甲乙丙。|丁戊。');
+  assert.equal(C.pageSentences({ paras: ['then it ended.'] }, 'He said that', 150)[0], 'He said that then it ended.');
+});
+
+/* ================= 朗读控制器（假引擎） ================= */
+// 假引擎：speak 返回按脚本决定的结果；pause 时 speak 挂起直到 resume；记录一切
+function fakeEngine(script = {}) {
+  const E = { spoken: [], prefetched: [], calls: [], lastError: null, paused: false, _wait: null, _gen: 0 };
+  E.speak = (text) => {
+    const g = E._gen;
+    E.calls.push('speak');
+    return new Promise((res) => {
+      const finish = () => { if (g !== E._gen) return res('cancel'); E.spoken.push(text); res(script.result ? script.result(text, E.spoken.length) : 'end'); };
+      if (E.paused) E._wait = finish; else setTimeout(finish, script.delay == null ? 8 : script.delay);
+    });
+  };
+  E.prefetch = (t) => { E.prefetched.push(t.slice()); };
+  E.cancel = () => { E._gen++; E.calls.push('cancel'); E.paused = false; };
+  E.pause = () => { E.paused = true; E.calls.push('pause'); };
+  E.resume = () => { E.paused = false; E.calls.push('resume'); const w = E._wait; E._wait = null; if (w) setTimeout(w, 0); };
+  return E;
+}
+const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+async function until(fn, ms = 2000) { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > ms) throw new Error('等待超时'); await tick(2); } }
+function fakeHost(pagesById, eng, extra = {}) {
+  const log = { pages: [], states: [], sentences: [] };
+  const host = {
+    engine: eng, count: Object.keys(pagesById).length,
+    getPage: (p) => Promise.resolve(pagesById[p] || null),
+    onPage: (p) => log.pages.push(p),
+    onSentence: (s, p) => log.sentences.push([p, s]),
+    onState: (s, info) => log.states.push([s, info && info.kind]),
+    ...extra
+  };
+  return { host, log };
+}
+
+test('朗读控制器：一页一页读到最后，自动翻页，读完回到 idle；预读窗口里包含下一页的开头', async () => {
+  const eng = fakeEngine();
+  const pg = { 1: { paras: ['甲一。甲二。'], indentFirst: true, open: false }, 2: { paras: ['乙一。'], indentFirst: true, open: false } };
+  const { host, log } = fakeHost(pg, eng);
+  const r = C.createTtsRunner(host);
+  r.start(1);
+  assert.equal(r.state, 'playing');
+  await until(() => r.state === 'idle');
+  assert.deepEqual(eng.spoken, ['甲一。', '甲二。', '乙一。']);
+  assert.deepEqual(log.pages, [1, 2]);
+  assert.ok(log.states.some((s) => s[0] === 'done'));
+  assert.deepEqual(eng.prefetched[0], ['甲一。', '甲二。', '乙一。']);   // 正在读第一句时，窗口 = 这一句 + 本页剩下的 + 下一页的第一句（必须含正在读的这句）
+});
+
+test('朗读控制器：跨页的半句和下一页开头拼成一句再读；下一页开头缩进就不拼', async () => {
+  const eng = fakeEngine();
+  const pg = { 1: { paras: ['完整一句。这句没写完还有'], indentFirst: true, open: true }, 2: { paras: ['那些红薯。新的一句。'], indentFirst: false, open: false } };
+  const { host } = fakeHost(pg, eng);
+  const r = C.createTtsRunner(host);
+  r.start(1); await until(() => r.state === 'idle');
+  assert.deepEqual(eng.spoken, ['完整一句。', '这句没写完还有那些红薯。', '新的一句。']);
+  const eng2 = fakeEngine();
+  pg[2].indentFirst = true;                                              // 下一页是新段落：上一页的半句自己读掉
+  const r2 = C.createTtsRunner(fakeHost(pg, eng2).host);
+  r2.start(1); await until(() => r2.state === 'idle');
+  assert.deepEqual(eng2.spoken, ['完整一句。', '这句没写完还有', '那些红薯。', '新的一句。']);
+});
+
+test('朗读控制器：没有文字的页跳过；连续 3 页没有就停下并报 notext；有文字的页让计数归零', async () => {
+  const eng = fakeEngine();
+  const pg = { 1: { paras: ['一。'] }, 2: { paras: [] }, 3: null, 4: { paras: ['四。'] }, 5: { paras: [] }, 6: { paras: [] }, 7: null, 8: { paras: ['不该读到。'] } };
+  const { host, log } = fakeHost(pg, eng);
+  const r = C.createTtsRunner(host);
+  r.start(1); await until(() => r.state === 'idle');
+  assert.deepEqual(eng.spoken, ['一。', '四。']);
+  assert.deepEqual(log.pages, [1, 2, 3, 4, 5, 6, 7]);
+  assert.ok(log.states.some((s) => s[0] === 'error' && s[1] === 'notext'));
+  assert.equal(log.states.filter((s) => s[0] === 'notext').length, 5);
+});
+
+test('朗读控制器：暂停 / 继续 / 停止；暂停时 speak 不前进；stop 后不再读', async () => {
+  const eng = fakeEngine();
+  const pg = { 1: { paras: ['一。二。三。四。'] } };
+  const { host } = fakeHost(pg, eng);
+  const r = C.createTtsRunner(host);
+  r.start(1);
+  await until(() => eng.spoken.length === 1);
+  r.pause(); assert.equal(r.state, 'paused');
+  await tick(30); const n = eng.spoken.length;
+  await tick(30); assert.equal(eng.spoken.length, n, '暂停时不该前进');
+  r.resume(); assert.equal(r.state, 'playing');
+  await until(() => eng.spoken.length >= n + 1);
+  r.stop(); assert.equal(r.state, 'idle');
+  const m = eng.spoken.length; await tick(40);
+  assert.equal(eng.spoken.length, m, 'stop 后不再读');
+  assert.ok(eng.calls.includes('cancel'));
+  r.pause(); r.resume(); assert.equal(r.state, 'idle');                // idle 时 pause / resume 无效
+});
+
+test('朗读控制器：seek / 重新 start 作废旧的一轮，从新页开头读；没在读时 seek 无效；越界页号被夹住', async () => {
+  const eng = fakeEngine();
+  const pg = { 1: { paras: ['一一。一二。一三。'] }, 2: { paras: ['二一。二二。'] }, 3: { paras: ['三一。'] } };
+  const { host } = fakeHost(pg, eng);
+  const r = C.createTtsRunner(host);
+  r.start(1); await until(() => eng.spoken.length === 1);
+  r.seek(3);
+  await until(() => r.state === 'idle');
+  assert.deepEqual(eng.spoken.filter((s) => /^[二三]/.test(s)), ['三一。']);   // 没有读到第 2 页
+  const idle = C.createTtsRunner(fakeHost(pg, fakeEngine()).host);
+  idle.seek(2); assert.equal(idle.state, 'idle');                        // 没在读时 seek 无效
+  r.start(99); await until(() => r.state === 'idle');                     // 越界页号被夹到最后一页
+  assert.equal(eng.spoken[eng.spoken.length - 1], '三一。');
+});
+
+test('朗读控制器：引擎出错 —— 第一次重试同一句，再错跳过，连续 3 次停下；auth / quota / offline / nostart 立即停并带原因', async () => {
+  let fails = 0;
+  const eng = fakeEngine({ result: (t) => (t === '坏。' && fails++ < 1 ? 'error' : 'end') });
+  const r = C.createTtsRunner(fakeHost({ 1: { paras: ['好。坏。后。'] } }, eng).host);
+  r.start(1); await until(() => r.state === 'idle');
+  assert.deepEqual(eng.spoken, ['好。', '坏。', '坏。', '后。']);          // 重试同一句一次
+  const eng2 = fakeEngine({ result: (t) => (t === '坏。' ? 'error' : 'end') });
+  const r2 = C.createTtsRunner(fakeHost({ 1: { paras: ['好。坏。后。'] } }, eng2).host);
+  r2.start(1); await until(() => r2.state === 'idle');
+  assert.deepEqual(eng2.spoken, ['好。', '坏。', '坏。', '后。']);         // 第二次仍错 → 跳过这一句，继续
+  const eng3 = fakeEngine({ result: () => 'error' });
+  const h3 = fakeHost({ 1: { paras: ['一。二。三。四。五。六。'] } }, eng3);
+  const r3 = C.createTtsRunner(h3.host);
+  r3.start(1); await until(() => r3.state === 'idle');
+  assert.ok(h3.log.states.some((s) => s[0] === 'error' && s[1] === 'error'));
+  assert.ok(eng3.spoken.length < 6);
+  for (const kind of ['auth', 'quota', 'offline', 'nostart']) {
+    const e = fakeEngine({ result: () => kind }); e.lastError = new Error('x');
+    const h = fakeHost({ 1: { paras: ['一。二。'] } }, e);
+    const rr = C.createTtsRunner(h.host);
+    rr.start(1); await until(() => rr.state === 'idle');
+    assert.deepEqual(e.spoken, ['一。'], kind);
+    assert.ok(h.log.states.some((s) => s[0] === 'error' && s[1] === kind), kind);
+  }
+  const t = fakeEngine({ result: (s) => (s === '长。' ? 'toolong' : 'end') });
+  const rt = C.createTtsRunner(fakeHost({ 1: { paras: ['短。长。尾。'] } }, t).host);
+  rt.start(1); await until(() => rt.state === 'idle');
+  assert.deepEqual(t.spoken, ['短。', '长。', '尾。']);                    // 太长 = 跳过，不算错误
+});
+
+/* ================= 朗读引擎 ================= */
+function fakeAudio() {
+  const a = { src: '', paused: true, playbackRate: 1, defaultPlaybackRate: 1, plays: 0, onended: null, onerror: null, onplaying: null };
+  a.play = () => { a.plays++; a.paused = false; setTimeout(() => { a.onplaying && a.onplaying(); }, 0); return Promise.resolve(); };
+  a.pause = () => { a.paused = true; };
+  a.end = () => { a.onended && a.onended(); };
+  return a;
+}
+function fakeFetch(handler) {
+  const reqs = [];
+  const f = (url, init) => {
+    const body = init && init.body ? JSON.parse(init.body) : null;
+    const rec = { url, method: init && init.method, auth: init && init.headers && init.headers.Authorization, body, aborted: false };
+    reqs.push(rec);
+    if (init && init.signal) init.signal.addEventListener('abort', () => { rec.aborted = true; });
+    const aborted = new Promise((_, rej) => {
+      if (init && init.signal) init.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e); });
+    });
+    return Promise.race([Promise.resolve(handler(rec, init)), aborted]);
+  };
+  f.reqs = reqs;
+  return f;
+}
+const okRes = () => ({ ok: true, status: 200, blob: () => Promise.resolve({ size: 3 }) });
+const errRes = (status, body) => ({ ok: false, status, json: () => Promise.resolve(body || {}), blob: () => Promise.resolve({ size: 0 }) });
+const blobUrls = { createObjectURL: () => 'blob:x', revokeObjectURL: () => {} };
+const mkCloud = (f, a, cfg = {}) => C.makeCloudEngine({ fetch: f, audio: a, URL: blobUrls, endpoint: (p) => 'https://h/tts/v1/' + p, startTimeoutMs: 0,
+  getCfg: () => ({ token: 'tok', voice: 'zh-CN-YunxiNeural', rate: 1.5, ...cfg }) });
+
+test('在线引擎：请求形状（URL / 方法 / Bearer 令牌 / 文本和声音 / rate 0）；中英文各用自己的声音；播放速度 = playbackRate', async () => {
+  const f = fakeFetch(() => okRes()), a = fakeAudio(), e = mkCloud(f, a);
+  const p = e.speak('你好。');
+  await until(() => a.plays === 1);
+  assert.equal(f.reqs[0].url, 'https://h/tts/v1/speak'); assert.equal(f.reqs[0].method, 'POST');
+  assert.equal(f.reqs[0].auth, 'Bearer tok');
+  assert.deepEqual(f.reqs[0].body, { text: '你好。', voice: 'zh-CN-YunxiNeural', rate: 0 });
+  assert.equal(a.playbackRate, 1.5); assert.equal(a.defaultPlaybackRate, 1.5);
+  a.end(); assert.equal(await p, 'end');
+  const p2 = e.speak('Hello there.'); await until(() => a.plays === 2);
+  assert.equal(f.reqs[1].body.voice, 'en-US-AriaNeural'); a.end(); await p2;
+  const long = e.speak('长'.repeat(300)); await until(() => a.plays === 3);
+  assert.equal(f.reqs[2].body.text.length, 200); a.end(); await long;
+});
+
+test('在线引擎：HTTP 错误分类（401/403 auth、429 quota、413 toolong、5xx 出错、断网 offline）；空音频算错；错误带中文原因', async () => {
+  const cases = [[401, 'auth'], [403, 'auth'], [429, 'quota'], [413, 'toolong'], [500, 'error'], [502, 'error'], [404, 'error']];
+  for (const [status, want] of cases) {
+    const e = mkCloud(fakeFetch(() => errRes(status, { retryAfter: 120 })), fakeAudio());
+    assert.equal(await e.speak('甲。'), want, String(status));
+    assert.ok(e.lastError && /[一-鿿]/.test(e.lastError.message), String(status));
+  }
+  const q = mkCloud(fakeFetch(() => errRes(429, { retryAfter: 120 })), fakeAudio());
+  await q.speak('甲。'); assert.match(q.lastError.message, /2 分钟/);
+  const off = mkCloud(() => Promise.reject(new TypeError('Failed to fetch')), fakeAudio());
+  assert.equal(await off.speak('甲。'), 'offline');
+  const empty = mkCloud(fakeFetch(() => ({ ok: true, status: 200, blob: () => Promise.resolve({ size: 0 }) })), fakeAudio());
+  assert.equal(await empty.speak('甲。'), 'error');
+  const e2 = C.makeCloudEngine({ fetch: () => Promise.reject(new Error('never')), audio: fakeAudio(), URL: blobUrls, endpoint: (p) => p, online: () => false, getCfg: () => ({ token: 't' }) });
+  assert.equal(await e2.speak('甲。'), 'offline');
+  assert.deepEqual([C.ttsClassify(401).kind, C.ttsClassify(429).kind, C.ttsClassify(503).kind, C.ttsClassify(418).kind], ['auth', 'quota', 'upstream', 'http']);
+});
+
+test('在线引擎：预读（同一句只请求一次，窗口外的取消）、cancel 取消全部、暂停 / 继续、播放被浏览器拦下 = nostart', async () => {
+  const f = fakeFetch(() => okRes()), a = fakeAudio(), e = mkCloud(f, a);
+  e.prefetch(['乙。', '丙。', '丁。']);
+  await tick(5);
+  assert.deepEqual(f.reqs.map((r) => r.body.text), ['乙。', '丙。', '丁。']);
+  const p = e.speak('乙。'); await until(() => a.plays === 1);
+  assert.equal(f.reqs.length, 3, '已预读的那句不再请求第二次');
+  a.end(); assert.equal(await p, 'end');
+  e.prefetch(['戊。']);                                                  // 窗口换了：丙 / 丁 被取消
+  await tick(5);
+  assert.ok(f.reqs.find((r) => r.body.text === '丙。').aborted && f.reqs.find((r) => r.body.text === '丁。').aborted);
+  e.cancel();
+  assert.ok(f.reqs.find((r) => r.body.text === '戊。').aborted);
+  // 暂停：音频到了也先不播，resume 后才播
+  const a2 = fakeAudio(), e2 = mkCloud(fakeFetch(() => okRes()), a2);
+  e2.pause();
+  const p2 = e2.speak('己。'); await tick(20);
+  assert.equal(a2.plays, 0, '暂停时不该开始播');
+  e2.resume(); await until(() => a2.plays === 1); a2.end(); assert.equal(await p2, 'end');
+  // cancel 中的 speak = cancel
+  const slow = fakeFetch(() => new Promise(() => {})), e3 = mkCloud(slow, fakeAudio());
+  const p3 = e3.speak('庚。'); await tick(5); e3.cancel();
+  assert.equal(await p3, 'cancel');
+  // 浏览器要求用户操作才能出声
+  const a4 = fakeAudio(); a4.play = () => Promise.reject(Object.assign(new Error('x'), { name: 'NotAllowedError' }));
+  const e4 = mkCloud(fakeFetch(() => okRes()), a4);
+  assert.equal(await e4.speak('辛。'), 'nostart');
+  const a5 = fakeAudio(); const e5 = mkCloud(fakeFetch(() => okRes()), a5);
+  const p5 = e5.speak('壬。'); await until(() => a5.plays === 1); a5.onerror(); assert.equal(await p5, 'error');
+});
+
+test('朗读控制器 + 在线引擎：每一句只请求一次，预读不会把正在读的那句取消掉；一路读完', async () => {
+  const f = fakeFetch(() => okRes()), a = fakeAudio();
+  a.play = () => { a.plays++; setTimeout(() => { a.onplaying && a.onplaying(); setTimeout(() => a.onended && a.onended(), 3); }, 0); return Promise.resolve(); };
+  const e = mkCloud(f, a);
+  const sents = Array.from({ length: 9 }, (_, k) => '第' + (k + 1) + '句话。');
+  const r = C.createTtsRunner(fakeHost({ 1: { paras: [sents.slice(0, 5).join('')] }, 2: { paras: [sents.slice(5).join('')] } }, e).host);
+  r.start(1);
+  await until(() => r.state === 'idle', 5000);
+  const texts = f.reqs.map((x) => x.body.text);
+  assert.equal(a.plays, 9);
+  assert.deepEqual(texts.slice().sort(), sents.slice().sort(), '每句恰好请求一次（没有因为预读窗口被取消后重取）');
+  assert.ok(f.reqs.every((x) => !x.aborted), '没有被取消的请求');
+});
+
+test('本机引擎：按文字选语言和声音、语速、cancel / 出错 / 没有语音 = nostart', async () => {
+  const spoken = [];
+  class U { constructor(t) { this.text = t; } }
+  const synth = { voices: [{ name: 'Microsoft Xiaoxiao Online (Natural)', lang: 'zh-CN' }, { name: 'Other', lang: 'zh-TW' }, { name: 'David', lang: 'en-US' }],
+    getVoices() { return this.voices; }, speak(u) { spoken.push(u); setTimeout(() => u.onstart && u.onstart(), 0); setTimeout(() => u.onend && u.onend(), 2); }, cancel() {}, pause() {}, resume() {} };
+  const e = C.makeBrowserEngine({ synth, Utterance: U, getCfg: () => ({ rate: 3 }) });
+  assert.equal(await e.speak('你好。'), 'end');
+  assert.equal(spoken[0].lang, 'zh-CN'); assert.match(spoken[0].voice.name, /Xiaoxiao/); assert.equal(spoken[0].rate, 2.5);   // 夹到 2.5
+  assert.equal(await e.speak('Hello.'), 'end');
+  assert.equal(spoken[1].lang, 'en-US'); assert.equal(spoken[1].voice.name, 'David');
+  const e2 = C.makeBrowserEngine({ synth: null, Utterance: null, getCfg: () => ({}) });
+  assert.equal(await e2.speak('x。'), 'nostart'); assert.ok(e2.lastError);
+  const silent = { getVoices: () => [], speak() {}, cancel() {} };            // 永远不 onstart：超时算 nostart
+  const e3 = C.makeBrowserEngine({ synth: silent, Utterance: U, getCfg: () => ({}), startTimeoutMs: 20 });
+  assert.equal(await e3.speak('甲。'), 'nostart');
+  const bad = { getVoices: () => [], speak(u) { setTimeout(() => u.onerror({ error: 'synthesis-failed' }), 0); }, cancel() {} };
+  assert.equal(await C.makeBrowserEngine({ synth: bad, Utterance: U, getCfg: () => ({}) }).speak('甲。'), 'error');
+  const canceled = { getVoices: () => [], speak(u) { setTimeout(() => u.onerror({ error: 'canceled' }), 0); }, cancel() {} };
+  assert.equal(await C.makeBrowserEngine({ synth: canceled, Utterance: U, getCfg: () => ({}) }).speak('甲。'), 'cancel');
+  assert.equal(C.ttsRate('x'), 1); assert.equal(C.ttsRate(0.1), 0.5); assert.equal(C.ttsRate(9), 2.5);
+});

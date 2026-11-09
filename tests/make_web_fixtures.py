@@ -163,6 +163,76 @@ def rich_pdf(pages, scan_kb=140, outline=True, rtl=False):
     return out.getvalue()
 
 
+def text_pdf(pages, w=400, h=600):
+    """带文字层的小 PDF（stdlib，确定性）：朗读 / 书签测试用。pages = [[(x, y, size, text), ...], ...]，y 从页面顶端往下量；
+    含非 ASCII 的行用非嵌入 CJK 字体（STSong-Light + UniGB-UCS2-H，十六进制 UCS2），纯 ASCII 的行用 Helvetica；空列表 = 没有文字层的页（只有一块色块）。"""
+    n = len(pages)
+    first = 7
+    objs = {}
+
+    def stream(d, data):
+        return ("<< %s /Length %d >>\nstream\n" % (d, len(data))).encode("latin-1") + data + b"\nendstream"
+
+    objs[1] = b"<< /Type /Catalog /Pages 2 0 R >>"
+    objs[2] = ("<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % (first + 2 * i) for i in range(n)), n)).encode("latin-1")
+    objs[3] = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+    objs[4] = b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light-UniGB-UCS2-H /Encoding /UniGB-UCS2-H /DescendantFonts [5 0 R] >>"
+    objs[5] = (b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> "
+               b"/FontDescriptor 6 0 R /DW 1000 >>")
+    objs[6] = (b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 /FontBBox [-25 -254 1000 880] /ItalicAngle 0 "
+               b"/Ascent 880 /Descent -120 /CapHeight 880 /StemV 93 >>")
+    for i, lines in enumerate(pages):
+        if not lines:
+            c = "0.9 0.9 0.9 rg 50 100 300 400 re f"
+        else:
+            c = ""
+            for (x, y, size, text) in lines:
+                if all(ord(ch) < 128 for ch in text):
+                    c += "BT /F1 %s Tf %s %s Td (%s) Tj ET\n" % (size, x, h - y, text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)"))
+                else:
+                    c += "BT /F2 %s Tf %s %s Td <%s> Tj ET\n" % (size, x, h - y, text.encode("utf-16-be").hex().upper())
+        objs[first + 2 * i] = ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %d %d] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents %d 0 R >>"
+                               % (w, h, first + 2 * i + 1)).encode("latin-1")
+        objs[first + 2 * i + 1] = stream("", c.encode("latin-1"))
+    maxid = max(objs)
+    out = io.BytesIO()
+    out.write(b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n")
+    offs = {}
+    for oid in sorted(objs):
+        offs[oid] = out.tell()
+        out.write(("%d 0 obj\n" % oid).encode("ascii") + objs[oid] + b"\nendobj\n")
+    xref = out.tell()
+    out.write(("xref\n0 %d\n0000000000 65535 f \n" % (maxid + 1)).encode("ascii"))
+    for oid in range(1, maxid + 1):
+        out.write(("%010d 00000 n \n" % offs[oid] if oid in offs else "0000000000 65535 f \n").encode("ascii"))
+    out.write(("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (maxid + 1, xref)).encode("ascii"))
+    return out.getvalue()
+
+
+def sample_text_pages():
+    """sample_text.pdf 的内容（8 页）：第 1-3 页有文字（页眉 / 页码 / 脚注 / 缩进段落 / 跨页半句 / 标题 / 英文），第 5 页只有一句，4、6-8 页没有文字层。"""
+    L, TOP, N = 50, 30, 24
+    head = (150, TOP, 9, "示例：朗读测试书")
+
+    def lay(text, y, indent):
+        # 每行 N 个字（宽 12pt，刚好顶到右边距）；缩进段落第一行缩进 2 字
+        lines = [text[:N - 2]] + [text[i:i + N] for i in range(N - 2, len(text), N)] if indent else [text[i:i + N] for i in range(0, len(text), N)]
+        return [(L + (24 if indent and j == 0 else 0), y + j * 18, 12, ln) for j, ln in enumerate(lines)], y + len(lines) * 18 + 4
+
+    a, y = lay("春天到了，山上的雪慢慢融化。溪水从石缝里流出来，带着泥土的气息。村里的孩子们早早起床，拿着竹篮去河边捡柴。", 80, True)
+    b, y = lay("老人坐在门口晒太阳，他说今年的收成一定不错。孩子们听了都很高兴，因为这意味着秋天可以吃到更多的甜瓜，还有妈妈亲手在灶台边做出来的那些香喷喷的", y, True)
+    p1 = [head] + a + b + [(L, 540, 7, "〔1〕这里是脚注，朗读时应该被跳过。"), (195, 575, 9, "1")]
+    c, y = lay("红薯。夜里，月亮升起来，整个山谷安静得像一幅画。", 80, False)
+    d, y = lay("第二天一早，他们又出发了。", y, True)
+    e = [(L + 24, y + 4, 12, "Reading aloud works with English too. It is fine.")]
+    p2 = [head] + c + d + e + [(195, 575, 9, "2")]
+    f, y = lay("路上遇到了一位旅人，他背着一个很大的包袱。他说自己从很远的地方来，要去看望多年不见的朋友。", 130, True)
+    p3 = [head, (L, 80, 22, "第二章 旅途")] + f + [(195, 575, 9, "3")]
+    g, y = lay("最后一页的故事很短。", 80, True)
+    p5 = [head] + g + [(195, 575, 9, "5")]
+    return [p1, p2, p3, [], p5, [], [], []]
+
+
 def main():
     os.makedirs(OUT, exist_ok=True)
 
@@ -280,6 +350,12 @@ def main():
                            {"kind": "text", "w": 792, "h": 612}, {"kind": "text", "w": 300, "h": 400},
                            {"kind": "text", "w": 400, "h": 900}, {"kind": "scan"}], scan_kb=16))
     print("wrote", prich, os.path.getsize(prich), "bytes")
+
+    # 7) 带文字层的 PDF（8 页，朗读 / 书签测试用）
+    ptext = os.path.join(OUT, "sample_text.pdf")
+    with open(ptext, "wb") as fh:
+        fh.write(text_pdf(sample_text_pages()))
+    print("wrote", ptext, os.path.getsize(ptext), "bytes")
 
 
 if __name__ == "__main__":
