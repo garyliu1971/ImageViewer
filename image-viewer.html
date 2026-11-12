@@ -2168,6 +2168,305 @@
     });
   }
 
+  /* ---------------- AI 朗读（无文字层的 PDF）：页面图片 → 切叶 → /ocr/v1/page → 文字 → 和有文字层的页一样进朗读管线 ----------------
+     全部是纯逻辑（浏览器相关的东西 —— canvas / fetch / IndexedDB / 定时器 —— 都从参数注入），Node 里直接测。
+     服务端限制（deploy/server/ocr/server.py）：只收 JPEG、长边 ≤ 2048、≤ 1.2MB；所以客户端必须自己缩放并重新编码。
+     服务端会把双行小字注文写成【注：……】；默认原样朗读（owner 要听注），设置里可勾「跳过注文」。 */
+  var AI_EDGE = 2000, AI_MAX_BYTES = 1100 * 1024, AI_MAX_PIXELS = 36e6, AI_NOTE_RE = /【注：[^】]*】/g;
+  var AI_MODEL0 = 'qwen3.8-flash', AI_PROMPT_VER0 = 1;
+  var AI_MODES = { 'vertical-classical': 1, 'horizontal': 1 };
+
+  /** 合页扫描：宽 / 高 ≥ 1.1 当两叶；竖版单页（< 1.0）和接近方形的不切 */
+  function aiIsSpread(w, h) { return w > 0 && h > 0 && w / h >= 1.1; }
+  /** 渲染比例：让「一叶」的长边约 AI_EDGE 像素（太大的页面限总像素） */
+  function aiRenderPlan(vw, vh, edge) {
+    edge = edge || AI_EDGE;
+    var split = aiIsSpread(vw, vh), lw = split ? vw / 2 : vw;
+    var scale = edge / Math.max(lw, vh, 1);
+    scale = Math.min(scale, Math.sqrt(AI_MAX_PIXELS / Math.max(1, vw * vh)), 4);
+    return { split: split, scale: Math.max(0.25, scale) };
+  }
+  /** RGBA 像素 → 每一列的「墨迹」像素数（比整页平均亮度明显更暗的点算墨迹） */
+  function aiColumnInk(rgba, w, h) {
+    var lum = new Float32Array(w * h), i, sum = 0, n = w * h;
+    for (i = 0; i < n; i++) { var o = i * 4; lum[i] = 0.299 * rgba[o] + 0.587 * rgba[o + 1] + 0.114 * rgba[o + 2]; sum += lum[i]; }
+    var thr = (sum / Math.max(1, n)) * 0.7, ink = new Array(w), x, y;
+    for (x = 0; x < w; x++) ink[x] = 0;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) if (lum[y * w + x] < thr) ink[x]++;
+    return ink;
+  }
+  /** 装订线：在 40%-60% 宽度内找墨迹最少的谷（取最长平坦谷底的中点）；谷不明显（谷底 / 全页平均 > 0.5）或没墨迹就退回固定中点 */
+  function aiGutter(ink) {
+    var n = ink.length, mid = Math.round(n / 2), i, k;
+    if (n < 20) return mid;
+    var sum = 0;
+    for (i = 0; i < n; i++) sum += ink[i];
+    var mean = sum / n;
+    if (!(mean > 0)) return mid;
+    var a = Math.floor(n * 0.4), b = Math.ceil(n * 0.6), win = Math.max(2, Math.round(n * 0.008)), v = {}, best = Infinity;
+    for (i = a; i <= b; i++) {
+      var s = 0, c = 0;
+      for (k = i - win; k <= i + win; k++) if (k >= 0 && k < n) { s += ink[k]; c++; }
+      v[i] = s / c; if (v[i] < best) best = v[i];
+    }
+    if (best / mean > 0.5) return mid;
+    var eps = best * 0.001 + 1e-9, first = a, last = a, bestRun = 0, runStart = -1;
+    for (i = a; i <= b + 1; i++) {                       // 取最长的一段「谷底」，返回它的中点
+      var low = i <= b && v[i] <= best + eps;
+      if (low && runStart < 0) runStart = i;
+      if (!low && runStart >= 0) { if (i - runStart > bestRun) { bestRun = i - runStart; first = runStart; last = i - 1; } runStart = -1; }
+    }
+    return Math.round((first + last) / 2);
+  }
+  /** 一页切成几叶：合页 = [右叶, 左叶]（竖排古籍右叶先读）或 [左叶, 右叶]（横排）；每叶向装订线外扩 ~2% 防切到字。返回 [{leaf:'R'|'L', x, y, w, h}] */
+  function aiLeafRects(w, h, gutter, rtl, overlap) {
+    var o = Math.round(w * (overlap === undefined ? 0.02 : overlap)), g = Math.round(gutter);
+    var rx = Math.max(0, g - o), right = { leaf: 'R', x: rx, y: 0, w: w - rx, h: h }, left = { leaf: 'L', x: 0, y: 0, w: Math.min(w, g + o), h: h };
+    return rtl ? [right, left] : [left, right];
+  }
+  /** 目标边长（只缩不放） */
+  function aiFitSize(w, h, edge) {
+    var s = Math.min(1, (edge || AI_EDGE) / Math.max(w, h, 1));
+    return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
+  }
+  /** 缩放 + JPEG 编码到服务端限制内：d.resize(canvas, w, h) → canvas；d.toBlob(canvas, 'image/jpeg', q) → Promise<Blob>。
+      质量 0.85 起，超过 1.1MB 就降质量、再缩小边长；都不行 reject（code 'toolarge'）。 */
+  function aiEncode(canvas, d) {
+    var steps = [[AI_EDGE, 0.85], [AI_EDGE, 0.75], [1600, 0.7], [1280, 0.6], [1024, 0.5]], W = canvas.width, H = canvas.height;
+    function at(i) {
+      if (i >= steps.length) { var e = new Error('这一页压缩后仍然太大'); e.code = 'toolarge'; return Promise.reject(e); }
+      var sz = aiFitSize(W, H, steps[i][0]), c = sz.w === W && sz.h === H ? canvas : d.resize(canvas, sz.w, sz.h);
+      return Promise.resolve(d.toBlob(c, 'image/jpeg', steps[i][1])).then(function (b) {
+        if (b && b.size > 0 && b.size <= AI_MAX_BYTES) return { blob: b, w: sz.w, h: sz.h, q: steps[i][1] };
+        return at(i + 1);
+      });
+    }
+    return at(0);
+  }
+  function aiPageId(bookKey, pno, leaf) { return 'b' + hash32(bookKey) + ':p' + pno + ':' + leaf; }      // 服务端只收 [A-Za-z0-9:_.-]：不带书名
+  /** 请求构造：返回 {url, init}（signal 由调用方补）。令牌只放 Authorization 头 */
+  function aiBuildRequest(o) {
+    var mode = AI_MODES[o.mode] ? o.mode : 'vertical-classical';
+    return { url: o.endpoint, init: { method: 'POST', cache: 'no-store', credentials: 'omit',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + o.token },
+      body: JSON.stringify({ image: o.b64, mime: 'image/jpeg', mode: mode, pageId: String(o.pageId).replace(/[^A-Za-z0-9:_.\-]/g, '_').slice(0, 100) }) } };
+  }
+  function aiStripNotes(text) { return String(text).replace(AI_NOTE_RE, ''); }
+  /** 各叶的文字（已按阅读顺序）→ 朗读管线要的页对象 {paras, indentFirst, open}：和 pdfPageParas 的返回形状一致，createTtsRunner 不用改。
+      open 恒为 false：模型已经加了标点，页尾多半是整句，不做跨页拼半句。 */
+  function aiAdapt(texts, o) {
+    var skip = !!(o && o.skipNotes), paras = [];
+    (texts || []).forEach(function (t) {
+      if (typeof t !== 'string') return;
+      var s = skip ? aiStripNotes(t) : t;
+      s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').split(/\n+/).forEach(function (p) {
+        p = p.replace(/[ \t　]+/g, ' ').trim();
+        if (p && /[A-Za-z0-9㐀-鿿]/.test(p)) paras.push(p);
+      });
+    });
+    while (paras.length && /^[0-9０-９]{1,4}$/.test(paras[0])) paras.shift();                         // 页码残留
+    while (paras.length && /^[0-9０-９]{1,4}$/.test(paras[paras.length - 1])) paras.pop();
+    return { paras: paras, indentFirst: false, open: false };
+  }
+  function aiWait(sec) { return sec < 90 ? Math.ceil(sec) + ' 秒' : sec < 5400 ? Math.ceil(sec / 60) + ' 分钟' : Math.ceil(sec / 3600) + ' 小时'; }
+  /** 错误分类：status 0 = 网络错误。fatal = 整个功能停（令牌 / 额度）；retry = 值得自动重试；其余 = 只这一页失败 */
+  function aiClassify(status, body, retryAfterHeader) {
+    var code = body && typeof body.code === 'string' ? body.code : '';
+    var ra = Number(retryAfterHeader != null && retryAfterHeader !== '' ? retryAfterHeader : (body && body.retryAfter));
+    ra = isFinite(ra) && ra > 0 ? ra : 0;
+    if (!status) return { kind: 'offline', retry: true, fatal: false, retryAfter: 0, message: '无法连接 AI 识别服务（网络错误）' };
+    if (status === 401) return { kind: 'auth', retry: false, fatal: true, retryAfter: 0, message: '令牌无效或已过期，请在「朗读设置」里重新输入' };
+    if (status === 403) return { kind: 'forbidden', retry: false, fatal: true, retryAfter: 0, message: '这个令牌没有开通 AI 朗读' };
+    if (status === 400 || status === 413 || status === 415) return { kind: 'badimage', retry: false, fatal: false, retryAfter: 0, message: '页面图片被服务器拒收（' + (code || status) + '）' };
+    if (status === 422) return { kind: 'refused', retry: false, fatal: false, retryAfter: 0, message: '模型拒绝识别这一页（内容被过滤）' };
+    if (status === 429) {
+      if (/cap|quota/.test(code)) return { kind: 'quota', retry: false, fatal: true, retryAfter: ra, message: (code === 'monthly_cap' ? '本月' : '今日') + 'AI 识别额度用完了' + (ra ? '（约 ' + aiWait(ra) + ' 后恢复）' : '') };
+      return { kind: 'rate', retry: true, fatal: false, retryAfter: ra || 2, message: code === 'busy' ? '服务器忙' : '请求太快被限速' };
+    }
+    if (status === 504) return { kind: 'timeout', retry: true, fatal: false, retryAfter: 0, message: '识别服务超时' };
+    if (status >= 500) return { kind: 'upstream', retry: true, fatal: false, retryAfter: 0, message: '识别服务暂时出错' };
+    return { kind: 'http', retry: false, fatal: false, retryAfter: 0, message: '识别请求失败（HTTP ' + status + '）' };
+  }
+  /** 第 attempt（0 起）次重试前等多久（毫秒）；-1 = 不再重试。网络 / 502 / 504：1s、3s 最多 2 次；429：按 Retry-After，最多 6 次，等待超过 60s 就放弃 */
+  function aiBackoff(cls, attempt) {
+    if (!cls || !cls.retry) return -1;
+    if (cls.kind === 'rate') return attempt < 6 && cls.retryAfter <= 60 ? Math.max(500, cls.retryAfter * 1000) : -1;
+    return attempt < 2 ? [1000, 3000][attempt] : -1;
+  }
+  function aiCacheKey(o) { return [o.bookKey, o.pno, o.leaf, o.mode, o.model || AI_MODEL0, o.promptVer || AI_PROMPT_VER0].join('|'); }
+
+  /** 识别结果缓存：IndexedDB（d.indexedDB 注入），任何一步出错都退回内存 Map，调用方不用处理异常。值 = 各叶文字数组 */
+  function makeAiCache(d) {
+    d = d || {};
+    var mem = Object.create(null), dbp = null, puts = 0, K = { name: d.name || 'iv-ocr', max: d.max || 3000, usingIdb: false };
+    function now() { return d.now ? d.now() : Date.now(); }
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise(function (res) {
+        try {
+          if (!d.indexedDB) return res(null);
+          var rq = d.indexedDB.open(K.name, 1);
+          rq.onupgradeneeded = function () { try { rq.result.createObjectStore('p', { keyPath: 'k' }); } catch (e) { /* 忽略 */ } };
+          rq.onsuccess = function () { K.usingIdb = true; res(rq.result); };
+          rq.onerror = rq.onblocked = function () { res(null); };
+        } catch (e) { res(null); }
+      });
+      return dbp;
+    }
+    /** 在对象仓库上跑一个请求，成功 → 结果，失败 → undefined（永不 reject） */
+    function run(mode, fn) {
+      return open().then(function (db) {
+        if (!db) return undefined;
+        return new Promise(function (res) {
+          try {
+            var t = db.transaction('p', mode), rq = fn(t.objectStore('p'));
+            t.oncomplete = function () { res(rq ? rq.result : true); };
+            t.onerror = t.onabort = function () { res(undefined); };
+          } catch (e) { res(undefined); }
+        });
+      });
+    }
+    K.get = function (key) {
+      if (key in mem) return Promise.resolve(mem[key]);
+      return run('readonly', function (s) { return s.get(key); }).then(function (r) { if (r && Array.isArray(r.v)) { mem[key] = r.v; return r.v; } return null; });
+    };
+    K.put = function (key, v) {
+      mem[key] = v;
+      return run('readwrite', function (s) { return s.put({ k: key, v: v, t: now() }); }).then(function () { if (++puts % 25 === 0) return K.trim(); });
+    };
+    K.remove = function (key) { delete mem[key]; return run('readwrite', function (s) { return s['delete'](key); }); };
+    K.clear = function () { mem = Object.create(null); return run('readwrite', function (s) { return s.clear(); }); };
+    /** 条数超过上限就删最旧的 */
+    K.trim = function () {
+      return run('readonly', function (s) { return s.getAll(); }).then(function (all) {
+        if (!all || all.length <= K.max) return;
+        all.sort(function (a, b) { return (a.t || 0) - (b.t || 0); });
+        var del = all.slice(0, all.length - K.max);
+        return run('readwrite', function (s) { del.forEach(function (r) { s['delete'](r.k); }); return null; });
+      });
+    };
+    return K;
+  }
+
+  /** 取页控制器：把「渲染 → 逐叶请求 → 缓存」包成 getPage(pno) → Promise<{paras,indentFirst,open}|null>，和 pdfPageParas 的结果同形状，
+      所以 createTtsRunner 的 host.getPage 直接换成它就行。
+      d = { bookKey, count, fetch, endpoint(name), getCfg() → {token, mode, skipNotes}, cache, meta:{model, promptVer},
+            render(pno, cfg, signal) → Promise<[{leaf, b64}]>（已按阅读顺序）, sleep(ms), onStatus(pno, kind, info), onUsage(u), onFatal(cls), concurrency }
+      同时最多 2 个请求在飞（服务端每用户并发上限也是 2），页号小的优先；同一页的请求合并；失败的页保持失败（不重复请求 / 不重复提示），直到 retry(pno)。
+      focus(pno)：中止窗口 [pno, pno+2] 之外还在飞的页，并预取这个窗口。 */
+  function createAiPager(d) {
+    var P = { requests: 0, hits: 0 }, pages = Object.create(null), active = 0, waiters = [];
+    var maxConc = d.concurrency || 2, sleep = d.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    function abortErr() { var e = new Error('aborted'); e.name = 'AbortError'; return e; }
+    function newCtl() {
+      if (typeof AbortController !== 'undefined') return new AbortController();
+      var c = { signal: { aborted: false }, abort: function () { c.signal.aborted = true; } };
+      return c;
+    }
+    function status(pno, kind, info) { try { if (d.onStatus) d.onStatus(pno, kind, info || {}); } catch (e) { /* 界面出错不影响识别 */ } }
+    function acquire(ent) {
+      return new Promise(function (res, rej) {
+        function go() { if (ent.ctl.signal.aborted) return rej(abortErr()); active++; res(); }
+        if (active < maxConc) go(); else waiters.push({ go: go, ent: ent, rej: rej });
+      });
+    }
+    function release() {
+      active--;
+      while (waiters.length && active < maxConc) {
+        var bi = 0, i;
+        for (i = 1; i < waiters.length; i++) if (waiters[i].ent.pno < waiters[bi].ent.pno) bi = i;
+        waiters.splice(bi, 1)[0].go();
+      }
+    }
+    function dropWaiters(ent) {
+      waiters = waiters.filter(function (w) { if (w.ent === ent) { w.rej(abortErr()); return false; } return true; });
+    }
+    function requestLeaf(ent, lf) {
+      var attempt = 0;
+      function once() {
+        return acquire(ent).then(function () {
+          var cfg = d.getCfg(), rq = aiBuildRequest({ endpoint: d.endpoint('page'), token: cfg.token, b64: lf.b64, mode: cfg.mode, pageId: aiPageId(d.bookKey, ent.pno, lf.leaf) });
+          rq.init.signal = ent.ctl.signal; P.requests++;
+          return Promise.resolve().then(function () { return d.fetch(rq.url, rq.init); }).then(function (res) {
+            return Promise.resolve(res.json()).then(function (b) { return b; }, function () { return null; }).then(function (b) { return { res: res, body: b }; });
+          }, function (e) { if (ent.ctl.signal.aborted || (e && e.name === 'AbortError')) throw abortErr(); return { net: true }; })
+            .then(function (o) { release(); return o; }, function (e) { release(); throw e; });
+        }).then(function (o) {
+          var cls;
+          if (o.net) cls = aiClassify(0);
+          else if (o.res.ok && o.body && typeof o.body.text === 'string') {
+            if (o.body.model && d.meta) { d.meta.model = o.body.model; if (o.body.promptVer) d.meta.promptVer = o.body.promptVer; }
+            if (o.body.usage && d.onUsage) { try { d.onUsage(o.body.usage); } catch (e) { /* 忽略 */ } }
+            return o.body.text;
+          } else if (o.res.ok) cls = { kind: 'upstream', retry: false, fatal: false, retryAfter: 0, message: '识别服务返回了无法理解的内容' };
+          else cls = aiClassify(o.res.status, o.body, o.res.headers && o.res.headers.get ? o.res.headers.get('Retry-After') : null);
+          var wait = cls.fatal ? -1 : aiBackoff(cls, attempt);
+          if (wait < 0) { var er = new Error(cls.message); er.cls = cls; throw er; }
+          attempt++;
+          status(ent.pno, 'retry', { cls: cls, attempt: attempt, wait: wait });
+          return sleep(wait).then(function () { if (ent.ctl.signal.aborted) throw abortErr(); return once(); });
+        });
+      }
+      return once();
+    }
+    function keyFor(pno, cfg) {
+      return aiCacheKey({ bookKey: d.bookKey, pno: pno, leaf: 'P', mode: cfg.mode, model: d.meta && d.meta.model, promptVer: d.meta && d.meta.promptVer });
+    }
+    function start(pno, force) {
+      var ent = { pno: pno, ctl: newCtl(), done: false, failed: null };
+      ent.p = Promise.resolve().then(function () {
+        var cfg = d.getCfg(), key = keyFor(pno, cfg);
+        return (force ? Promise.resolve(null) : d.cache.get(key)).then(function (hit) {
+          if (hit) { P.hits++; status(pno, 'cached', {}); return hit; }
+          status(pno, 'recognizing', {});
+          return d.render(pno, cfg, ent.ctl.signal).then(function (leaves) {
+            if (ent.ctl.signal.aborted) throw abortErr();
+            var out = [];
+            return leaves.reduce(function (chain, lf) { return chain.then(function () { return requestLeaf(ent, lf).then(function (t) { out.push(t); }); }); }, Promise.resolve())
+              .then(function () { return d.cache.put(keyFor(pno, cfg), out); }).then(function () { return out; });
+          });
+        });
+      }).then(function (texts) {
+        ent.done = true; status(pno, 'done', { empty: !texts.some(function (t) { return /\S/.test(t); }) }); return texts;
+      }, function (e) {
+        ent.done = true;
+        if (ent.ctl.signal.aborted || (e && e.name === 'AbortError')) { if (pages[pno] === ent) delete pages[pno]; throw abortErr(); }
+        ent.failed = e; status(pno, 'failed', { cls: e && e.cls, error: e });
+        if (e && e.cls && e.cls.fatal && d.onFatal) { try { d.onFatal(e.cls); } catch (x) { /* 忽略 */ } }
+        throw e;
+      });
+      ent.p['catch'](function () { /* 失败由 getPage 的调用方处理；这里只防 unhandledrejection */ });
+      pages[pno] = ent;
+      return ent;
+    }
+    function raw(pno) { return pno >= 1 && pno <= d.count ? (pages[pno] || start(pno)).p : Promise.resolve(null); }
+    P.getPage = function (pno) {
+      return raw(pno).then(function (texts) { return texts ? aiAdapt(texts, { skipNotes: !!d.getCfg().skipNotes }) : null; }, function () { return null; });
+    };
+    P.prefetch = function (list) { list.forEach(function (p) { if (p >= 1 && p <= d.count && !pages[p]) start(p); }); };
+    /** 用户读 / 翻到了 pno：窗口外还在飞的请求中止（已计费的结果丢弃，服务端缓存会兜住重来），再预取 pno、pno+1、pno+2 */
+    P.focus = function (pno) {
+      Object.keys(pages).forEach(function (k) {
+        var ent = pages[k];
+        if (!ent.done && (ent.pno < pno || ent.pno > pno + 2)) { try { ent.ctl.abort(); } catch (e) { /* 忽略 */ } dropWaiters(ent); delete pages[k]; }
+      });
+      P.prefetch([pno, pno + 1, pno + 2]);
+    };
+    /** 手动重试一页：丢掉状态和缓存，重新识别 */
+    P.retry = function (pno) {
+      var ent = pages[pno];
+      if (ent) { if (!ent.done) { try { ent.ctl.abort(); } catch (e) { /* 忽略 */ } dropWaiters(ent); } delete pages[pno]; }
+      var cfg = d.getCfg();
+      return Promise.resolve(d.cache.remove(keyFor(pno, cfg))).then(function () { return start(pno, true).p; }).then(function () { return P.getPage(pno); }, function () { return null; });
+    };
+    P.cancelAll = function () {
+      Object.keys(pages).forEach(function (k) { var ent = pages[k]; if (!ent.done) { try { ent.ctl.abort(); } catch (e) { /* 忽略 */ } dropWaiters(ent); } delete pages[k]; });
+    };
+    P.failed = function (pno) { return !!(pages[pno] && pages[pno].failed); };
+    P.inflight = function () { return active; };
+    return P;
+  }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
@@ -2191,7 +2490,11 @@
     bmNormalize: bmNormalize, bmMerge: bmMerge, bmLive: bmLive, bmAtPage: bmAtPage, bmToggle: bmToggle, bmUpdate: bmUpdate, bmRemove: bmRemove, bmSame: bmSame,
     hasCjk: hasCjk, pdfTextLines: pdfTextLines, pdfPageParas: pdfPageParas, ttsTracker: ttsTracker, ttsClean: ttsClean,
     splitSentences: splitSentences, pageSentences: pageSentences, createTtsRunner: createTtsRunner,
-    makeCloudEngine: makeCloudEngine, makeBrowserEngine: makeBrowserEngine, ttsClassify: ttsClassify, ttsRate: ttsRate
+    makeCloudEngine: makeCloudEngine, makeBrowserEngine: makeBrowserEngine, ttsClassify: ttsClassify, ttsRate: ttsRate,
+    AI_EDGE: AI_EDGE, AI_MAX_BYTES: AI_MAX_BYTES, AI_MODEL0: AI_MODEL0, AI_PROMPT_VER0: AI_PROMPT_VER0,
+    aiIsSpread: aiIsSpread, aiRenderPlan: aiRenderPlan, aiColumnInk: aiColumnInk, aiGutter: aiGutter, aiLeafRects: aiLeafRects, aiFitSize: aiFitSize, aiEncode: aiEncode,
+    aiPageId: aiPageId, aiBuildRequest: aiBuildRequest, aiStripNotes: aiStripNotes, aiAdapt: aiAdapt, aiClassify: aiClassify, aiBackoff: aiBackoff,
+    aiCacheKey: aiCacheKey, makeAiCache: makeAiCache, createAiPager: createAiPager
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
