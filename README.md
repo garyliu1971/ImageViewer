@@ -171,6 +171,8 @@ python web_backend.py            # 起服务并自动在默认浏览器打开
 （不是任意文件读取器）。缺依赖时自动降级，页面会写明 `rar/cbr ✗` / `PDF ✗`。
 注意 `file://` 双击打开时没有后端，`rar/cbr/pdf` 会直接提示「需要本地后端」，不会静默失败。
 
+**AI 朗读（扫描版 PDF）**：打开没有文字层的 PDF 时工具栏出现 🤖；开启后页面图片经同源 `/ocr/v1/page`（本机后端模式由 `web_backend.py` 中转）识别成文字再朗读，需要先在「朗读设置」填在线语音令牌并同意发送图片到阿里云。详见 `deploy/README-iv-deploy.md` 第 7g 节。
+
 **部署成 `/iv/`（纯静态）时不需要后端也能读 rar / cbr / 7z / cb7 / tar / cbt / tgz（.tar.gz）**：浏览器里用 vendor 的 libarchive.js（WASM，module worker，
 第一次打开这类包才加载）整本读进内存再按页解压（云端的包先整本下载、带进度）；zip / cbz / epub / pdf 的路径不变。限制：超过约 300MB 会先提醒（手机内存），
 solid 压缩的包越靠后的页越慢，不支持加密包；需要 CSP 加 `'wasm-unsafe-eval'`（见 `deploy/README-iv-deploy.md` 第 7f 节）。样本：`python tests/make_archive_fixtures.py`；

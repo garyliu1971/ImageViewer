@@ -1624,6 +1624,18 @@ test('aiGutter：墨迹投影 40%-60% 内找谷底；谷不明显 / 没墨迹 / 
   assert.ok(Math.abs(C.aiGutter(ink) - 50) <= 1);
 });
 
+test('aiGutter（版框线）：两页版框几乎贴在一起时，字列之间的空白不是装订线；右页上别的竖线不会抢走', () => {
+  const H = 100;
+  const prof = (lines) => { const a = Array.from({ length: 1000 }, (_, i) => (i % 40 < 6 ? 0 : 30)); for (const [s0, e0] of lines) for (let i = s0; i <= e0; i++) a[i] = 90; return a; };   // 底：字列（每 40 列有 6 列空白缝）
+  assert.ok(Math.abs(C.aiGutter(prof([[476, 481], [496, 501]]), H) - 489) <= 1);         // 贴近的两道框线（间隙 14 列 = 1.4%）：中点 489，不是某条字缝
+  assert.ok(Math.abs(C.aiGutter(prof([[460, 465], [535, 540]]), H) - 500) <= 1);         // 宽间隙
+  assert.ok(Math.abs(C.aiGutter(prof([[460, 465], [500, 504], [620, 625]]), H) - 482.5) <= 1);   // 右页还有别的竖线：取中点离页中心最近的一对
+  const decoy = prof([[470, 474], [530, 534], [580, 584]]);
+  assert.ok(Math.abs(C.aiGutter(decoy, H) - 502) <= 1);                                      // (474,530) 中点 502 比 (534,580) 中点 557 近
+  assert.equal(C.aiGutter(prof([[300, 305]]), H), 500);                                      // 窗口里只有一条线：不成对 → 没有整段空白 → 固定中点
+  assert.equal(C.aiGutter(prof([[476, 481], [496, 501]])), 500);                             // 不给 h：不看框线，只剩 6 列空白缝（0.6% < 2%）→ 固定中点
+});
+
 test('aiLeafRects：竖排合页 = 右叶在前、左叶在后；横排相反；每叶向装订线外扩 2%', () => {
   const r = C.aiLeafRects(1000, 800, 500, true);
   assert.deepEqual(r.map((x) => x.leaf), ['R', 'L']);
