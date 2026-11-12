@@ -1,0 +1,13 @@
+# /ocr/ : OCR proxy (pyreader-ocr, 127.0.0.1:8091). Put right next to the existing `handle_path /tts/* { ... }`,
+# BEFORE the catch-all WebDAV handle. Back up the Caddyfile, `caddy validate`, then reload.
+# Same-origin with /iv/, so the /iv/ CSP (connect-src 'self') needs no change.
+	handle_path /ocr/* {
+		request_body {
+			max_size 2MB
+		}
+		reverse_proxy 127.0.0.1:8091 {
+			transport http {
+				response_header_timeout 40s
+			}
+		}
+	}
