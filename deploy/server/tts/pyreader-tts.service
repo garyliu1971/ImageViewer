@@ -1,0 +1,23 @@
+[Unit]
+Description=PyReader TTS proxy
+After=network-online.target
+
+[Service]
+User=pyreader-tts
+Group=pyreader-tts
+EnvironmentFile=/etc/pyreader-tts/env
+Environment=TTS_VENDOR_DIR=/opt/pyreader-tts/vendor
+ExecStart=/usr/bin/python3 /opt/pyreader-tts/server.py
+Restart=on-failure
+RestartSec=3
+StateDirectory=pyreader-tts
+CacheDirectory=pyreader-tts
+MemoryMax=300M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/pyreader-tts /var/cache/pyreader-tts
+
+[Install]
+WantedBy=multi-user.target
