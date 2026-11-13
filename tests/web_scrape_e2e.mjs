@@ -128,6 +128,10 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
     fs.mkdirSync(path.join(lib, d), { recursive: true });
     for (const f of files) fs.writeFileSync(path.join(lib, d, f), 'x');
   }
+  const liu = path.join(tmp, '流人库', '流人');
+  fs.mkdirSync(liu, { recursive: true });
+  fs.writeFileSync(path.join(liu, '流人第六季.2026.S06E01.HD1080P.AAC.H264.CHS-ENG.BT世界网.[www.btsj6.com].mp4'), 'x');
+  fs.writeFileSync(path.join(liu, '流人第六季.2026.S06E02.HD1080P.AAC.H264.CHS-ENG.BT世界网.[www.btsj6.com].mp4'), 'x');
   const sub = path.join(media, '子目录'); fs.mkdirSync(sub); fs.writeFileSync(path.join(sub, 'The.Matrix.1999.deep.mkv'), 'x');
 
   const fake = await spawnLine(PY, ['-u', 'tests/fake_tmdb.py', '0', TOKEN], {}, /API base\s*:\s*(\S+)\s+image base:\s*(\S+)/, '假 TMDB');
@@ -453,6 +457,32 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
       return { ok, note, label, cs2: ${cards} };`);
     check('清缓存后重新打开：夸克仍是已忽略、没有为它搜索（只有流浪地球的重新刮削）；详情页有说明；弹窗里能「取消忽略」恢复刮削',
       un.ok && /不会再向 TMDB 查询/.test(un.note) && un.label === '取消忽略' && un.cs2.some(c => c.title.includes('夸克') && c.badge === '未匹配') && cnt1 - cnt0 <= 2, { un, cnt0, cnt1 });
+
+    log('\n[7f] TMDB 还没有这一季：详情页降级而不是失败（流人 第六季）');
+    await openWall(cdp, port, path.join(tmp, '流人库'));
+    await cdp.eval(ensureSub);
+    const lr = await cdp.eval(`
+      await __until(() => { const c = ${cards}; return c.length === 1 && c[0].img; }, 12000);
+      const c0 = ${cards};
+      document.querySelector('#wallGrid .wc').click();
+      await __until(() => document.querySelector('#sdBody .sd-ep'), 8000);
+      await __wait(1200);
+      const o = { c0, title: document.querySelector('#sdTitle').textContent, en: document.querySelector('#sdEn').textContent,
+        note: document.querySelector('#sdNote').textContent, soft: document.querySelector('#sdNote').classList.contains('soft'),
+        over: document.querySelector('#sdOver').textContent, poster: document.querySelector('#sdPoster').style.backgroundImage,
+        tabs: Array.from(document.querySelectorAll('#sdBody .sd-seasons .btn')).map(b => b.textContent),
+        eps: Array.from(document.querySelectorAll('#sdBody .sd-ep-t')).map(e => e.textContent), html: document.body.innerText };
+      document.querySelector('#sdBody .sd-ep').click();
+      await __until(() => !document.querySelector('#vplayer').classList.contains('hidden'), 6000);
+      o.played = !document.querySelector('#vplayer').classList.contains('hidden');
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await __wait(800);
+      return o;`);
+    check('卡片：中文标题「流人」+ 海报（同名的 2026 年干扰剧没有被选中）', lr.c0.length === 1 && lr.c0[0].title === '流人' && /slowhorses|w342/.test(lr.c0[0].img) && lr.c0[0].cnt === '2 集', lr.c0);
+    check('详情页：不显示「刮削失败 / 404」，有剧集层面的资料（标题 / 英文名 / 简介 / 海报）', !/刮削失败|404|读取中/.test(lr.html) && lr.title === '流人' && lr.en === 'Slow Horses' && lr.over.includes('特工') && /w342/.test(lr.poster), lr);
+    check('只有一条灰色小提示（说明第 6 季暂无分集资料），不是橙色失败横幅', lr.soft && /第 6 季 TMDB 暂时还没有分集资料/.test(lr.note), lr.note);
+    check('第 6 季标签 + 本地 2 个文件按解析出的集号列出（E01 / E02 + 文件名），照常可播放',
+      lr.tabs.join() === '第 6 季' && lr.eps.length === 2 && lr.eps[0].startsWith('E01') && lr.eps[1].startsWith('E02') && lr.eps[0].includes('流人第六季') && lr.played, lr);
+    await shot(cdp, 'detail-season-missing.png', 1100, 860);
 
     log('\n[8] 令牌不泄露 + 署名');
     const leak = await cdp.eval(`

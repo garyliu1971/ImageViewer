@@ -449,6 +449,7 @@
   .sd-ep-m.cont { color: #7fb0ff; border-color: rgba(127,176,255,.4); }
   .sd-ep-m.done { color: #6fcf8f; border-color: rgba(111,207,143,.4); }
   .sd-note { font-size: 12px; color: #e0a040; margin: 6px 0; }
+  .sd-note.soft { color: var(--muted); }
   .fx-row { display: flex; gap: 10px; padding: 8px; border-radius: 8px; cursor: pointer; align-items: flex-start; }
   .fx-row:hover { background: rgba(255,255,255,.07); }
   .fx-row .sd-poster { flex: 0 0 46px; }
@@ -6675,7 +6676,10 @@
     $('#sdPoster').style.backgroundImage = m && m.poster_path ? 'url("' + wallImg(m.poster_path, 'w342') + '")' : '';
     $('#sdHero').style.backgroundImage = m && m.backdrop_path ? 'url("' + wallImg(m.backdrop_path, 'w780') + '")' : '';
     var st = item ? item.status : (c.item && c.item.status);
-    $('#sdNote').textContent = st === 'needs_review' ? '这是暂定匹配（把握不大）。如果不对，点「修正匹配」。' :
+    var softNote = item && item.season_missing != null ? '第 ' + item.season_missing + ' 季 TMDB 暂时还没有分集资料（新一季常见），下面只列出本地文件，照常可以播放；剧集的海报、简介、评分仍来自 TMDB。' :
+      item && item.tmdb_missing ? '已锁定的条目在 TMDB 上找不到了（可能被删除或合并），请点「修正匹配」重新选择。' : '';
+    $('#sdNote').classList.toggle('soft', !!softNote && st !== 'needs_review' && st !== 'unmatched');
+    $('#sdNote').textContent = softNote && st !== 'needs_review' && st !== 'unmatched' ? softNote : st === 'needs_review' ? '这是暂定匹配（把握不大）。如果不对，点「修正匹配」。' :
       st === 'unmatched' ? '没有找到匹配。点「修正匹配」手动搜索。' : st === 'pinned' ? '📌 已手动锁定' + (item && item.pin_scope === 'group' ? '（整部剧）' : '') : '';
     // 播放按钮：电影显示续播
     var files = c.files, first = files[0];
@@ -6701,7 +6705,7 @@
       var mark = x.peek.resume_ms > 0 ? '<span class="sd-ep-m cont">▶ ' + wallFmt(x.peek.resume_ms) + '</span>' :
         isWatched(x) ? '<span class="sd-ep-m done">状态：已看</span>' : '<span class="sd-ep-m">状态：未看</span>';
       return '<div class="sd-ep" data-fi="' + i + '"><div class="sd-still" style="' + (e && e.still_path ? 'background-image:url(\'' + wallImg(e.still_path, 'w185') + '\')' : '') + '"></div>' +
-        '<div class="sd-ep-t">' + (n != null ? 'E' + (n < 10 ? '0' : '') + n + ' · ' : '') + esc(nm || x.row.name) + '<small>' + esc(sub + x.row.name) + '</small></div>' + mark +
+        '<div class="sd-ep-t">' + (n != null ? 'E' + (n < 10 ? '0' : '') + n + ' · ' : '') + esc(nm || (n != null ? '第 ' + n + ' 集' : x.row.name)) + '<small>' + esc(sub + x.row.name) + '</small></div>' + mark +
         '<button class="btn sd-ep-w" data-w="' + i + '" title="' + (isWatched(x) ? '把这一集改回未看' : '把这一集标成已看') + '">' + (isWatched(x) ? '取消已看' : '标为已看') + '</button></div>';
     }).join('');
     body.innerHTML = h;

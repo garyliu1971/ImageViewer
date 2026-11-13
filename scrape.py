@@ -33,6 +33,7 @@ IMAGE_SIZES = ("w92", "w154", "w185", "w342", "w500", "w780", "original")
 IMAGE_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]{6,80}\.(jpg|png)$")
 MATCH_MIN_SCORE = 0.45        # 低于它视为「没匹配上」（仍给候选）
 MAX_CANDIDATES = 3
+NEG_TTL = 3600               # 「TMDB 没有」(404) 只记 1 小时：新一季 / 新一集上线后很快能刷到，不会永久失败
 CONFIDENT_SCORE = 0.8        # 低于它 -> needs_review
 CLOSE_MARGIN = 0.08          # 第一名与第二名差距小于它 -> needs_review
 
@@ -56,7 +57,11 @@ def add_noise(*words):
     NOISE.update(w.lower() for w in words)
 
 
-RES_RE = re.compile(r"^(\d{3,4}[pi]|[248]k|\d{3,4}x\d{3,4})$", re.I)
+RES_RE = re.compile(r"^((?:hd|fhd|uhd)?\d{3,4}[pi]|[248]k|\d{3,4}x\d{3,4})$", re.I)
+# 网站 / 论坛水印：BT世界网、xx论坛、xx字幕组、影视之家…（只认较长的词，避免误伤标题）
+SITE_TOK_RE = re.compile(r"^[\u4e00-\u9fffA-Za-z0-9]{1,10}(网|论坛|字幕组|影视之家|电影天堂|影视|之家|资源站)$")
+DOMAIN_RE = re.compile(r"(?i)(?:https?://)?(?:www\.)[a-z0-9-]+(?:\.[a-z0-9-]+)+[/A-Za-z0-9_-]*|"
+                       r"[a-z0-9-]+\.(?:com|net|org|cc|la|tv|me|info|cn|top|xyz|vip|club|co|io)\b[/A-Za-z0-9_-]*")
 YEAR_RE = re.compile(r"^(19[2-9]\d|20[0-3]\d)$")
 CJK_RE = re.compile(r"[぀-ヿ㐀-鿿]")
 CN_NUM = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7,
@@ -114,7 +119,7 @@ def _markers_from_cjk(s):
 
 def _tokenize(stem):
     """stem -> (tokens, years_in_brackets)。tokens 里 [05] 形式的集号已变成 __E5__ 占位。"""
-    s = _pre_normalize(stem)
+    s = DOMAIN_RE.sub(" ", _pre_normalize(stem))          # www.xxx.com / xxx.net 之类的站点水印整段丢掉
     # 开头的字幕组 / 标签 [xxx] 直接丢
     s = re.sub(r"^(\s*\[[^\]]*\])+\s*", " ", s)
     s = _markers_from_cjk(s)
@@ -128,7 +133,8 @@ def _tokenize(stem):
     if " " not in s.strip():
         s = s.replace(".", " ")
     else:
-        s = re.sub(r"(?<=\w)\.(?=\w)", " ", s)
+        s = re.sub(r"\s*\.\s*", ".", s)                       # 「第六季 .2026」这种占位符旁的点
+        s = re.sub(r"(?<=[\w@])\.(?=[\w@])", " ", s)
     if " " not in s.strip():
         s = s.replace("-", " ")
     return [t for t in re.split(r"\s+", s.strip()) if t]
@@ -139,6 +145,8 @@ def _is_noise(tok):
     if not t:
         return False
     if RES_RE.match(t) or t in NOISE:
+        return True
+    if len(t) >= 3 and SITE_TOK_RE.match(tok.strip("[]()-")):
         return True
     head = t.split("-", 1)[0]
     return head in NOISE and head != t and len(head) > 1
@@ -216,7 +224,7 @@ def _parse_stem(stem):
             j = i + 1
             while j < n:
                 t2 = toks[j].lower()
-                m2 = re.match(r"^@e(\d+)@$", t2) or re.match(r"^e(?:p)?(\d{1,3})$", t2)
+                m2 = re.match(r"^@e(\d+)@$", t2) or re.match(r"^e(?:p)?(\d{1,3})$", t2) or re.match(r"^s\d{1,2}[ ._-]?e(\d{1,4})", t2)
                 if m2:
                     episode, ep_priority = int(m2.group(1)), 1
                     break
@@ -543,7 +551,7 @@ def _norm(s):
     return re.sub(r"[\W_]+", "", (s or "").casefold())
 
 
-def title_score(cands, result, year):
+def title_score(cands, result, year, soft_year=False):
     """候选标题 vs 一条 TMDB 搜索结果 -> 0..~1.2 的分。"""
     names = [result.get("title"), result.get("name"), result.get("original_title"),
              result.get("original_name")]
@@ -566,7 +574,10 @@ def title_score(cands, result, year):
     ry = (result.get("release_date") or result.get("first_air_date") or "")[:4]
     if year and ry.isdigit():
         d = abs(int(ry) - int(year))
-        best += 0.15 if d == 0 else (0.05 if d == 1 else -0.15)
+        if soft_year:                      # 剧集：年份只可能加分，不扣分
+            best += 0.1 if d == 0 else 0.0
+        else:
+            best += 0.15 if d == 0 else (0.05 if d == 1 else -0.15)
     best += min(float(result.get("popularity") or 0), 100.0) / 2000.0
     return round(best, 4)
 
@@ -607,15 +618,32 @@ class Scraper:
             row = c.execute("SELECT body, at FROM tmdb_cache WHERE ck=?", (ck,)).fetchone()
             if not row:
                 return None
-            if self.now() - row[1] > TTL_SECONDS:
+            body = json.loads(row[0])
+            age = self.now() - row[1]
+            if age > TTL_SECONDS or (isinstance(body, dict) and body.get("_404") and age > NEG_TTL):
                 c.execute("DELETE FROM tmdb_cache WHERE ck=?", (ck,))
                 return None
-            return json.loads(row[0])
+            return body
 
     def _cache_put(self, ck, obj):
         with self._lock, self._conn() as c:
             c.execute("INSERT OR REPLACE INTO tmdb_cache VALUES(?,?,?)",
                       (ck, json.dumps(obj, ensure_ascii=False), self.now()))
+
+    def _cached_or_missing(self, ck, fetch):
+        """同 _cached，但 TMDB 返回 404 时返回 {"_404": True}（短时间负缓存），而不是抛错。"""
+        v = self._cache_get(ck)
+        if v is None:
+            if getattr(self._tl, "offline", False):
+                raise TmdbError("缓存里没有（离线模式）", code="offline")
+            try:
+                v = fetch()
+            except TmdbError as e:
+                if e.code != "not_found":
+                    raise
+                v = {"_404": True}
+            self._cache_put(ck, v)
+        return v
 
     def _cached(self, ck, fetch):
         v = self._cache_get(ck)
@@ -705,14 +733,17 @@ class Scraper:
                 break
             seen = set()
             for cand in cands:
-                res = self._search(mt, cand, year)
-                if not res and year:
+                # 电视剧文件名里的年份通常是「这一季」的年份，不是首播年：不能当过滤条件（会把真正的剧排除掉），
+                # 只在打分时当加分提示；电影才按年份过滤
+                ysearch = year if mt == "movie" else None
+                res = self._search(mt, cand, ysearch)
+                if not res and ysearch:
                     res = self._search(mt, cand, None)
                 for r in res[:8]:
                     if r.get("id") in seen:
                         continue
                     seen.add(r.get("id"))
-                    sc = title_score(cands, r, year)
+                    sc = title_score(cands, r, year, soft_year=(mt == "tv"))
                     if mi == 1:
                         sc -= 0.1               # 类型不符的轻微惩罚
                     scored.append({"media_type": mt, "tmdb_id": r["id"], "score": round(sc, 4),
@@ -752,7 +783,7 @@ class Scraper:
         return self._cached("%s:%d:%s" % (mt, tmdb_id, lang), lambda: self.client.details(mt, tmdb_id, lang))
 
     def _season(self, tmdb_id, n, lang):
-        return self._cached("season:%d:%d:%s" % (tmdb_id, n, lang), lambda: self.client.season(tmdb_id, n, lang))
+        return self._cached_or_missing("season:%d:%d:%s" % (tmdb_id, n, lang), lambda: self.client.season(tmdb_id, n, lang))
 
     def _media_view(self, mt, tmdb_id):
         zh = self._details(mt, tmdb_id, "zh-CN")
@@ -796,11 +827,16 @@ class Scraper:
         if season is None:
             return out
         zh = self._season(tmdb_id, season, "zh-CN")
+        if zh.get("_404"):                       # TMDB 还没有这一季（比如刚开播的新季）：降级，只给剧集层面的资料
+            out["season_missing"] = season
+            return out
         try:
             en = self._season(tmdb_id, season, "en-US")
         except TmdbError as e:
             if e.code in ("no_token", "bad_token"):
                 raise
+            en = {}
+        if en.get("_404"):
             en = {}
         out["season"] = {"number": season, "name_zh": zh.get("name") or "", "name_en": en.get("name") or "",
                          "overview_zh": zh.get("overview") or "", "overview_en": en.get("overview") or "",
@@ -828,10 +864,16 @@ class Scraper:
         item = {"key": key, "group_key": group, "kind": parsed["kind"], "parsed": parsed,
                 "pin_scope": getattr(self._tl, "pin_scope", None) if status in ("pinned", "ignored") else None,
                 "status": status, "source": source, "score": score, "alternatives": alternatives,
-                "media": None, "season": None, "episode": None,
+                "media": None, "season": None, "episode": None, "season_missing": None,
                 "updated_at": updated, "expires_at": (updated or self.now()) + TTL_SECONDS}
         if ref:
-            media = self._media_view(ref["media_type"], int(ref["tmdb_id"]))
+            try:
+                media = self._media_view(ref["media_type"], int(ref["tmdb_id"]))
+            except TmdbError as e:
+                if e.code != "not_found":
+                    raise
+                item["tmdb_missing"] = True                  # 锁定 / 缓存的 id 在 TMDB 已不存在：不炸，只标记
+                return item
             item["media"] = media
             if ref["media_type"] == "tv":
                 item.update(self._episode_view(int(ref["tmdb_id"]), parsed.get("season") if parsed.get("season") is not None else (1 if parsed.get("episode") is not None else None), parsed.get("episode")))
@@ -979,6 +1021,8 @@ class Scraper:
         ref = {"media_type": media_type, "tmdb_id": tmdb_id}
         self._tl.pin_scope = "group" if target != key else "video"
         item = self._assemble(key, parsed, group, "pinned", "pin", ref, 1.0, [], self.now())   # 先验证能取到，再落盘
+        if item.get("tmdb_missing"):
+            raise TmdbError("TMDB 找不到该条目 (404)", 404, "not_found")
         with self._lock, self._conn() as c:
             c.execute("INSERT OR REPLACE INTO pins VALUES(?,?,?)", (target, json.dumps(ref), self.now()))
         return item

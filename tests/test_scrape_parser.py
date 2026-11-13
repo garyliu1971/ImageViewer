@@ -59,6 +59,15 @@ CASES = [
     ("04.mkv", ["第二季", "三体 (2023)"], "episode", "三体", 2023, 2, 4),
     ("04.mkv", ["Show Name Season 2"], "episode", "Show Name", None, 2, 4),
     ("Episode 05.mkv", ["Season 3", "Some Show"], "episode", "Some Show", None, 3, 5),
+    # 真实案例：2026 年的新一季；年份是这一季的，不是剧的；站点水印 / 论坛标记要被剥掉
+    ("流人第六季.2026.S06E01.HD1080P.AAC.H264.CHS-ENG.BT世界网.[www.btsj6.com].mp4", [], "episode", "流人", 2026, 6, 1),
+    ("流人第六季.S06E01.HD1080P.AAC.H264.CHS-ENG.BT世界网.[www.btsj6.com].mp4", [], "episode", "流人", None, 6, 1),
+    ("流人.S06E01.2026.1080p.WEB-DL.【高清影视之家 www.hdbtt.com】.mp4", [], "episode", "流人", 2026, 6, 1),
+    ("[www.btsj6.com]流人.第六季.S06E02.1080p.mp4", [], "episode", "流人", None, 6, 2),
+    ("www.gaoqing.la-流人.S06E03.2026.HD1080P.mkv", [], "episode", "流人", 2026, 6, 3),
+    ("BT世界网.流人.S06E04.mp4", [], "episode", "流人", None, 6, 4),
+    ("流人 S06E05 2026 [电影天堂www.dygod.net].mkv", [], "episode", "流人", 2026, 6, 5),
+    ("Slow.Horses.S06E01.2026.2160p.WEB-DL.DDP5.1.Atmos.H.265-GRP.mkv", [], "episode", "Slow Horses", 2026, 6, 1),
     ("Sicario Day of the Soldado 2018 BluRay.mkv", ["Season 1"], "episode", "Sicario Day of the Soldado", 2018, 1, None),
 ]
 

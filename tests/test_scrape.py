@@ -305,6 +305,57 @@ class TestScraper(Base):
         self.assertEqual(j["queue"][0]["state"], "ignored")
         self.assertEqual(self.sc.match(k2)["status"], "matched")
 
+    LIUREN = "流人第六季.2026.S06E01.HD1080P.AAC.H264.CHS-ENG.BT世界网.[www.btsj6.com].mp4"
+
+    def test_missing_season_degrades_to_show_level(self):
+        """TMDB 还没有第 6 季（/tv/{id}/season/6 回 404）：不能整体失败，要返回剧集层面的资料 + season_missing 标记。"""
+        it = self.sc.match(local_key("tv", "流人", self.LIUREN))
+        self.assertEqual(it["status"], "matched")
+        self.assertEqual((it["media"]["tmdb_id"], it["media"]["title_zh"], it["media"]["title_en"]), (95480, "流人", "Slow Horses"))
+        self.assertTrue(it["media"]["poster_path"] and it["media"]["overview_zh"])
+        self.assertEqual(it["season_missing"], 6)
+        self.assertIsNone(it["season"])
+        self.assertIsNone(it["episode"])
+        self.assertEqual([s["season_number"] for s in it["media"]["seasons"]], [1, 2, 3, 4])      # 其它季的资料还在
+
+    def test_existing_season_still_has_episode_data(self):
+        it = self.sc.match(local_key("tv", "流人", "流人.S01E02.mkv"))
+        self.assertIsNone(it["season_missing"])
+        self.assertEqual(it["episode"]["name_en"], "Dogs")
+
+    def test_404_is_negative_cached_only_briefly(self):
+        k = local_key("tv", "流人", self.LIUREN)
+        self.sc.match(k)
+        n = self.fake.count("/3/tv/95480/season/6")
+        self.assertEqual(n, 1)
+        self.sc.match(k, force=True)
+        self.clock.t += 1800
+        self.sc.match(k, force=True)
+        self.assertEqual(self.fake.count("/3/tv/95480/season/6"), 1)          # 1 小时内不重复打 TMDB
+        self.clock.t += 3600
+        self.sc.match(k, force=True)
+        self.assertEqual(self.fake.count("/3/tv/95480/season/6"), 2)          # 过了负缓存 TTL 就重新问（新一季上线后能刷出来）
+        self.assertLess(scrape.NEG_TTL, DAY)
+
+    def test_tv_year_is_a_soft_hint_not_a_filter(self):
+        """文件名里的 2026 是这一季的年份：不能当 first_air_date_year 过滤（会把 2022 年首播的真剧排除，只剩 2026 年的同名干扰项）。"""
+        it = self.sc.match(local_key("tv", "流人", self.LIUREN))
+        self.assertEqual(it["media"]["tmdb_id"], 95480)
+        tv_searches = [r for r in self.fake.requests if r[0] == "/3/search/tv"]
+        self.assertTrue(tv_searches)
+        self.assertTrue(all("first_air_date_year" not in r[1] for r in tv_searches))
+        # 电影仍按年份过滤
+        self.sc.match(local_key("m", "Dune (2021).mkv"))
+        mv = [r for r in self.fake.requests if r[0] == "/3/search/movie"]
+        self.assertTrue(any(r[1].get("year") == "2021" for r in mv))
+
+    def test_stale_pinned_id_degrades(self):
+        k = local_key("m", "某电影.mkv")
+        with self.sc._lock, self.sc._conn() as c:
+            c.execute("INSERT OR REPLACE INTO pins VALUES(?,?,?)", (k, '{"media_type": "movie", "tmdb_id": 424242}', self.clock()))
+        it = self.sc.match(k)                                  # 锁定的 id 在 TMDB 已不存在：不抛错
+        self.assertEqual((it["status"], it["media"], it["tmdb_missing"]), ("pinned", None, True))
+
     def test_year_disambiguates(self):
         it = self.sc.match(local_key("m", "Dune (2021).mkv"))
         self.assertEqual((it["status"], it["media"]["tmdb_id"]), ("matched", 7002))
