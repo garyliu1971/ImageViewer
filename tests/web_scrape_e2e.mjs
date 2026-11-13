@@ -315,13 +315,13 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
       await __until(() => document.querySelectorAll('#sdBody .sd-ep').length === 3);
       document.querySelector('#sdBody .sd-ep-w').click();
       await __until(() => document.querySelector('#sdBody .sd-ep-m.done'));
-      const afterOne = { mark: ${cards}[0].mark, ep: document.querySelector('#sdBody .sd-ep-m').textContent, all: document.querySelector('#sdWatch').textContent };
+      const afterOne = { mark: ${cards}[0].mark, ep: document.querySelector('#sdBody .sd-ep-m').textContent, btn: document.querySelector('#sdBody .sd-ep-w').textContent, btn2: document.querySelectorAll('#sdBody .sd-ep-w')[1].textContent, all: document.querySelector('#sdWatch').textContent };
       document.querySelector('#sdWatch').click();
       await __until(() => document.querySelectorAll('#sdBody .sd-ep-m.done').length === 3);
       const afterAll = { mark: ${cards}[0].mark, all: document.querySelector('#sdWatch').textContent };
       return { afterOne, afterAll };`);
     check('单集标记已看 -> 卡片「✓ 1/3」；「全部标为已看」后整部剧「✓ 已看完」（所有可见集都已看才算）',
-      w1.afterOne.mark === '✓ 1/3' && w1.afterOne.ep === '✓ 已看' && w1.afterOne.all === '全部标为已看' && w1.afterAll.mark === '✓ 已看完' && w1.afterAll.all === '全部标为未看', w1);
+      w1.afterOne.mark === '✓ 1/3' && w1.afterOne.ep === '状态：已看' && w1.afterOne.btn === '取消已看' && w1.afterOne.btn2 === '标为已看' && w1.afterOne.all === '全部标为已看' && w1.afterAll.mark === '✓ 已看完' && w1.afterAll.all === '全部取消已看', w1);
     const s1 = path.join(lib, 'Breaking Bad', 'Season 1', 'S01E01.mkv');
     const w2 = await cdp.eval(`
       const t = window.__IV.backend().token;
