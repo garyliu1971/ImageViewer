@@ -230,6 +230,53 @@ class CDP {
     const closed = await cdp.eval(`return { hidden: document.querySelector('#vplayer').classList.contains('hidden'), src: document.querySelector('#vpVideo').getAttribute('src') };`);
     check('Esc 关闭并释放 src', closed.hidden && !closed.src, closed);
 
+    log('\n[8] 云端（WebDAV）视频：经后端 /api/remote/data 中转，页面拿不到凭据');
+    const cdir = path.join(vdir, 'cloud'); fs.mkdirSync(cdir);
+    fs.copyFileSync(vp, path.join(cdir, 'clip.webm'));
+    fs.copyFileSync(path.join(vdir, 'clip.srt'), path.join(cdir, 'clip.srt'));
+    const dav = spawn(PY, ['-u', 'tests/fake_webdav_serve.py', cdir], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+    let davOut = ''; dav.stdout.on('data', (d) => (davOut += d));
+    for (let i = 0; i < 60 && !/ROOT=/.test(davOut); i++) await sleep(200);
+    const davRoot = (/ROOT=(\S+)/.exec(davOut) || [])[1];
+    check('假 WebDAV 已起', !!davRoot, davOut);
+    try {
+      const cfg = await cdp.eval(`
+        const r = await fetch('/api/remote/config?t=' + window.__IV_TOKEN, { method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ base_url: ${JSON.stringify(davRoot)}, username: 'u', password: 'p' }) });
+        const c = await fetch('/api/remote/config?t=' + window.__IV_TOKEN).then(r => r.json());
+        return { st: r.status, c };`);
+      check('后端接受并保存 WebDAV 配置（不回密码）', cfg.st === 200 && cfg.c.connected && cfg.c.has_password && !('password' in cfg.c), cfg);
+      await cdp.eval(`document.querySelector('#btnDisk').click(); await __wait(500); document.querySelector('#browseCloud').click(); await __wait(1500); return 1;`);
+      const rows = await cdp.eval(`
+        return { cloudOn: document.querySelector('#browseCloud').classList.contains('on'),
+                 path: document.querySelector('#browsePath').value,
+                 names: Array.from(document.querySelectorAll('#browseList .brow-name')).map(e => e.textContent) };`);
+      check('云端按钮切到 WebDAV 根目录并列出', rows.cloudOn && rows.names.length > 0, rows);
+      await cdp.eval(`
+        const li = Array.from(document.querySelectorAll('#browseList .brow-item')).find(e => /视频/.test(e.textContent));
+        li.click(); document.querySelector('#browseOpen').click(); await __wait(1200); return 1;`);
+      const sub = await cdp.eval(`
+        return { path: document.querySelector('#browsePath').value,
+                 names: Array.from(document.querySelectorAll('#browseList .brow-name')).map(e => e.textContent) };`);
+      check('进入云端子目录并看到视频', sub.names.includes('clip.webm'), sub);
+      await cdp.eval(`
+        const li = Array.from(document.querySelectorAll('#browseList .brow-item')).find(e => /clip\.webm/.test(e.textContent));
+        li.click(); document.querySelector('#browseOpen').click(); await __wait(2500); return 1;`);
+      const cv = await cdp.eval(`
+        const v = document.querySelector('#vpVideo');
+        for (let i = 0; i < 30; i++) { if (v.querySelector('track')) break; await __wait(100); }
+        await __wait(500);
+        const t = v.textTracks[0];
+        return { shown: !document.querySelector('#vplayer').classList.contains('hidden'), src: v.getAttribute('src'), rs: v.readyState, err: v.error && v.error.code,
+                 cues: t && t.cues ? Array.from(t.cues).map(c => c.text) : null,
+                 leak: (v.src || '').includes('u:p@') || document.documentElement.outerHTML.includes('Basic dTpw') };`);
+      check('云端视频经 /api/remote/data 播放（无认证头 / URL 无凭据）', cv.shown && /^\/api\/remote\/data\?/.test(cv.src || '') && cv.rs >= 1 && !cv.err && !cv.leak, cv);
+      check('云端同名字幕自动挂载', cv.cues && cv.cues[0] === '你好，字幕', cv.cues);
+      await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await __wait(300); return 1;`);
+    } finally {
+      try { dav.kill(); } catch (e) {}
+    }
+
     log('\n[7] 续播点（后端）');
     const rj = await cdp.eval(`
       const iv = window.__IV;

@@ -320,6 +320,13 @@ class TestVideoServing(FixtureCase):
             self.assertEqual(st, 416, bad)
             self.assertEqual(hdr["Content-Range"], "bytes */%d" % n, bad)
 
+    def test_cache_control_only_on_video(self):
+        st, hdr, _ = self._get(self.mp4)
+        self.assertIn("max-age=60", hdr.get("Cache-Control", ""))
+        st, hdr, _ = http_get(self.base + "/api/data?path=" + urllib.parse.quote(os.path.join(self.book, "00_cover.png")), self.token)
+        self.assertEqual(st, 200)
+        self.assertNotIn("Cache-Control", hdr)
+
     def test_head_has_no_body(self):
         u = self.base + "/api/data?path=" + urllib.parse.quote(self.mp4) + "&t=" + urllib.parse.quote(self.token)
         req = urllib.request.Request(u, method="HEAD", headers={"Range": "bytes=0-9"})
@@ -809,6 +816,8 @@ class TestUploadAndRemote(FixtureCase):
             "/dav/漫画/书.cbz": cls.FIX_CBZ,
             "/dav/漫画/扫描.pdf": b"%PDF-1.4\nfake\n",
             "/dav/漫画/说明.txt": b"junk",
+            "/dav/视频/电影.mp4": bytes(range(256)) * 40,
+            "/dav/视频/电影.srt": b"1",
         }, user="u", pw="p")
         cls.root = cls.dav.start()
         cls.httpd, cls.thread, cls.url = wb.serve(0, open_browser=False)
@@ -907,6 +916,64 @@ class TestUploadAndRemote(FixtureCase):
         self.assertEqual(st2, 206)
         self.assertEqual(len(chunk), 10)
         self.assertIn("Content-Range", hdr)
+
+    def test_remote_video_range_through_relay(self):
+        """<video> 经后端中转：200 / 206 / 后缀 / 416，类型按扩展名给 video/mp4。"""
+        self._connect()
+        blob = bytes(range(256)) * 40
+        u = self.base + "/api/remote/data?path=" + urllib.parse.quote("/dav/视频/电影.mp4")
+        st, hdr, body = http_get(u, self.token)
+        self.assertEqual((st, body), (200, blob))
+        self.assertEqual(hdr["Content-Type"], "video/mp4")          # 网盘回 octet-stream 也要纠正
+        self.assertEqual(hdr["Accept-Ranges"], "bytes")
+        self.assertEqual(hdr["Content-Length"], str(len(blob)))
+        st, hdr, body = http_get(u, self.token, {"Range": "bytes=100-199"})
+        self.assertEqual((st, body), (206, blob[100:200]))
+        self.assertEqual(hdr["Content-Range"], "bytes 100-199/%d" % len(blob))
+        st, hdr, body = http_get(u, self.token, {"Range": "bytes=-30"})
+        self.assertEqual((st, body), (206, blob[-30:]))
+        st, hdr, _ = http_get(u, self.token, {"Range": "bytes=%d-" % len(blob)})
+        self.assertEqual(st, 416)
+        self.assertEqual(hdr["Content-Range"], "bytes */%d" % len(blob))
+
+    def test_remote_credentials_not_leaked_to_browser(self):
+        self._connect()
+        u = self.base + "/api/remote/data?path=" + urllib.parse.quote("/dav/视频/电影.mp4")
+        st, hdr, body = http_get(u, self.token, {"Range": "bytes=0-9"})
+        self.assertEqual(st, 206)
+        blob = " ".join("%s: %s" % kv for kv in hdr.items()).lower()
+        self.assertNotIn("authorization", blob)
+        self.assertNotIn("www-authenticate", blob)
+        import base64
+        self.assertNotIn(base64.b64encode(b"u:p").decode().lower(), blob)
+        # 配置接口也只报 has_password，不回密码
+        _, _, cfg = http_get(self.base + "/api/remote/config", self.token)
+        self.assertNotIn(b'"p"', cfg)
+        self.assertTrue(json.loads(cfg)["has_password"])
+        # 上游确实收到了 Basic（凭据只在后端 -> 网盘这一段）
+        self.assertTrue(any(m == "GET" and p.endswith("电影.mp4") for m, p in self.dav.requests))
+
+    def test_remote_data_needs_token_and_config(self):
+        u = self.base + "/api/remote/data?path=" + urllib.parse.quote("/dav/视频/电影.mp4")
+        self.assertEqual(http_get(u)[0], 403)                       # 没 token
+        wb.remote_clear_config()
+        st, _, _ = http_get(u, self.token)
+        self.assertEqual(st, 400)                                   # 没配置 WebDAV
+
+    def test_remote_bad_credentials_and_missing_file(self):
+        http_post(self.base + "/api/remote/config", {"base_url": self.root, "username": "u", "password": "p"}, token=self.token)
+        u404 = self.base + "/api/remote/data?path=" + urllib.parse.quote("/dav/视频/没有.mp4")
+        self.assertEqual(http_get(u404, self.token)[0], 404)
+        wb.remote_save_config(self.root, "u", "wrong")               # 绕过校验直接写错密码
+        st, hdr, _ = http_get(self.base + "/api/remote/data?path=" + urllib.parse.quote("/dav/视频/电影.mp4"), self.token)
+        self.assertEqual(st, 502)
+        self.assertNotIn("WWW-Authenticate", hdr)                    # 不让浏览器弹原生登录框
+
+    def test_remote_ls_marks_video_and_subtitle_sibling(self):
+        self._connect()
+        st, _, body = http_get(self.base + "/api/remote/ls?path=" + urllib.parse.quote("/dav/视频"), self.token)
+        kinds = {e["name"]: e["kind"] for e in json.loads(body)["entries"]}
+        self.assertEqual(kinds.get("电影.mp4"), "video")
 
     def test_remote_thumb_and_local_cache(self):
         self._connect()

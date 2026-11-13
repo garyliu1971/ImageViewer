@@ -162,10 +162,12 @@ class WebDavProvider(RemoteProvider):
                     kind = "archive"
                 elif ext in PDF_EXTS:
                     kind = "pdf"
+                elif ext in (".srt", ".vtt", ".ass", ".ssa"):
+                    kind = "subtitle"     # 网页版播视频时挂同名字幕用；桌面版 media_only=True 看不到
                 else:
                     kind = "other"
                 keep = (("image", "video", "audio") if media_only
-                        else ("image", "video", "audio", "archive", "pdf"))
+                        else ("image", "video", "audio", "archive", "pdf", "subtitle"))
                 if kind not in keep:
                     continue
                 entries.append(RemoteSource(

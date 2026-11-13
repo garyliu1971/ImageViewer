@@ -652,7 +652,7 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, msg, code=400):
         self._json({"ok": False, "error": msg}, code)
 
-    def _send_file(self, path, ctype, rng_header):
+    def _send_file(self, path, ctype, rng_header, cache=False):
         """本地文件按 Range 流式发送（视频拖进度条靠它）。
 
         无 Range -> 200 整文件；合法 Range -> 206；不可满足 -> 416 + Content-Range: bytes */size。
@@ -680,7 +680,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(length))
         self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Cache-Control", "private, max-age=60")
+        if cache:
+            self.send_header("Cache-Control", "private, max-age=60")
         if code == 206:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
         self.end_headers()
@@ -840,7 +841,7 @@ class Handler(BaseHTTPRequestHandler):
                      else mimetypes.guess_type(path)[0] or "application/octet-stream")
             # 真正的 Range 请求头优先（<video> 用）；保留 ?range=bytes=a-b 给不能带头的调用方
             rng = self.headers.get("Range") or (q.get("range") or [""])[0]
-            return self._send_file(path, ctype, rng)
+            return self._send_file(path, ctype, rng, cache=ext_of(path) in VIDEO_EXTS)
         if route == "/api/subtitle":
             name = (q.get("name") or [""])[0]
             if ext_of(path) not in VIDEO_EXTS:
@@ -892,30 +893,70 @@ class Handler(BaseHTTPRequestHandler):
         return self._err("未知接口 %s" % route, 404)
 
     def _remote_data(self, q):
-        """把 WebDAV 字节转发给浏览器（图/PDF/视频都能用，保留 Range）。"""
+        """把 WebDAV 字节流式转发给浏览器（图/PDF/视频都能用，保留 Range）。
+
+        Basic 凭据只在后端 -> 网盘这一段使用，绝不下发给浏览器（也不转发 WWW-Authenticate，
+        免得浏览器弹原生登录框）。<video src> 因此不需要任何认证头。
+        """
+        import urllib.error
         path = (q.get("path") or [""])[0]
         headers = {}
         rng = self.headers.get("Range") or (q.get("range") or [""])[0]
         if rng:
             headers["Range"] = rng
-        resp = remote_open(path, headers)
+        try:
+            resp = remote_open(path, headers)
+        except urllib.error.HTTPError as e:
+            if e.code == 416:
+                self.send_response(416)
+                self.send_header("Content-Range", (e.headers.get("Content-Range") if e.headers else None) or "bytes */*")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            msg = {401: "网盘拒绝访问（账号或密码不对？）", 403: "网盘拒绝访问", 404: "网盘上没有这个文件"}.get(
+                e.code, "网盘返回 HTTP %d" % e.code)
+            return self._err(msg, 404 if e.code == 404 else 502)
         try:
             status = getattr(resp, "status", None) or resp.getcode()
-            ctype = (resp.headers.get("Content-Type") if resp.headers else None) \
-                or mimetypes.guess_type(path)[0] or "application/octet-stream"
-            data = resp.read()
+            up = resp.headers
+            ctype = (up.get("Content-Type") if up else None) or ""
+            if ext_of(path) in VIDEO_EXTS:
+                ctype = video_mime(path)          # 网盘常回 application/octet-stream，<video> 要明确类型
+            elif not ctype or ctype == "application/octet-stream":
+                ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
+            code = status if status in (200, 206) else 200
+            length = up.get("Content-Length") if up else None
+            data = None
+            if length is None or not str(length).isdigit():
+                data = resp.read()
+                length = str(len(data))
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "private, max-age=60")
+            cr = up.get("Content-Range") if up else None
+            if cr:
+                self.send_header("Content-Range", cr)
+            self.end_headers()
+            if self.command == "HEAD":
+                return
+            if data is not None:
+                self.wfile.write(data)
+                return
+            try:
+                while True:
+                    chunk = resp.read(STREAM_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (ConnectionError, OSError):
+                self.close_connection = True
         finally:
             try:
                 resp.close()
             except Exception:
                 pass
-        extra = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=60"}
-        if resp.headers:
-            cr = resp.headers.get("Content-Range")
-            if cr:
-                extra["Content-Range"] = cr
-        return self._bytes(data, ctype, code=status if status in (200, 206) else 200,
-                           extra=extra)
 
     # ---------------- 写接口 ----------------
     def _read_json_body(self):

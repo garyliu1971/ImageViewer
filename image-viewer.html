@@ -813,6 +813,7 @@
       <input type="text" id="browsePath" placeholder="C:\漫画 或 C:\漫画\书.cbr 或 D:\pdf\书.pdf">
       <button class="btn" id="browseGo">转到</button>
       <button class="btn" id="browseUp">上一级</button>
+      <button class="btn" id="browseCloud" title="浏览后端已配置的 WebDAV 云端（目前可播放里面的视频）">☁ 云端</button>
     </div>
     <div id="browseRecent"></div>
     <div id="browseList"><div class="browse-empty">输入路径后点「转到」</div></div>
@@ -4769,11 +4770,15 @@
   }
 
   /* ---------------- 后端模式：目录浏览器 ---------------- */
-  var browsePath = '';
+  var browsePath = '', browseRemote = false, browseLocalPath = '';
   function browseTo(path) {
     var list = $('#browseList');
     list.innerHTML = '<div class="browse-empty">读取中…</div>';
-    return apiJson('/api/ls', { path: path, recursive: '0' }).then(function (j) {
+    var req = browseRemote ? apiJson('/api/remote/ls', { path: path }).then(function (j) {
+      return { dir: j.path, entries: (j.entries || []).map(function (e) { return { rel: e.rel, name: e.name, kind: e.kind, path: e.path, size: e.size }; }) };
+    }) : apiJson('/api/ls', { path: path, recursive: '0' });
+    return req.then(function (j) {
+      if (!browseRemote) browseLocalPath = j.dir;
       browsePath = j.dir;
       $('#browsePath').value = j.dir;
       var rows = [];
@@ -4809,6 +4814,12 @@
     if (!r || r.kind === 'empty') { toast('先选中一个项'); return Promise.resolve(false); }
     if (r.kind === 'up') return Promise.resolve(browseTo(r.path)).then(function () { return false; });
     if (r.dir) return Promise.resolve(browseTo(r.path)).then(function () { return false; });
+    if (browseRemote) {                      /* 云端：目前只接了视频（经后端 /api/remote/data 中转，<video> 不需要认证头） */
+      if (r.kind !== 'video') { toast('云端目前只能播放视频；图 / 压缩包请用书架'); return Promise.resolve(false); }
+      openRemoteVideo(r.path, list._rows);
+      toggleModal('browse', false);
+      return Promise.resolve(true);
+    }
     /* 打开成功就收窗，失败留着让用户改路径 */
     return openServerPath(r.path).then(function (ok) {
       if (ok) toggleModal('browse', false);
@@ -4913,7 +4924,7 @@
         if (VP.subs.length && VP.subIdx < 0) vpSubSelect(0);
       })['catch'](function () { /* 列不出字幕就算了 */ });
     }
-    (it.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, file: s.file }); });
+    (it.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, file: s.file, url: s.url }); });
     vpSubRefresh();
     if (it.subs && it.subs.length && VP.subIdx < 0) vpSubSelect(0);
   }
@@ -4990,6 +5001,7 @@
       vpSubAttach(vtt, s.name);
     }
     if (s.text != null) { use(s.text); return Promise.resolve(); }
+    if (s.url) return fetch(s.url).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
     if (s.file) return s.file.arrayBuffer().then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
     return fetch(apiPath('/api/subtitle', { path: s.remote, name: s.name })).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -5052,6 +5064,21 @@
     });
     openVideoList(items, 0);
     return true;
+  }
+  /** 云端（后端已配置的 WebDAV）：同目录视频当播放列表，同主名字幕自动挂；全部经 /api/remote/data 中转 */
+  function openRemoteVideo(path, rows) {
+    var vids = (rows || []).filter(function (r) { return r.kind === 'video'; });
+    var subRows = (rows || []).filter(function (r) { return C.SUB_EXTS.test(r.name || ''); });
+    var items = vids.map(function (r) {
+      var stem = r.name.replace(/\.[^.]+$/, '').toLowerCase();
+      return { name: r.name, url: apiPath('/api/remote/data', { path: r.path }), remotePath: r.path,
+        subs: subRows.filter(function (s) { var b = s.name.replace(/\.[^.]+$/, '').toLowerCase(); return b === stem || b.indexOf(stem + '.') === 0; })
+          .map(function (s) { return { name: s.name, url: apiPath('/api/remote/data', { path: s.path }) }; }) };
+    });
+    var idx = 0;
+    items.forEach(function (it, k) { if (it.remotePath === path) idx = k; });
+    if (!items.length) items = [{ name: C.baseName(path), url: apiPath('/api/remote/data', { path: path }) }];
+    openVideoList(items, idx);
   }
   /** 后端模式：按磁盘路径播放，同目录的其它视频当播放列表 */
   function openServerVideo(path) {
@@ -5817,6 +5844,19 @@
     browseTo(up || p);
   });
   $('#browseOpen').addEventListener('click', function () { browseOpenSel(); });
+  $('#browseCloud').addEventListener('click', function () {
+    var btn = this;
+    if (browseRemote) {                       /* 切回本机 */
+      browseRemote = false; btn.classList.remove('on');
+      browseTo(browseLocalPath || $('#browsePath').value || '');
+      return;
+    }
+    apiJson('/api/remote/config').then(function (c) {
+      if (!c.connected) { toast('后端还没配置 WebDAV（POST /api/remote/config，或在桌面版里配置；凭据与桌面版共用）'); return; }
+      browseRemote = true; btn.classList.add('on');
+      browseTo('');
+    })['catch'](function (e) { toast('读取云端配置失败：' + ((e && e.message) || e)); });
+  });
   $('#browseList').addEventListener('click', function (e) {
     var it = e.target.closest ? e.target.closest('.brow-item') : null;
     if (!it) return;

@@ -94,8 +94,17 @@ class FakeWebDav:
                 rng = self.headers.get("Range") or ""
                 if rng.startswith("bytes="):
                     a, _, b = rng[6:].partition("-")
-                    s = int(a or 0)
-                    e = int(b) if b else len(data) - 1
+                    if a == "":                      # 后缀 Range：最后 N 字节
+                        s, e = max(0, len(data) - int(b)), len(data) - 1
+                    else:
+                        s = int(a)
+                        e = min(int(b), len(data) - 1) if b else len(data) - 1
+                    if s >= len(data):
+                        self.send_response(416)
+                        self.send_header("Content-Range", "bytes */%d" % len(data))
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
                     chunk = data[s:e + 1]
                     self.send_response(206)
                     self.send_header("Content-Range", "bytes %d-%d/%d" % (s, e, len(data)))

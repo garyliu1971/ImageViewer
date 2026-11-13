@@ -291,6 +291,11 @@ python web_backend.py --lan           # 局域网：手机/VLC 可访问，终�
 **刻意没做（后续阶段）**
 - 服务端 ffmpeg 转码 / remux（VM 太小，明确不做）；不支持的编码（HEVC / AC3 / avi / wmv…）只提示，不转。
 - mkv 内嵌字幕 / 多音轨切换；ASR 字幕（caption_engine）和翻译字幕（translation_engine）。
-- 云端书库（WebDAV 书架）里的视频：`<video src>` 带不了 Basic 认证头，需要 Service Worker 或后端中转，尚未设计。
+- 纯静态 /iv/ 页面（无本地后端）里 WebDAV 书架的视频：`<video src>` 带不了 Basic 头，仍未支持（后端模式已用中转解决，见上）。
 - 纯浏览器（file://）模式的续播点（没有落盘处）；音频文件仍提示"需桌面版"。
 - 没在真实手机 / Safari 上测过；`::cue` 字号百分比在不同浏览器表现略有差异。
+
+**补充（云端视频）**：后端模式下「磁盘路径」窗口新增「☁ 云端」开关，浏览后端已配置的 WebDAV（凭据与桌面版共用 `_webdav_`），
+点视频即播，同目录视频成列表，同主名字幕自动挂。字节经 `/api/remote/data` 流式中转（Range 透传、416 透传、按扩展名纠正 video/* 类型），
+Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authenticate。`/api/data` 的 `Cache-Control: max-age=60` 现在只加在视频上，图片行为不变。
+云端暂只开放视频（图 / 压缩包仍用书架）；云端视频没有续播点（续播接口只认本机路径）。
