@@ -266,3 +266,31 @@ python web_backend.py --lan           # 局域网：手机/VLC 可访问，终�
 - `core.autocrlf=true` + 无 `.gitattributes` 会把 `tests/fixtures/sample.pdf` 的 xref 偏移换行改坏
 - 本机多网卡（WSL `172.24.x`、WireGuard `10.0.0.2`、WLAN `192.168.1.x`）：`lan_ip()` 一般取对，但开全隧道 VPN 后要手动拼 URL
 - `tests/fixtures/` 已入库（18KB），但 `网页版测试样本/`、`网页版预览*.png`、`web_backend.log/.pid` 都在 gitignore 里
+
+
+---
+
+## 12. 视频播放 Phase 1（`feature/iv-video`，2026-11-13）
+
+**做了什么**
+- 后端 `/api/data` 改成流式 + 真 HTTP Range：无 Range 回 200；`Range: bytes=a-b / a- / -N` 回 206 + `Content-Range`；
+  越界 / 非法回 416 + `Content-Range: bytes */size`；永远带 `Accept-Ranges: bytes`。不再把整段读进内存。
+  视频 Content-Type 显式映射（mp4/m4v/webm/ogv/mov/mkv/avi…，`VIDEO_MIME`）。`?range=bytes=a-b` 旧写法仍兼容。
+- `media_source.VIDEO_EXTS` 补上 `.ogv`（桌面版也受益）。仍然只能读白名单扩展名，token 校验不变。
+- 新接口 `/api/subtitle?path=<视频>`（列同主名旁挂字幕 .srt/.vtt/.ass/.ssa）、`&name=` 取字节（只能取列出来的纯文件名，防穿越）。
+- 新接口 `/api/videoresume`（GET/PUT）：续播点写桌面版同一个 `_video_resume_`（key = 规范化绝对路径，值 = 毫秒，开头 / 结尾 3 秒不记），没有新建存储。
+- 前端：全屏播放层 `#vplayer`（`<video controls playsinline>`）：倍速、画中画（浏览器支持才显示）、上一个 / 下一个（同目录视频当播放列表）、
+  字幕下拉 / 载入本地字幕 / 字幕大小；`canPlayType` 判断 + `error` 事件给中文提示（"仍然尝试播放"可绕过 canPlayType 误判）。
+- 入口：后端「按磁盘路径打开」里点视频文件；路径框输入视频路径；打开只含视频的目录；拖放 / 「图片/视频」按钮选本地视频（blob URL，不上传后端，可同时选字幕）。
+- 字幕转换在 `IVCore`（纯函数，Node 可测）：`srtToVtt`（BOM / CRLF / 逗号→点 / 补 3 位毫秒 / 去 `<font>` `{\an8}`）、`assToVtt`（只取 Dialogue 文本）、
+  `decodeSubtitle`（UTF-8 / UTF-16 BOM → 严格 UTF-8 → GBK 回退）。
+
+**测试**：`python -m unittest tests.test_web_backend`（新增 `TestVideoServing` 14 项）、`node --test tests/web_core.test.mjs`（新增 5 项）、
+`node tests/web_video_e2e.mjs`（真 Chrome + 真后端，19 项；样本 webm 由页面 MediaRecorder 现录，无需 ffmpeg）。
+
+**刻意没做（后续阶段）**
+- 服务端 ffmpeg 转码 / remux（VM 太小，明确不做）；不支持的编码（HEVC / AC3 / avi / wmv…）只提示，不转。
+- mkv 内嵌字幕 / 多音轨切换；ASR 字幕（caption_engine）和翻译字幕（translation_engine）。
+- 云端书库（WebDAV 书架）里的视频：`<video src>` 带不了 Basic 认证头，需要 Service Worker 或后端中转，尚未设计。
+- 纯浏览器（file://）模式的续播点（没有落盘处）；音频文件仍提示"需桌面版"。
+- 没在真实手机 / Safari 上测过；`::cue` 字号百分比在不同浏览器表现略有差异。
