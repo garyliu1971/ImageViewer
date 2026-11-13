@@ -55,7 +55,7 @@ SERVABLE = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS | ARCHIVE_EXTS | PDF_EXTS
 # 这些接口拿的是「本机磁盘路径」，必须先过白名单；/api/remote/* 走的是网盘路径
 # （可能是目录、也可能是远端任意文件名），不能套本地这条规则。
 LOCAL_PATH_ROUTES = {"/api/archive", "/api/data", "/api/thumb", "/api/pdf", "/api/pdfpage",
-                     "/api/subtitle"}
+                     "/api/subtitle", "/api/videoresume"}
 
 # 视频：Content-Type 显式给出（Windows 的 mimetypes 读注册表，不可靠）。
 # BROWSER_VIDEO_EXTS 是主流浏览器原生能播的容器（里面的编码仍可能不支持，由前端 canPlayType / error 事件判断）；
@@ -439,6 +439,39 @@ def progress_save(book_key, record):
     cfg[book_key] = record
     config_store.save_config(CONFIG_PATH, cfg)
     return True
+
+
+# 视频续播点：和桌面版共用 image_viewer.json 里的 "_video_resume_"（key = 规范化绝对路径，值 = 毫秒）
+VIDEO_RESUME_KEY = "_video_resume_"
+RESUME_MIN_MS = 3000          # 与桌面版一致：开头 3 秒内 / 结尾 3 秒内不记
+
+
+def _resume_key(path):
+    return os.path.normcase(os.path.abspath(path))
+
+
+def video_resume_get(path):
+    pos = (progress_store().get(VIDEO_RESUME_KEY) or {}).get(_resume_key(path))
+    return int(pos) if isinstance(pos, (int, float)) and pos > 0 else None
+
+
+def video_resume_save(path, position_ms, length_ms=0):
+    """记下 / 清除续播点。返回写入后的值（None = 已清除）。只改 _video_resume_ 下这一项。"""
+    cfg = config_store.load_config(CONFIG_PATH)
+    resumes = cfg.get(VIDEO_RESUME_KEY)
+    if not isinstance(resumes, dict):
+        resumes = cfg[VIDEO_RESUME_KEY] = {}
+    key = _resume_key(path)
+    pos = int(position_ms or 0)
+    length = int(length_ms or 0)
+    if pos > RESUME_MIN_MS and (length <= 0 or pos < length - RESUME_MIN_MS):
+        resumes[key] = pos
+        out = pos
+    else:
+        resumes.pop(key, None)
+        out = None
+    config_store.save_config(CONFIG_PATH, cfg)
+    return out
 
 
 def capabilities():
@@ -826,6 +859,10 @@ class Handler(BaseHTTPRequestHandler):
             scale = float((q.get("scale") or ["2.0"])[0])
             data = pdf_render(path, page, scale)
             return self._bytes(data, "image/png", extra={"Cache-Control": "private, max-age=300"})
+        if route == "/api/videoresume":
+            if ext_of(path) not in VIDEO_EXTS:
+                raise PermissionError("不允许读取该文件")
+            return self._json({"ok": True, "ms": video_resume_get(path)})
         if route == "/api/progress":
             return self._json({"ok": True, "path": CONFIG_PATH.replace("\\", "/"),
                                "books": progress_store()})
@@ -908,6 +945,13 @@ class Handler(BaseHTTPRequestHandler):
                     return self._err("缺少 key")
                 progress_save(key, body.get("record") or {})
                 return self._json({"ok": True})
+            if route == "/api/videoresume":
+                body = self._read_json_body()
+                vpath = str(body.get("path") or "")
+                if ext_of(vpath) not in VIDEO_EXTS or not is_servable(vpath):
+                    raise PermissionError("不允许读取该文件")
+                ms = video_resume_save(vpath, body.get("ms"), body.get("length"))
+                return self._json({"ok": True, "ms": ms})
             if route == "/api/upload":
                 name = (q.get("name") or ["file"])[0]
                 mtime = (q.get("mtime") or ["0"])[0]

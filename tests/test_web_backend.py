@@ -349,6 +349,28 @@ class TestVideoServing(FixtureCase):
         self.assertEqual(kinds["电影.mp4"], "video")
         self.assertEqual(kinds["x.mkv"], "video")
 
+    def test_resume_roundtrip_shares_desktop_key(self):
+        u = self.base + "/api/videoresume?path=" + urllib.parse.quote(self.mp4)
+        self.assertEqual(json.loads(http_get(u, self.token)[2])["ms"], None)
+        st, _ = http_put(u, {"path": self.mp4, "ms": 65000, "length": 600000}, self.token)
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(http_get(u, self.token)[2])["ms"], 65000)
+        # 与桌面版同一个字段：_video_resume_[规范化绝对路径] = 毫秒
+        self.assertEqual(wb.progress_store()["_video_resume_"][os.path.normcase(os.path.abspath(self.mp4))], 65000)
+        # 别的 key 不被碰
+        wb.progress_save("book", {"index": 3})
+        http_put(u, {"path": self.mp4, "ms": 70000, "length": 600000}, self.token)
+        self.assertEqual(wb.progress_store()["book"]["index"], 3)
+        # 快到结尾 / 开头 3 秒内 -> 清除
+        http_put(u, {"path": self.mp4, "ms": 598000, "length": 600000}, self.token)
+        self.assertIsNone(wb.video_resume_get(self.mp4))
+
+    def test_resume_rejects_non_video(self):
+        u = self.base + "/api/videoresume?path=" + urllib.parse.quote(os.path.join(self.book, "00_cover.png"))
+        self.assertEqual(http_get(u, self.token)[0], 400)
+        st, _ = http_put(u, {"path": os.path.join(self.book, "00_cover.png"), "ms": 9000}, self.token)
+        self.assertEqual(st, 400)
+
     def test_sidecar_subtitles_list_and_read(self):
         _write(os.path.join(self.vdir, "电影.srt"), ("1" + chr(10) + "00:00:01,000 --> 00:00:02,000" + chr(10) + "你好" + chr(10)).encode("utf-8"))
         _write(os.path.join(self.vdir, "电影.zh.vtt"), b"WEBVTT")
