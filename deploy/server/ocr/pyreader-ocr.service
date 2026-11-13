@@ -1,0 +1,24 @@
+[Unit]
+Description=PyReader / ImageViewer OCR proxy (DashScope)
+After=network-online.target
+
+[Service]
+User=pyreader-ocr
+Group=pyreader-ocr
+# DASHSCOPE_API_KEY=... lives ONLY here (root:pyreader-ocr 0640 or root 0600 with systemd reading it); never in git.
+EnvironmentFile=/etc/pyreader-ocr/env
+Environment=OCR_TOKENS_FILE=/etc/pyreader-ocr/tokens.json
+ExecStart=/usr/bin/python3 /opt/pyreader-ocr/server.py
+Restart=on-failure
+RestartSec=3
+StateDirectory=pyreader-ocr
+CacheDirectory=pyreader-ocr
+MemoryMax=200M
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/pyreader-ocr /var/cache/pyreader-ocr
+
+[Install]
+WantedBy=multi-user.target

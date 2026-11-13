@@ -25,7 +25,7 @@ python deploy/build_iv_static.py            # -> dist/iv-static/ 和 dist/iv-sta
 
 目录内容：`index.html`（= `image-viewer.html` 改名）、`manifest.webmanifest`、`sw.js`（`__BUILD__` 已换成内容哈希）、
 `icons/*.png`、`vendor/pdfjs/`（pdf.js 4.10.38 legacy 构建 + cmaps + 标准字体 + 许可证，共 188 个文件约 3.6MB，**原样字节**拷贝，
-不做换行转换；来源和 SHA-256 见仓库里的 `vendor/pdfjs/README.md` / `SHA256SUMS`）。图标是 `deploy/make_pwa_icons.py` 生成并已提交的，平时不用重跑。
+不做换行转换；来源和 SHA-256 见仓库里的 `vendor/pdfjs/README.md` / `SHA256SUMS`）、`vendor/libarchive/`（libarchive.js 2.0.2 + wasm，约 1.1MB，同样原样拷贝，见第 7f 节）。图标是 `deploy/make_pwa_icons.py` 生成并已提交的，平时不用重跑。
 `--out <目录>` 只接受不存在的新目录、空目录，或本脚本上次生成的目录（里面有 `.iv-static-build` 标记，不会进 .tgz）；
 别的有内容的目录（例如仓库里的 `deploy/`、`tests/`）会被拒绝，什么都不删。build 号只看内容，不受 CRLF / LF 检出影响。
 
@@ -185,7 +185,7 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
 
 - **不用改 SFTPGo / Caddy / CSP**：目录列表就是书架那一次 `PROPFIND`（Depth:1，只要 `/library` 的 list 权限），书架列过的文件夹直接缓存复用，不再发请求。
   用 `#open=` 链接打开的书，第一次用到（按钮 / 读到最后一页）才去列它的父文件夹（一个 PROPFIND）。换账号 / 忘记账号 / 点书架「刷新」会清掉这份缓存（换之前还在路上的列目录请求，回来也会被丢掉，不会把旧账号的目录写回缓存）。
-- **rar / cbr 不能打开**：浏览器没法随机读取 rar，`#open=` 指向 rar 会提示「请先转成 cbz 再上传」（目前没有现成的转换工具；rar 支持是另一件事，还没做）。
+- **rar / cbr / 7z / cb7 / tar / cbt / tgz（tar.gz）能打开**：浏览器没法随机读取这些格式，所以整本下载（带进度，仍带 `Authorization`，不发 Range）再交给 libarchive.js（WASM）解压，见第 7f 节。书架里列出，`#open=` / 上一本下一本 / 进度同步和 zip 一样。
 - **pdf**：书架里会列出，点开就读（pdf.js，见第 7d 节）；`#open=` 指向 pdf 时走 `openDavBook` 里的扩展名分流，进度条 / 云端续读 / 401 重输账号和 zip 完全一样。
 - 只在 http(s) 的 `/iv/` 页面、且没连本地后端（`web_backend.py`）时出现；`file://` 和后端模式下按钮不显示，原有流程不变。
 
@@ -207,7 +207,7 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
 - **手机内存**：每页渲染成一张 JPEG（共用一个 canvas，渲染完立刻清零）；面积上限 触屏 / 小屏 600 万像素（A4 约 250dpi）、低内存设备 400 万、桌面 1200 万，
   最长边 ≤ 4000。比例只由页面尺寸决定，窗口旋转 / 缩放不会让已渲染的页作废。pdf.js 的 worker 会按文件大小分配缓冲，
   手机上超过约 300MB 的 PDF 会给出内存提示。
-- **CSP 取舍（唯一可选的放宽，默认不做）**：JPEG2000（`JPXDecode`）图片的解码器是内嵌在 worker 里的 WebAssembly，
+- **CSP 取舍（现在已因 7f 放宽；以下是放宽前的取舍）**：JPEG2000（`JPXDecode`）图片的解码器是内嵌在 worker 里的 WebAssembly，
   需要 `script-src` 里有 `'wasm-unsafe-eval'`；没有它这类图片会显示空白，**其余内容（文字 / JPEG / 扫描页里的普通图）都不受影响**。
   JPX 常见于 archive.org 一类的扫描书，别处很少见。如果你真的遇到：把 `Caddyfile.iv.snippet` 里的
   `script-src 'self' 'unsafe-inline'` 改成 `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'`（`tests/web_e2e.mjs` 的 CSP 直接读这个文件，会同步）。
@@ -226,12 +226,43 @@ curl -s -D - -o /dev/null -u "$U" -H "Range: bytes=0-0" -H "Accept-Encoding: gzi
 - **书签**：存在每本书的进度记录里（浏览器本地）；云端的书同时写进进度 JSON 的 `bm` 字段（和读到哪页同一个文件，`users/gary/iv-progress/<hash>.json`）。
   旧版本写的进度没有 `bm`，读写都兼容；合并规则是「按书签 id 取最后改动的一条、删除留墓碑 60 天」，两台设备各加各的不会互相覆盖。每本书最多 200 条（约 20–40KB 的 JSON）——
   如果以后给进度账号加了「单文件 16KiB」之类的限制，要么放宽、要么把上限调小（`BM_MAX`）。
-- **朗读**：只读**带文字层**的 PDF（OCR 过的）。纯扫描图片的 PDF 没有文字，读不了（连续 3 页没有文字会停下并提示）。文字由 pdf.js 在浏览器里取出并整理（去页眉页脚 / 脚注 / 注号，拼段落、切句、跨页的半句拼成一句），
+- **朗读**：只读**带文字层**的 PDF（OCR 过的）。纯扫描图片的 PDF 没有文字层：连续 3 页没有文字会停下并提示，可改用下面 7g 的 **AI 朗读**。文字由 pdf.js 在浏览器里取出并整理（去页眉页脚 / 脚注 / 注号，拼段落、切句、跨页的半句拼成一句），
   不会上传整本书。
   - 在线语音：浏览器直接 `POST /tts/v1/speak`（和 PyReader 同一个服务、同一种 Bearer 令牌；令牌在「朗读设置」里填，只存这台设备的 localStorage，和 `/reader/` 的设置互相独立）。一次一句（≤200 字），预读 4 句。
     **每句话都会发给服务器再转发给 Azure / edge-tts**，所以设置里要勾选同意；用的是 Azure F0 额度（和 PyReader 共用）。
   - 本机语音：浏览器自带的 `speechSynthesis`，免费、不出本机；没有中文语音的浏览器（部分国产浏览器 / 无头环境）会提示改用在线语音。
   - 手机浏览器要求「点一下才能出声」：第一次点 ▶ 或按 V 时已经处理（在点击里先解锁 `<audio>`）；锁屏 / 切后台后系统可能暂停播放，这是浏览器限制。
+
+## 7f. 读 rar / cbr / 7z / cb7 / tar / cbt / tgz（libarchive.js，WASM，在浏览器里解压）
+
+- **部署**：多了 `/iv/vendor/libarchive/`（`libarchive.js` 8KB + `worker-bundle.js` 62KB + `libarchive.wasm` 1.0MB + 许可证；build 脚本自动带上，第 1 步）。
+  **VM 只发静态文件，不做任何服务端解压，SFTPGo / WebDAV 不用动。**
+- **唯一要改的 Caddy 配置（只在 `/iv/*` 块里的 CSP 那一行）**：`script-src 'self' 'unsafe-inline'` 改成 `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'`，即
+  ```
+  header Content-Security-Policy "default-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+  ```
+  然后 `caddy validate` + reload。`wasm-unsafe-eval` 只允许编译 WebAssembly，不开放 JS 的 `eval`；`/reader/` 等其它块不动。
+  没改的话：zip / cbz / epub / pdf 完全不受影响，打开 rar / 7z / tar 时提示里会写「CSP 需要 wasm-unsafe-eval」。
+  （同一条放宽顺带让 pdf.js 能解 JPEG2000 图片，见 7d。）`.wasm` 要以 `application/wasm` 发出（`file_server` 默认就是）。
+- **懒加载 + 缓存**：只有打开这类书时才 `import()` 它；service worker 把用到的文件存进独立的 `iv-vendor-libarchive-2.0.2` 缓存（不预缓存；清理旧缓存只动 `iv-` 前缀）。升级时改 `sw.js` 里的 `LIBARCHIVE_VER`。
+- **内存 / 速度（要有预期）**：libarchive.js 2.0.2 把整个压缩包读进 wasm 内存，约占文件大小的 2～3 倍；超过 300MB 先提示。按页解压是「每页从头扫一遍条目」：
+  非 solid 的 rar / 7z / tar 单页很快；**solid 压缩**（rar 的 solid、7z 默认）要把前面的数据也解出来，越靠后的页越慢；大书建议转成 cbz。
+  换书 / 关书时 worker 被终止、wasm 堆整块释放，页面的 `blob:` 地址一起 revoke。
+- **不支持**：有密码的压缩包（提示「暂不支持」）；tar 里非 UTF-8（如 GBK）的文件名可能乱码；单个 `.gz`（只认 `.tar.gz` / `.tgz`）。
+
+
+## 7g. AI 朗读（🤖，无文字层的扫描 PDF）
+
+- **作用**：PDF 打开后抽样第 1 / 中间 / 末页，**三页都没有文字层**才在工具栏出现 🤖。开启后朗读的取页换成：pdf.js 把页面渲染到离屏 canvas → 合页（宽/高 ≥ 1.1）按墨迹找装订线切成右叶 / 左叶
+  （40%-60% 宽度内找最空的一列，找不到就固定中点；每叶外扩 2%）→ 每叶缩到长边 ≤ 2000px、JPEG 质量 0.85（超过 1.1MB 逐级降质量 / 缩小）→ `POST /ocr/v1/page` →
+  文字（竖排古籍先右叶后左叶；横排相反）→ 和有文字层的页走同一条朗读管线（切句 / 引擎 / 翻页不变，语音引擎选择也不变）。读第 N 页时后台预取 N+1、N+2（最多 2 个请求同时在飞）；翻页 / 停止会中止还在飞的请求。
+- **部署**：页面照常发布；**CSP 不用改**（`connect-src 'self'` 已含同源 `/ocr/v1/*`）；服务端见 `deploy/server/`（`pyreader-ocr` + Caddy `handle_path /ocr/*`）。service worker 只处理 `/iv/` 下的 GET，POST / 带 `Authorization` 的 `/ocr` 请求不会被拦截或缓存。
+- **本机后端模式**（`启动网页版.bat` / `web_backend.py`）：浏览器不能跨域直连线上，`web_backend.py` 把 `/ocr/v1/{page,usage}` 原样转给线上（和 `/tts/v1/*` 同一个 `IV_TTS_BASE`，Authorization 透传不保存；`/ocr` 的请求体上限 2MB，`/tts` 仍是 8KB，转发超时 45s）。
+- **同意与令牌**：令牌就是「朗读设置」里的在线语音令牌。首次点 🤖 弹一次性同意框（页面图片将发送到阿里云（通义千问）识别文字），同意存在 `localStorage['iv.tts.v1'].aiConsent`（和逐句朗读的 `consent` 是两份）；没同意 / 没令牌不发任何请求；设置里可撤回。
+- **注文**：服务端把双行小注写成 `【注：……】`，默认照读；设置里勾「跳过注文」只在朗读时去掉（缓存里保留原文，切换不用重新识别）。
+- **缓存**：IndexedDB `iv-ocr`（key = 书 + 页 + 版面 + 模型 + promptVer；最多 3000 页，超了删最旧），打不开（隐私模式）自动退回内存；设置里「清除识别缓存」。每页识别只在缓存没有时才请求，已识别的页重读 / 重开页面零请求。
+- **失败**：网络 / 502 / 504 退避 1s、3s 各重试；429 按 `Retry-After`（≤ 60s）重试；`401 / 403 / daily_cap / monthly_cap` 整体停止并说明原因；`422 refused` 等只跳过这一页（提示「第 N 页识别失败：原因」），连续 3 页没有结果才停；🔄 重新识别这一页（跳过缓存）。
+- **用量**：朗读条显示「今日 x/300」，设置框显示今日 / 本月页数（`GET /ocr/v1/usage`）。
 
 ## 8. 回滚 / 下线
 

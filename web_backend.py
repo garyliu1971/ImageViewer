@@ -541,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_html()
         if u.path.startswith("/vendor/pdfjs/"):
             return self._serve_pdfjs(u.path)
-        if u.path.startswith("/tts/v1/"):
+        if u.path.startswith(("/tts/v1/", "/ocr/v1/")):
             return self._tts_relay(u.path)
         if u.path == "/api/ping":
             return self._json({"ok": True, "token": self.token, **capabilities()})
@@ -555,31 +555,45 @@ class Handler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         return self.do_GET()
 
+    # 本机页面 -> 线上服务的中转白名单：前缀 -> (允许的接口名, POST 体上限字节, 超时秒)
+    _RELAYS = {
+        "/tts/v1/": (("speak", "voices", "usage"), 8192, 30),
+        "/ocr/v1/": (("page", "usage"), 2 * 1024 * 1024, 45),     # AI 朗读：一页 JPEG 的 base64，最大约 1.6MB
+    }
+
     def _tts_relay(self, route):
-        """本机页面的在线朗读中转：浏览器不能跨域直连线上 /tts/（线上不回 CORS 预检），
-        所以由本地后端把 /tts/v1/{speak,voices,usage} 原样转给线上 PyReader TTS 服务。
-        令牌就是请求里的 Authorization，后端不保存、不检查；只放行这三条路径，请求体 ≤ 8KB。"""
-        name = route[len("/tts/v1/"):]
-        if name not in ("speak", "voices", "usage"):
+        """本机页面的线上服务中转（/tts/v1/* 在线朗读、/ocr/v1/* AI 朗读识别页面）：浏览器不能跨域直连线上（线上不回 CORS 预检），
+        所以由本地后端把请求原样转给线上 PyReader 服务。令牌就是请求里的 Authorization，后端不保存、不检查；
+        只放行白名单里的接口；请求体上限按路由区分（tts 8KB，ocr 2MB），其余限制不变。"""
+        prefix = next((p for p in self._RELAYS if route.startswith(p)), None)
+        if prefix is None:
+            return self._err("未知接口 %s" % route, 404)
+        names, max_body, timeout = self._RELAYS[prefix]
+        name = route[len(prefix):]
+        if name not in names:
             return self._err("未知接口 %s" % route, 404)
         import urllib.request
         base = (os.environ.get("IV_TTS_BASE") or TTS_BASE).rstrip("/")
         n = int(self.headers.get("Content-Length") or 0) if self.command == "POST" else 0
-        if n > 8192:
+        if n > max_body:
+            self.close_connection = True          # 体没读：别让残留字节被当成下一个请求
             return self._err("请求太大", 413)
         data = self.rfile.read(n) if n else None
         req = urllib.request.Request(
-            "%s/tts/v1/%s" % (base, name), data=data, method=self.command,
+            "%s%s%s" % (base, prefix, name), data=data, method=self.command,
             headers={"Authorization": self.headers.get("Authorization", ""),
                      "Content-Type": self.headers.get("Content-Type", "application/json")})
+        extra = {"Cache-Control": "no-store"}
         try:
-            with urllib.request.urlopen(req, timeout=30) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 body, code, ctype = r.read(), r.status, r.headers.get("Content-Type", "application/octet-stream")
         except urllib.error.HTTPError as e:
             body, code, ctype = e.read(), e.code, e.headers.get("Content-Type", "application/json")
+            if e.headers.get("Retry-After"):
+                extra["Retry-After"] = e.headers.get("Retry-After")        # 429 的等待时间要让页面看到
         except Exception as e:
-            return self._err("在线朗读服务连不上：%s: %s" % (type(e).__name__, e), 502)
-        return self._bytes(body, ctype, code, extra={"Cache-Control": "no-store"})
+            return self._err("线上服务连不上：%s: %s" % (type(e).__name__, e), 502)
+        return self._bytes(body, ctype, code, extra=extra)
 
     def _serve_pdfjs(self, path):
         """只读托管 vendor/pdfjs（浏览器端 pdf.js 要用）：限定在该目录内，拒绝 .. 穿越。"""
@@ -740,7 +754,7 @@ class Handler(BaseHTTPRequestHandler):
         self._write(urlparse(self.path).path, parse_qs(urlparse(self.path).query))
 
     def _write(self, route, q):
-        if route.startswith("/tts/v1/") and self.command == "POST":
+        if route.startswith(("/tts/v1/", "/ocr/v1/")) and self.command == "POST":
             return self._tts_relay(route)
         if not self._ok_token(q):
             return self._err("缺少 token", 403)

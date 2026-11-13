@@ -818,8 +818,8 @@ test('书架：parsePropfind / shelfSplit / 面包屑', () => {
   assert.equal(es[1].mtime, Date.parse('2026-11-07T08:00:00Z')); assert.equal(es[2].mtime, null);
   const sp = C.shelfSplit(es);
   assert.deepEqual(sp.dirs.map((e) => e.name), ['第二卷']);
-  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz', 'x.pdf']);   // 自然排序，隐藏文件不列；pdf 和 zip 系一样列出来
-  assert.equal(sp.other, 1);                                                                          // y.rar 只计数
+  assert.deepEqual(sp.books.map((e) => e.name), ['a b#1.epub', 'a&b.zip', 'vol2.cbz', 'vol10.cbz', 'x.pdf', 'y.rar']);   // 自然排序，隐藏文件不列；pdf / rar（libarchive.js 读）和 zip 系一样列出来
+  assert.equal(sp.other, 0);
 
   // 不带前缀的 XML、绝对 URL 的 href、小写前缀
   const x2 = '<multistatus xmlns="DAV:"><response><href>https://h.example/library/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>' +
@@ -873,36 +873,37 @@ const volList = (xml, dir) => C.volEntries(dir, C.shelfSplit(C.parsePropfind(xml
 
 test('volEntries：书架的书 -> 带 rel / ext 的列表（保持顺序，扩展名转小写，没有扩展名也不崩）', () => {
   const es = volList(SFTPGO_XML, '小说');
-  // 书架只列 epub / cbz / zip / pdf；rar 只计数，文件夹和隐藏文件不在书里
-  assert.deepEqual(es.map((e) => e.name), ['a & b (1).pdf', 'vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
-  assert.deepEqual(es.map((e) => e.ext), ['pdf', 'cbz', 'cbz', 'epub']);
-  assert.equal(es[1].rel, '小说/vol 2.CBZ'); assert.equal(es[1].isDir, false); assert.equal(es[3].size, 27483419);
+  // 书架列 epub / cbz / zip / pdf / rar 系；文件夹和隐藏文件不在书里
+  assert.deepEqual(es.map((e) => e.name), ['a & b (1).pdf', 'vol 1.rar', 'vol 2.CBZ', 'vol 10.cbz', 'チ。-关于地球的运动- - 卷01.epub']);
+  assert.deepEqual(es.map((e) => e.ext), ['pdf', 'rar', 'cbz', 'cbz', 'epub']);
+  assert.equal(es[2].rel, '小说/vol 2.CBZ'); assert.equal(es[2].isDir, false); assert.equal(es[4].size, 27483419);
+  assert.equal(C.volEntries('d', [{ name: 'x.tar.gz', size: 1 }])[0].ext, 'tgz');             // .tar.gz 的扩展名折成 tgz；单独的 .gz 不是书（shelfSplit 不列）
   assert.equal(C.volEntries('', [{ name: 'a.zip', size: 1 }])[0].rel, 'a.zip');           // 书库根：rel 不带前导 /
   assert.equal(C.volEntries('d', [{ name: 'noext', size: null }])[0].ext, '');
   assert.deepEqual(C.volEntries('d', []), []); assert.deepEqual(C.volEntries('d', null), []);
 });
 
 test('libClassify / libOpenable / libBooks', () => {
-  for (const e of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr']) assert.equal(C.libClassify(e), e);
+  for (const e of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz']) assert.equal(C.libClassify(e), e);
   assert.equal(C.libClassify('.CBZ'), 'cbz'); assert.equal(C.libClassify('EPUB'), 'epub');
-  for (const e of ['txt', 'mobi', '7z', '', null, undefined, 'cbz2']) assert.equal(C.libClassify(e), 'other', String(e));
-  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other'].map(C.libOpenable), [true, true, true, true, false, false, false]);
+  for (const e of ['txt', 'mobi', 'gz', '', null, undefined, 'cbz2']) assert.equal(C.libClassify(e), 'other', String(e));
+  assert.deepEqual(['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz', 'other'].map(C.libOpenable), [...Array(11).fill(true), false]);
   const mixed = [{ name: 'd', rel: 'd', isDir: true, ext: '' }, { name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.txt', rel: 'b.txt', ext: 'txt' },
     { name: 'c.cbr', rel: 'c.cbr', ext: 'cbr' }, { name: 'd.epub', rel: 'd.epub', ext: 'epub' }];
   assert.deepEqual(C.libBooks(mixed).map((e) => e.name), ['a.pdf', 'c.cbr', 'd.epub']);       // 文件夹和 txt 不算书
 });
 
 test('书架列出的书 = 换书能跳到的书（同一份「能打开」名单，不会出现书架有、换书却跳过）', () => {
-  const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak'];
+  const names = ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'g.txt', 'h.mobi', 'i.7z', 'noext', 'j.cbz.bak', 'k.tar.gz', 'l.gz'];
   const books = C.shelfSplit(names.map((name) => ({ name, isDir: false, size: 1 }))).books;
-  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf']);
+  assert.deepEqual(books.map((b) => b.name), ['a.epub', 'b.CBZ', 'c.zip', 'd.pdf', 'e.rar', 'f.cbr', 'i.7z', 'k.tar.gz']);
   const es = C.volEntries('', books);
   for (const e of es) assert.equal(C.libOpenable(C.libClassify(e.ext)), true, e.name);          // 书架上的每本，换书默认都放行
   assert.equal(C.nextBook(es, 'a.epub').name, 'b.CBZ');
   assert.equal(C.nextBook(es, 'b.CBZ').name, 'c.zip');
   assert.equal(C.nextBook(es, 'c.zip').name, 'd.pdf');                                           // pdf 和 zip 系一样能换过去
   // 反过来：libOpenable 放行的扩展名，书架一定列（两处不能各写各的）
-  for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', 'other']) {
+  for (const k of ['zip', 'cbz', 'epub', 'pdf', 'rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz', 'other']) {
     const listed = C.shelfSplit([{ name: 'x.' + k, isDir: false, size: 1 }]).books.length === 1;
     assert.equal(listed, C.libOpenable(k), k);
   }
@@ -913,24 +914,27 @@ test('libParentRel', () => {
   assert.equal(C.libParentRel('a'), ''); assert.equal(C.libParentRel(''), ''); assert.equal(C.libParentRel('a/b/'), 'a');
 });
 
-test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的（rar / cbr）', () => {
+test('nextBook / prevBook：同一文件夹相邻的书，跳过打不开的', () => {
   const R = (n) => '小说/' + n;
   const es = volList(SFTPGO_XML, '小说');
-  // 书架的书：a & b (1).pdf, vol 2.CBZ, vol 10.cbz, チ…卷01.epub
+  // 书架的书：a & b (1).pdf, vol 1.rar, vol 2.CBZ, vol 10.cbz, チ…卷01.epub
   assert.equal(C.nextBook(es, R('vol 2.CBZ')).name, 'vol 10.cbz');
   assert.equal(C.nextBook(es, R('vol 10.cbz')).ext, 'epub');
   assert.equal(C.nextBook(es, R('チ。-关于地球的运动- - 卷01.epub')), null);      // 最后一本
   assert.equal(C.prevBook(es, R('a & b (1).pdf')), null);                        // 第一本
-  assert.equal(C.prevBook(es, R('vol 2.CBZ')).ext, 'pdf');
+  assert.equal(C.prevBook(es, R('vol 2.CBZ')).ext, 'rar');
+  assert.equal(C.prevBook(es, R('vol 1.rar')).ext, 'pdf');
   assert.equal(C.prevBook(es, R('vol 10.cbz')).name, 'vol 2.CBZ');
   assert.equal(C.nextBook(es, '小说/不存在.cbz'), null);                            // 当前书不在列表里
   assert.equal(C.nextBook([], 'x.cbz'), null);
-  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：rar 跳过，pdf 默认放行；调用方传的 canOpen 说了算（例如 pdf 阅读器被关掉时不放行 pdf）
+  // 列表里夹着 rar / pdf（#open= 或别的来源给的完整列表）：rar / pdf 默认放行；调用方传的 canOpen 说了算（例如 pdf 阅读器被关掉时不放行 pdf，没有 WebAssembly 时不放行 rar 系）
   const full = [{ name: 'a.pdf', rel: 'a.pdf', ext: 'pdf' }, { name: 'b.rar', rel: 'b.rar', ext: 'rar' }, { name: 'c.cbz', rel: 'c.cbz', ext: 'cbz' },
     { name: 'd.cbz', rel: 'd.cbz', ext: 'cbz' }];
-  assert.equal(C.prevBook(full, 'c.cbz').name, 'a.pdf');
+  assert.equal(C.prevBook(full, 'c.cbz').name, 'b.rar');
   const noPdf = (e) => e.ext !== 'pdf' && C.libOpenable(C.libClassify(e.ext));
-  assert.equal(C.prevBook(full, 'c.cbz', noPdf), null);
+  assert.equal(C.prevBook(full, 'c.cbz', noPdf).name, 'b.rar');
+  const noPdfNoRar = (e) => noPdf(e) && e.ext !== 'rar';
+  assert.equal(C.prevBook(full, 'c.cbz', noPdfNoRar), null);
   assert.equal(C.nextBook(full, 'c.cbz').name, 'd.cbz');
 
 });
@@ -1527,4 +1531,370 @@ test('本机引擎：按文字选语言和声音、语速、cancel / 出错 / �
   const canceled = { getVoices: () => [], speak(u) { setTimeout(() => u.onerror({ error: 'canceled' }), 0); }, cancel() {} };
   assert.equal(await C.makeBrowserEngine({ synth: canceled, Utterance: U, getCfg: () => ({}) }).speak('甲。'), 'cancel');
   assert.equal(C.ttsRate('x'), 1); assert.equal(C.ttsRate(0.1), 0.5); assert.equal(C.ttsRate(9), 2.5);
+});
+
+/* ====================== rar / 7z / tar 系（libarchive.js）的纯逻辑 ====================== */
+
+test('archKind：rar / cbr / 7z / cb7 / tar / cbt / tgz / tar.gz（不分大小写）；zip 系、单个 .gz、别的都不是', () => {
+  const want = { 'a.rar': 'rar', 'A.CBR': 'rar', 'b.7z': '7z', 'b.CB7': '7z', 'c.tar': 'tar', 'c.cbt': 'tar', 'd.tgz': 'tgz', 'd.tar.gz': 'tgz', 'D.TAR.GZ': 'tgz', '小说/第1卷.cbr': 'rar' };
+  for (const [n, k] of Object.entries(want)) assert.equal(C.archKind(n), k, n);
+  for (const n of ['a.cbz', 'a.zip', 'a.epub', 'a.pdf', 'a.gz', 'a.tar.gz.bak', 'a.rar.txt', 'rar', 'a.7zip', '', null, undefined]) assert.equal(C.archKind(n), null, String(n));
+  assert.equal(C.ARCH_EXTS.test('x.cb7'), true);
+  assert.equal(C.ARCH_WARN_BYTES, 300 * 1024 * 1024);
+});
+
+test('桌面式扩展名表（DESKTOP_EXTS / classify 用）认得新增的后缀；zip 系的 ARCHIVE_EXTS 不变', () => {
+  for (const n of ['a.rar', 'a.cbr', 'a.7z', 'a.cb7', 'a.tar', 'a.cbt', 'a.tgz', 'a.tar.gz', 'a.gz', 'a.zip', 'a.cbz', 'a.pdf', 'a.epub']) assert.equal(C.DESKTOP_EXTS.test(n), true, n);
+  for (const n of ['a.cbr', 'a.7z', 'a.tar', 'a.tgz']) assert.equal(C.ARCHIVE_EXTS.test(n), false, n);      // 走 libarchive，不走 ZipReader
+  for (const n of ['a.zip', 'a.cbz', 'a.epub']) assert.equal(C.ARCHIVE_EXTS.test(n), true, n);
+  for (const e of ['rar', 'cbr', '7z', 'cb7', 'tar', 'cbt', 'tgz']) assert.ok(C.LIB_OPEN_KINDS.includes(e), e);
+});
+
+test('archPickImages：只留浏览器能显示的图片、丢元数据、自然排序、带 name', () => {
+  const ents = ['10.jpg', 'readme.txt', '03.png', '__MACOSX/._01.jpg', '01.jpg', 'dir/', 'Thumbs.db', '.hidden.png', 'sub/2.PNG', 'sub\\1.jpg', '/abs/9.webp', 'a.tif', 'b.svg', 'c.avif', 'x.heic']
+    .map((path, i) => ({ path, size: i, cf: { i } }));
+  const got = C.archPickImages(ents);
+  assert.deepEqual(got.map((e) => e.path), ['01.jpg', '03.png', '10.jpg', 'abs/9.webp', 'b.svg', 'c.avif', 'sub/1.jpg', 'sub/2.PNG']);
+  assert.deepEqual(got.map((e) => e.name).slice(0, 2), ['01.jpg', '03.png']);
+  assert.equal(got[0].cf.i, 4);                                                    // 其它字段原样带着
+  assert.deepEqual(C.archPickImages([]), []); assert.deepEqual(C.archPickImages(null), []);
+  assert.deepEqual(C.archPickImages([{ path: 'p2.jpg' }, { path: 'p10.jpg' }, { path: 'p1.jpg' }]).map((e) => e.path), ['p1.jpg', 'p2.jpg', 'p10.jpg']);
+});
+
+test('archErrorMessage：加密 / WebAssembly 被 CSP 拦 / 格式不支持 / 其它', () => {
+  assert.match(C.archErrorMessage(Object.assign(new Error('encrypted'), { encrypted: true })), /有密码/);
+  assert.match(C.archErrorMessage(new Error('Passphrase required for this entry')), /有密码/);
+  assert.match(C.archErrorMessage(new Error("WebAssembly.instantiate(): Refused to compile ... 'unsafe-eval'")), /wasm-unsafe-eval/);
+  assert.match(C.archErrorMessage(new Error('Unrecognized archive format')), /不是有效的压缩包/);
+  assert.equal(C.archErrorMessage(new Error('boom')), 'boom');
+  assert.equal(C.archErrorMessage(null), '未知错误');
+});
+
+test('fetchWhole：整本下载成 Blob，带 Authorization、不带 Range、报告进度；401 / 404 / 空文件带 status', async () => {
+  const body = Buffer.from('x'.repeat(100000));
+  const seen = [];
+  const mk = (status, data) => (u, init) => { seen.push({ u, init }); return Promise.resolve(new Response(data, { status, headers: data ? { 'Content-Length': String(data.length) } : {} })); };
+  const prog = [];
+  const b = await C.fetchWhole('https://h/library/a.cbr', { authHeader: () => 'Basic QQ==', fetch: mk(200, body), onProgress: (g, t) => prog.push([g, t]) });
+  assert.equal(b.size, 100000);
+  assert.equal(seen[0].init.headers.Authorization, 'Basic QQ=='); assert.equal(seen[0].init.headers.Range, undefined);
+  assert.equal(seen[0].init.credentials, 'omit'); assert.equal(seen[0].init.cache, 'no-store');
+  assert.ok(prog.length >= 1 && prog[prog.length - 1][0] === 100000 && prog[prog.length - 1][1] === 100000);
+  let authFail = 0;
+  for (const [st, code] of [[401, 'auth'], [403, 'forbidden'], [404, 'notfound'], [500, 'http']]) {
+    await assert.rejects(C.fetchWhole('u', { fetch: mk(st, st === 500 ? 'e' : 'no'), onAuthFail: () => authFail++ }), (e) => e.status === st && e.code === code);
+  }
+  assert.equal(authFail, 1);                                                        // 只有 401 触发 onAuthFail
+  await assert.rejects(C.fetchWhole('u', { fetch: (u, i) => Promise.resolve(new Response(new Uint8Array(0), { status: 200 })) }), (e) => e.code === 'empty');
+  const plain = await C.fetchWhole('u', { authHeader: 'Basic Z', fetch: () => Promise.resolve({ status: 200, headers: new Headers(), blob: () => Promise.resolve(new Blob(['abc'])) }) });
+  assert.equal(plain.size, 3);                                                      // 没有 body.getReader 的环境退回 blob()
+});
+
+/* ================= AI 朗读（无文字层 PDF → /ocr/v1/page）纯逻辑 ================= */
+
+test('AI 切叶：合页（宽/高 ≥ 1.1）才切，渲染比例让一叶长边约 2000', () => {
+  assert.equal(C.aiIsSpread(2570, 2160), true);
+  assert.equal(C.aiIsSpread(612, 792), false);
+  assert.equal(C.aiIsSpread(1000, 1000), false);                                    // 方形：不切
+  assert.equal(C.aiIsSpread(1100, 1000), true);
+  assert.equal(C.aiIsSpread(0, 0), false);
+  const sp = C.aiRenderPlan(1200, 1000), one = C.aiRenderPlan(612, 792);
+  assert.equal(sp.split, true); assert.equal(one.split, false);
+  assert.ok(Math.abs(1000 * sp.scale - 2000) < 1);                                   // 一叶 600x1000 → 高 2000
+  assert.ok(Math.abs(792 * one.scale - 2000) < 1);
+  const huge = C.aiRenderPlan(6000, 5000);
+  assert.ok(6000 * 5000 * huge.scale * huge.scale <= 36e6 * 1.001);                  // 总像素有上限
+});
+
+test('aiGutter：墨迹投影 40%-60% 内找谷底；谷不明显 / 没墨迹 / 谷在范围外 → 固定中点', () => {
+  const mk = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+  const valley = (a, b) => mk(1000, (i) => (i >= a && i < b ? 0 : 100));
+  assert.ok(Math.abs(C.aiGutter(valley(480, 520)) - 500) <= 1);                      // 居中的装订线
+  assert.ok(Math.abs(C.aiGutter(valley(430, 450)) - 440) <= 1);                      // 偏心的装订线：不是固定中点
+  assert.equal(C.aiGutter(mk(1000, () => 100)), 500);                                // 没有谷：中点
+  assert.equal(C.aiGutter(mk(1000, () => 0)), 500);                                  // 空白页：中点
+  assert.equal(C.aiGutter(valley(280, 320)), 500);                                   // 谷在 40%-60% 之外：当作没有
+  assert.equal(C.aiGutter(mk(1000, (i) => (i >= 480 && i < 520 ? 70 : 100))), 500);  // 谷底 / 平均 > 0.5：不明显
+  assert.equal(C.aiGutter([1, 2, 3]), 2);                                            // 太窄：中点（四舍五入）
+  // 从真实像素算：整页深色、47-52 列是白的
+  const w = 100, h = 10, px = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const o = (y * w + x) * 4, v = x >= 47 && x < 53 ? 255 : 30; px[o] = px[o + 1] = px[o + 2] = v; px[o + 3] = 255; }
+  const ink = C.aiColumnInk(px, w, h);
+  assert.equal(ink[10], 10); assert.equal(ink[50], 0);
+  assert.ok(Math.abs(C.aiGutter(ink) - 50) <= 1);
+});
+
+test('aiGutter（版框线）：两页版框几乎贴在一起时，字列之间的空白不是装订线；右页上别的竖线不会抢走', () => {
+  const H = 100;
+  const prof = (lines) => { const a = Array.from({ length: 1000 }, (_, i) => (i % 40 < 6 ? 0 : 30)); for (const [s0, e0] of lines) for (let i = s0; i <= e0; i++) a[i] = 90; return a; };   // 底：字列（每 40 列有 6 列空白缝）
+  assert.ok(Math.abs(C.aiGutter(prof([[476, 481], [496, 501]]), H) - 489) <= 1);         // 贴近的两道框线（间隙 14 列 = 1.4%）：中点 489，不是某条字缝
+  assert.ok(Math.abs(C.aiGutter(prof([[460, 465], [535, 540]]), H) - 500) <= 1);         // 宽间隙
+  assert.ok(Math.abs(C.aiGutter(prof([[460, 465], [500, 504], [620, 625]]), H) - 482.5) <= 1);   // 右页还有别的竖线：取中点离页中心最近的一对
+  const decoy = prof([[470, 474], [530, 534], [580, 584]]);
+  assert.ok(Math.abs(C.aiGutter(decoy, H) - 502) <= 1);                                      // (474,530) 中点 502 比 (534,580) 中点 557 近
+  assert.equal(C.aiGutter(prof([[300, 305]]), H), 500);                                      // 窗口里只有一条线：不成对 → 没有整段空白 → 固定中点
+  assert.equal(C.aiGutter(prof([[476, 481], [496, 501]])), 500);                             // 不给 h：不看框线，只剩 6 列空白缝（0.6% < 2%）→ 固定中点
+});
+
+test('aiLeafRects：竖排合页 = 右叶在前、左叶在后；横排相反；每叶向装订线外扩 2%', () => {
+  const r = C.aiLeafRects(1000, 800, 500, true);
+  assert.deepEqual(r.map((x) => x.leaf), ['R', 'L']);
+  assert.deepEqual([r[0].x, r[0].w], [480, 520]);                                    // 右叶 480..1000
+  assert.deepEqual([r[1].x, r[1].w], [0, 520]);                                      // 左叶 0..520
+  assert.equal(r[0].h, 800);
+  assert.deepEqual(C.aiLeafRects(1000, 800, 500, false).map((x) => x.leaf), ['L', 'R']);
+  const edge = C.aiLeafRects(1000, 800, 10, true);                                   // 装订线贴边：不越界
+  assert.ok(edge.every((x) => x.x >= 0 && x.x + x.w <= 1000));
+  assert.deepEqual(C.aiFitSize(4000, 2000, 2000), { w: 2000, h: 1000 });
+  assert.deepEqual(C.aiFitSize(800, 600, 2000), { w: 800, h: 600 });                // 不放大
+});
+
+test('aiEncode：先 q0.85 / 长边 2000；超过 1.1MB 逐级降质量、缩小；都不行 reject', async () => {
+  const calls = [];
+  const canvas = { width: 3000, height: 2400 };
+  const d = (sizeOf) => ({ resize: (c, w, h) => ({ width: w, height: h }), toBlob: (c, t, q) => { calls.push([c.width, c.height, q]); return Promise.resolve({ size: sizeOf(c, q) }); } });
+  let r = await C.aiEncode(canvas, d(() => 500 * 1024));
+  assert.deepEqual(calls[0], [2000, 1600, 0.85]);                                    // 超长边先缩到 2000
+  assert.equal(r.w, 2000); assert.equal(r.h, 1600); assert.equal(r.q, 0.85);
+  calls.length = 0;
+  r = await C.aiEncode(canvas, d((c, q) => (q >= 0.85 ? 1300 * 1024 : 900 * 1024)));  // 0.85 超限 → 0.75
+  assert.deepEqual(calls.map((c) => c[2]), [0.85, 0.75]); assert.equal(r.q, 0.75);
+  calls.length = 0;
+  r = await C.aiEncode(canvas, d((c) => (c.width > 1300 ? 2e6 : 100 * 1024)));        // 要缩到 ≤1280 才够
+  assert.ok(r.w <= 1280 && r.blob.size <= C.AI_MAX_BYTES);
+  await assert.rejects(C.aiEncode(canvas, d(() => 5e6)), (e) => e.code === 'toolarge');
+  const small = await C.aiEncode({ width: 800, height: 600 }, d(() => 1000));        // 小图不放大
+  assert.deepEqual([small.w, small.h], [800, 600]);
+});
+
+test('aiBuildRequest / aiPageId：JSON 体、Bearer 头、模式白名单、pageId 只含服务端允许的字符且不带书名', () => {
+  const rq = C.aiBuildRequest({ endpoint: 'https://h/ocr/v1/page', token: 'tok', b64: 'QUJD', mode: 'horizontal', pageId: 'a b/c:p1:R' });
+  assert.equal(rq.url, 'https://h/ocr/v1/page'); assert.equal(rq.init.method, 'POST');
+  assert.equal(rq.init.headers.Authorization, 'Bearer tok'); assert.equal(rq.init.headers['Content-Type'], 'application/json');
+  assert.equal(rq.init.credentials, 'omit');
+  const b = JSON.parse(rq.init.body);
+  assert.deepEqual(b, { image: 'QUJD', mime: 'image/jpeg', mode: 'horizontal', pageId: 'a_b_c:p1:R' });
+  assert.equal(JSON.parse(C.aiBuildRequest({ endpoint: 'u', token: 't', b64: 'x', mode: 'evil', pageId: 'p' }).init.body).mode, 'vertical-classical');
+  const id = C.aiPageId('dav:肉蒲团/第一卷.pdf', 57, 'R');
+  assert.match(id, /^b[0-9a-f]+:p57:R$/); assert.ok(!/肉|pdf/.test(id));
+});
+
+test('aiAdapt：各叶文字按顺序拼成 {paras, indentFirst:false, open:false}；页码残留丢弃；跳过注文可选', () => {
+  const t = ['右叶第一段，天地玄黄。\n右叶第二段【注：双行小注】。', '左叶：宇宙洪荒。\n12'];
+  const a = C.aiAdapt(t, {});
+  assert.deepEqual(Object.keys(a).sort(), ['indentFirst', 'open', 'paras']);
+  assert.deepEqual(a.paras, ['右叶第一段，天地玄黄。', '右叶第二段【注：双行小注】。', '左叶：宇宙洪荒。']);
+  assert.equal(a.indentFirst, false); assert.equal(a.open, false);
+  assert.deepEqual(C.aiAdapt(t, { skipNotes: true }).paras, ['右叶第一段，天地玄黄。', '右叶第二段。', '左叶：宇宙洪荒。']);
+  assert.equal(C.aiStripNotes('甲【注：a】乙【注：b，c】丙'), '甲乙丙');
+  assert.deepEqual(C.aiAdapt(['', '  ', '3'], {}).paras, []);                         // 空白页 / 只有页码 → 没有段落 = runner 当无文字页
+  assert.deepEqual(C.aiAdapt(null, {}).paras, []);
+});
+
+test('aiAdapt 的结果能直接喂 pageSentences / splitSentences（和文字层页同一条管线）', () => {
+  const pg = C.aiAdapt(['甲乙丙丁。戊己庚辛，壬癸子丑！'], {});
+  assert.deepEqual(C.pageSentences(pg, '', 150), ['甲乙丙丁。', '戊己庚辛，壬癸子丑！']);
+});
+
+test('aiClassify / aiBackoff：401 403 400/413/415 422 429(rate|busy|cap) 502 504 网络错误', () => {
+  const k = (s, b, h) => C.aiClassify(s, b, h);
+  assert.deepEqual([k(401).kind, k(401).fatal], ['auth', true]);
+  assert.deepEqual([k(403, { code: 'not_enabled' }).kind, k(403).fatal], ['forbidden', true]);
+  for (const s of [400, 413, 415]) { assert.equal(k(s).kind, 'badimage'); assert.equal(k(s).retry, false); assert.equal(k(s).fatal, false); }
+  assert.deepEqual([k(422, { code: 'refused' }).kind, k(422).retry, k(422).fatal], ['refused', false, false]);
+  const rl = k(429, { code: 'rate_limited', retryAfter: 2 }, '2');
+  assert.deepEqual([rl.kind, rl.retry, rl.retryAfter, rl.fatal], ['rate', true, 2, false]);
+  assert.equal(k(429, { code: 'busy' }).kind, 'rate');
+  assert.equal(k(429, { code: 'busy' }).retryAfter, 2);                              // 没给 Retry-After 也有默认
+  const dc = k(429, { code: 'daily_cap', retryAfter: 7200 }, '7200');
+  assert.deepEqual([dc.kind, dc.fatal, dc.retry], ['quota', true, false]); assert.match(dc.message, /今日.*2 小时/);
+  assert.match(k(429, { code: 'monthly_cap' }).message, /本月/);
+  assert.deepEqual([k(502).kind, k(502).retry], ['upstream', true]);
+  assert.deepEqual([k(504).kind, k(504).retry], ['timeout', true]);
+  assert.deepEqual([k(0).kind, k(0).retry], ['offline', true]);
+  assert.equal(k(418).retry, false);
+  assert.deepEqual([C.aiBackoff(k(502), 0), C.aiBackoff(k(502), 1), C.aiBackoff(k(502), 2)], [1000, 3000, -1]);   // 1s、3s 最多 2 次
+  assert.deepEqual([C.aiBackoff(rl, 0), C.aiBackoff(rl, 5), C.aiBackoff(rl, 6)], [2000, 2000, -1]);              // 429 按 Retry-After
+  assert.equal(C.aiBackoff(k(429, { code: 'rate_limited', retryAfter: 600 }), 0), -1);                           // 要等太久：放弃
+  assert.equal(C.aiBackoff(k(422), 0), -1); assert.equal(C.aiBackoff(null, 0), -1);
+});
+
+test('aiCacheKey：书 + 页 + 叶 + 模式 + 模型 + promptVer', () => {
+  const o = { bookKey: 'dav:x', pno: 3, leaf: 'P', mode: 'vertical-classical', model: 'm', promptVer: 1 };
+  assert.equal(C.aiCacheKey(o), 'dav:x|3|P|vertical-classical|m|1');
+  assert.notEqual(C.aiCacheKey(o), C.aiCacheKey(Object.assign({}, o, { promptVer: 2 })));
+  assert.notEqual(C.aiCacheKey(o), C.aiCacheKey(Object.assign({}, o, { model: 'n' })));
+  assert.equal(C.aiCacheKey({ bookKey: 'b', pno: 1, leaf: 'P', mode: 'x' }), 'b|1|P|x|' + C.AI_MODEL0 + '|' + C.AI_PROMPT_VER0);
+});
+
+/** 极简 IndexedDB 假实现（只支持缓存用到的 get / put / delete / clear / getAll），回调异步触发 */
+function fakeIdb(opts) {
+  const dbs = {}; opts = opts || {};
+  return {
+    opened: 0,
+    open(name) {
+      const rq = {}; this.opened++;
+      setTimeout(() => {
+        if (opts.failOpen) return rq.onerror && rq.onerror();
+        const first = !dbs[name]; dbs[name] = dbs[name] || new Map();
+        const store = dbs[name];
+        rq.result = { createObjectStore() {}, transaction() {
+          const t = {};
+          const mk = (fn) => { const r = {}; setTimeout(() => { if (opts.failTx) { t.onerror && t.onerror(); return; } r.result = fn(); t.oncomplete && t.oncomplete(); }, 0); return r; };
+          t.objectStore = () => ({
+            get: (k) => mk(() => store.get(k)), put: (v) => mk(() => { store.set(v.k, v); }),
+            delete: (k) => mk(() => { store.delete(k); }), clear: () => mk(() => { store.clear(); }), getAll: () => mk(() => [...store.values()]) });
+          return t;
+        } };
+        if (first && rq.onupgradeneeded) rq.onupgradeneeded();
+        rq.onsuccess && rq.onsuccess();
+      }, 0);
+      return rq;
+    }, _dbs: dbs };
+}
+
+test('makeAiCache：IndexedDB 读写 / 删除 / 清空 / 超限删最旧；换一个实例（模拟重开页面）仍命中', async () => {
+  const idb = fakeIdb();
+  const c1 = C.makeAiCache({ indexedDB: idb, max: 3, now: (() => { let n = 0; return () => ++n; })() });
+  assert.equal(await c1.get('k1'), null);
+  await c1.put('k1', ['甲']); await c1.put('k2', ['乙', '丙']);
+  assert.equal(c1.usingIdb, true);
+  const c2 = C.makeAiCache({ indexedDB: idb });                                       // 新实例：内存是空的，只能从 IndexedDB 读
+  assert.deepEqual(await c2.get('k2'), ['乙', '丙']);
+  await c2.remove('k1'); assert.equal(await C.makeAiCache({ indexedDB: idb }).get('k1'), null);
+  for (const k of ['a', 'b', 'c', 'd', 'e']) await c1.put(k, [k]);
+  await c1.trim(); await new Promise((r) => setTimeout(r, 10));                        // 假 IDB 的事务在第一个请求后就报完成，等剩下的删除跑完
+  assert.ok(idb._dbs['iv-ocr'].size <= 3);                                            // 超过 max 删最旧的
+  assert.ok(idb._dbs['iv-ocr'].has('e'));
+  await c1.clear(); assert.equal(idb._dbs['iv-ocr'].size, 0);
+});
+
+test('makeAiCache：没有 indexedDB / 打开失败 / 事务失败 → 退回内存，不抛异常', async () => {
+  for (const d of [{}, { indexedDB: fakeIdb({ failOpen: true }) }, { indexedDB: fakeIdb({ failTx: true }) }, { indexedDB: { open() { throw new Error('denied'); } } }]) {
+    const c = C.makeAiCache(d);
+    assert.equal(await c.get('x'), null);
+    await c.put('x', ['值']);
+    assert.deepEqual(await c.get('x'), ['值']);                                       // 同一会话内仍能命中
+    await c.remove('x'); assert.equal(await c.get('x'), null);
+    await c.clear();
+  }
+});
+
+/* ---- 取页控制器 ---- */
+function aiHarness(over) {
+  over = over || {};
+  const H = { reqs: [], status: [], fatal: [], usage: [], sleeps: [], cfg: { token: 'T', mode: 'vertical-classical', skipNotes: false }, reply: null };
+  H.cache = C.makeAiCache({});
+  H.meta = { model: 'qwen3.8-flash', promptVer: 1 };
+  H.fetch = (url, init) => {
+    const b = JSON.parse(init.body), n = H.reqs.length;
+    H.reqs.push({ url, auth: init.headers.Authorization, pageId: b.pageId, mode: b.mode, signal: init.signal, t: Date.now() });
+    const r = (H.reply || ((q) => ({ status: 200, body: { text: '文' + q.pageId, model: 'qwen3.8-flash', promptVer: 1, usage: { pagesToday: n + 1, pagesLimit: 300 } } })))(H.reqs[n], n);
+    return new Promise((res, rej) => {
+      const fin = () => { if (init.signal && init.signal.aborted) { const e = new Error('abort'); e.name = 'AbortError'; return rej(e); }
+        res({ ok: r.status >= 200 && r.status < 300, status: r.status, headers: new Headers(r.headers || {}), json: () => Promise.resolve(r.body) }); };
+      if (init.signal) init.signal.addEventListener('abort', () => { const e = new Error('abort'); e.name = 'AbortError'; rej(e); });
+      setTimeout(fin, r.delay || 1);
+    });
+  };
+  H.pager = C.createAiPager(Object.assign({
+    bookKey: 'dav:book', count: 10, fetch: H.fetch, endpoint: (p) => 'https://h/ocr/v1/' + p, getCfg: () => H.cfg, cache: H.cache, meta: H.meta,
+    render: (pno) => Promise.resolve(over.spread === false ? [{ leaf: 'S', b64: 'IMG' + pno }] : [{ leaf: 'R', b64: 'R' + pno }, { leaf: 'L', b64: 'L' + pno }]),
+    sleep: (ms) => { H.sleeps.push(ms); return new Promise((r) => setTimeout(r, 1)); },
+    onStatus: (p, k, i) => H.status.push([p, k, i]), onUsage: (u) => H.usage.push(u), onFatal: (c) => H.fatal.push(c) }, over.d || {}));
+  return H;
+}
+
+test('createAiPager：成功路径 —— 先右叶后左叶（竖排），Bearer 令牌，结果是 pdfPageParas 同形状，usage 回传', async () => {
+  const H = aiHarness();
+  const pg = await H.pager.getPage(3);
+  assert.deepEqual(H.reqs.map((r) => r.pageId.split(':').slice(1).join(':')), ['p3:R', 'p3:L']);   // 请求顺序：右叶在前
+  assert.ok(H.reqs.every((r) => r.auth === 'Bearer T' && r.url === 'https://h/ocr/v1/page' && r.mode === 'vertical-classical'));
+  assert.equal(pg.paras.length, 2); assert.ok(pg.paras[0].includes(':p3:R') && pg.paras[1].includes(':p3:L'));   // 文字：右叶在前
+  assert.deepEqual([pg.indentFirst, pg.open], [false, false]);
+  assert.equal(H.usage.length, 2); assert.equal(H.usage[1].pagesLimit, 300);
+  assert.equal(await H.pager.getPage(0), null); assert.equal(await H.pager.getPage(11), null);
+});
+
+test('createAiPager：缓存命中不再请求（同实例 + 新实例共用 IndexedDB）；跳过注文只在取页时应用，不用重新请求', async () => {
+  const idb = fakeIdb(), H = aiHarness({ d: { cache: C.makeAiCache({ indexedDB: idb }) } });
+  H.reply = () => ({ status: 200, body: { text: '甲【注：小注】乙。', model: 'qwen3.8-flash', promptVer: 1 } });
+  const a = await H.pager.getPage(2);
+  assert.equal(H.reqs.length, 2); assert.deepEqual(a.paras, ['甲【注：小注】乙。', '甲【注：小注】乙。']);
+  await H.pager.getPage(2); assert.equal(H.reqs.length, 2);                             // 同一实例：合并 / 命中
+  H.cfg.skipNotes = true;
+  assert.deepEqual((await H.pager.getPage(2)).paras, ['甲乙。', '甲乙。']); assert.equal(H.reqs.length, 2);
+  const H2 = aiHarness({ d: { cache: C.makeAiCache({ indexedDB: idb }) } });             // 「重开页面」：新控制器，同一个 IndexedDB
+  const b = await H2.pager.getPage(2);
+  assert.equal(H2.reqs.length, 0); assert.equal(H2.pager.hits, 1); assert.equal(b.paras.length, 2);
+  assert.ok(H2.status.some((s) => s[1] === 'cached'));
+});
+
+test('createAiPager：429 按 Retry-After 退避后重试成功；失败的页不重复请求，retry(pno) 才重来', async () => {
+  const H = aiHarness({ spread: false });
+  let n = 0;
+  H.reply = () => (n++ < 2 ? { status: 429, headers: { 'Retry-After': '2' }, body: { code: 'rate_limited', retryAfter: 2 } } : { status: 200, body: { text: '第一页文字。' } });
+  const pg = await H.pager.getPage(1);
+  assert.equal(H.reqs.length, 3); assert.deepEqual(H.sleeps, [2000, 2000]); assert.equal(pg.paras[0], '第一页文字。');
+  assert.equal(H.status.filter((s) => s[1] === 'retry').length, 2);
+  // 502 两次退避后放弃：页失败 → null，状态 failed；再取不再请求
+  const H2 = aiHarness({ spread: false });
+  H2.reply = () => ({ status: 502, body: { code: 'upstream_error' } });
+  assert.equal(await H2.pager.getPage(4), null);
+  assert.deepEqual(H2.sleeps, [1000, 3000]); assert.equal(H2.reqs.length, 3);
+  assert.equal(H2.pager.failed(4), true); assert.equal(H2.status.filter((s) => s[1] === 'failed').length, 1);
+  assert.equal(await H2.pager.getPage(4), null); assert.equal(H2.reqs.length, 3);
+  H2.reply = () => ({ status: 200, body: { text: '好了。' } });
+  assert.equal((await H2.pager.retry(4)).paras[0], '好了。'); assert.equal(H2.pager.failed(4), false);
+});
+
+test('createAiPager：422 refused 只这一页失败（不重试）；401 / 每日额度是 fatal，通知 onFatal；空白页不是错误', async () => {
+  const H = aiHarness({ spread: false });
+  H.reply = () => ({ status: 422, body: { code: 'refused' } });
+  assert.equal(await H.pager.getPage(1), null);
+  assert.equal(H.reqs.length, 1); assert.equal(H.sleeps.length, 0); assert.equal(H.fatal.length, 0);
+  const f = H.status.find((s) => s[1] === 'failed'); assert.equal(f[2].cls.kind, 'refused');
+  H.reply = () => ({ status: 429, headers: { 'Retry-After': '3600' }, body: { code: 'daily_cap', retryAfter: 3600 } });
+  assert.equal(await H.pager.getPage(2), null);
+  assert.equal(H.fatal.length, 1); assert.equal(H.fatal[0].kind, 'quota'); assert.equal(H.sleeps.length, 0);
+  H.reply = () => ({ status: 401, body: { code: 'unauthorized' } });
+  assert.equal(await H.pager.getPage(3), null); assert.equal(H.fatal[1].kind, 'auth');
+  H.reply = () => ({ status: 200, body: { text: '' } });                               // 空白页：不是错误，paras 为空
+  const e = await H.pager.getPage(5); assert.deepEqual(e.paras, []); assert.equal(H.status.find((s) => s[0] === 5 && s[1] === 'done')[2].empty, true);
+});
+
+test('createAiPager：同时最多 2 个请求在飞；页号小的先；focus 中止窗口外的页并预取 p..p+2', async () => {
+  const H = aiHarness({ spread: false });
+  let live = 0, max = 0;
+  const base = H.fetch;
+  H.fetch = (u, i) => { live++; max = Math.max(max, live); return base(u, i).finally(() => live--); };
+  H.pager = C.createAiPager({ bookKey: 'b', count: 20, fetch: H.fetch, endpoint: (p) => 'e/' + p, getCfg: () => H.cfg, cache: C.makeAiCache({}), meta: H.meta,
+    render: (p) => Promise.resolve([{ leaf: 'S', b64: 'I' + p }]), onStatus: () => {} });
+  H.reply = () => ({ status: 200, delay: 15, body: { text: '文。' } });
+  H.pager.focus(5);                                                                     // 预取 5,6,7
+  await Promise.all([H.pager.getPage(5), H.pager.getPage(6), H.pager.getPage(7)]);
+  assert.equal(max, 2, 'max inflight ' + max);
+  assert.deepEqual(H.reqs.map((r) => +r.pageId.split(':p')[1].split(':')[0]).slice(0, 2), [5, 6]);
+  assert.equal(H.reqs.length, 3);
+  H.reqs.length = 0; H.reply = () => ({ status: 200, delay: 60, body: { text: '文。' } });
+  H.pager.focus(12);                                                                     // 12,13,14 在飞 / 排队
+  await new Promise((r) => setTimeout(r, 20));
+  const sig = H.reqs.map((r) => r.signal);
+  assert.ok(sig.length >= 1);
+  H.pager.focus(15);                                                                     // 窗口变成 15..17：12、13、14 都被中止
+  assert.ok(sig.every((s) => s.aborted));
+  assert.notEqual(await H.pager.getPage(15), null);
+});
+
+test('createAiPager + createTtsRunner：无文字层的 PDF 经 AI 取页后，runner 一句句读完，页序 1→3，失败页被跳过', async () => {
+  const H = aiHarness({ spread: false, d: { count: 3 } });
+  H.reply = (q) => (q.pageId.endsWith(':p2:S') ? { status: 422, body: { code: 'refused' } } : { status: 200, body: { text: q.pageId.endsWith(':p1:S') ? '天地玄黄。宇宙洪荒。' : '日月盈昃。' } });
+  const spoken = [], states = [];
+  const host = { count: 3, getPage: (p) => H.pager.getPage(p), onPage: (p) => H.pager.focus(p), onSentence: () => {}, onState: (s, i) => states.push([s, i && i.pno]),
+    engine: { speak: (t) => { spoken.push(t); return Promise.resolve('end'); }, prefetch() {}, cancel() {}, pause() {}, resume() {} } };
+  const r = C.createTtsRunner(host); r.start(1);
+  for (let i = 0; i < 100 && r.state !== 'idle'; i++) await new Promise((x) => setTimeout(x, 10));
+  assert.deepEqual(spoken, ['天地玄黄。', '宇宙洪荒。', '日月盈昃。']);                       // 第 2 页失败 → 跳过，第 3 页接着读
+  assert.ok(states.some((s) => s[0] === 'notext' && s[1] === 2));
+  assert.ok(states.some((s) => s[0] === 'done'));
 });
