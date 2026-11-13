@@ -28,6 +28,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import netutil
 from media_source import IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS, ARCHIVE_EXTS, PDF_EXTS
 from remote_types import RemoteSource  # noqa: F401  (re-export，保持 remote_source.RemoteSource 可用)
 
@@ -87,7 +88,9 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
         return new
 
 
-_safe_opener = urllib.request.build_opener(_SafeRedirect())
+def _safe_open(req, timeout):
+    """跟随重定向（丢跨主机的 Authorization）+ 内网直连 / 公网走代理。"""
+    return netutil.build_opener(_SafeRedirect()).open(req, timeout=timeout)
 
 
 class WebDavProvider(RemoteProvider):
@@ -133,7 +136,7 @@ class WebDavProvider(RemoteProvider):
                 "Content-Type": 'application/xml; charset="utf-8"',
                 "User-Agent": "ImageViewer/1.0",
             })
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with netutil.urlopen(req, timeout=20) as r:
             return r.read()
 
     def list_dir(self, path):
@@ -202,7 +205,7 @@ class WebDavProvider(RemoteProvider):
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(self._url(src.path), headers=hdrs)
-        return _safe_opener.open(req, timeout=60)
+        return _safe_open(req, 60)
 
     THUMB_MAX_BYTES = 20 * 1024 * 1024
 
@@ -254,7 +257,7 @@ class JellyfinProvider(RemoteProvider):
 
     def _get_json(self, url):
         req = urllib.request.Request(url, headers=self._headers())
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with netutil.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8"))
 
     @staticmethod
@@ -273,7 +276,7 @@ class JellyfinProvider(RemoteProvider):
             base + "/Users/AuthenticateByName", data=body,
             headers={"Authorization": auth, "Content-Type": "application/json",
                      "Accept": "application/json", "User-Agent": "ImageViewer/1.0"})
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with netutil.urlopen(req, timeout=30) as r:
             data = json.loads(r.read().decode("utf-8"))
         return data.get("AccessToken"), data.get("User", {}).get("Id"), device_id
 
@@ -372,7 +375,7 @@ class JellyfinProvider(RemoteProvider):
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(url, headers=hdrs)
-        return urllib.request.urlopen(req, timeout=60)
+        return netutil.urlopen(req, timeout=60)
 
     def image_url(self, src, max_width=300):
         """海报/封面图片 URL（无图返回 None）。"""
@@ -391,7 +394,7 @@ class JellyfinProvider(RemoteProvider):
         if not url:
             return None
         req = urllib.request.Request(url, headers=self._headers())
-        with urllib.request.urlopen(req, timeout=15) as r:
+        with netutil.urlopen(req, timeout=15) as r:
             return r.read()
 
 

@@ -311,3 +311,8 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 **补充（起始页入口）**：起始页的全屏层（z-index 50）盖住了顶部工具栏（z-index 40），所以后端模式下「🖧 磁盘路径」「☁ 云端」在没打开内容前点不到（原有问题）。
 起始页按钮行新增这两个按钮（仅后端模式显示）；「☁ 云端」未配置账号时直接弹出账号表单。e2e 用 `elementFromPoint` 断言按钮没被遮挡。
 
+
+### 后端出站请求：内网直连（绕过 HTTP(S)_PROXY）
+- 问题：shell 里设了 `HTTP_PROXY/HTTPS_PROXY`、`NO_PROXY` 没列 192.168.* 时，后端访问局域网 AList / NAS（WebDAV、`/api/remote/*` 中转）会被送去代理而超时。
+- 修复：新增 `netutil.py`——目标是内网 / 回环 / 链路本地 / `.local` / 单段主机名时直连，公网仍走环境 / 系统代理（逐请求判断，重定向后的新主机重新判断）；规则与前端 `IVCore.plainHttpRisk` 一致。`remote_source.py`、`web_backend.py`（TTS/OCR 转发）、`dlna_cast.py`、`caption_engine.py` 都改用它。
+- 测试：`tests/test_netutil.py` 11 项（含死代理下内网成功、原生 urllib 对照失败、公网仍走代理、WebDAV 列目录 / 取流）。
