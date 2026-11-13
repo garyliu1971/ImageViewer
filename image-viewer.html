@@ -379,6 +379,85 @@
   .brow-item.sel .brow-size { color: rgba(255,255,255,.8); }
   .browse-empty { padding: 16px; color: var(--muted); font-size: 13px; text-align: center; }
   #browseInfo { margin-right: auto; font-size: 12px; color: var(--muted); }
+
+  /* ---------- 海报墙（媒体刮削 / TMDB，后端模式）---------- */
+  #browse.wall-on .modal-card { max-width: 1040px; }
+  .brow-view { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .brow-view .btn.on { background: var(--accent); color: #fff; }
+  #wallPane { display: none; }
+  #browse.wall-on #wallPane { display: block; }
+  #browse.wall-on #browseList { display: none; }
+  .wall-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+  .wall-bar input[type=text] { flex: 1 1 140px; min-width: 100px; font: inherit; color: var(--text); background: #12151b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; outline: none; }
+  #wallProg { display: none; margin-bottom: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(76,141,255,.14);
+    font-size: 12px; align-items: center; gap: 8px; }
+  #wallProg.on { display: flex; }
+  #wallProg .bar { flex: 1 1 auto; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+  #wallProg .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  #wallNotice { display: none; margin-bottom: 8px; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.8;
+    background: rgba(255,170,60,.12); border: 1px solid rgba(255,170,60,.35); }
+  #wallNotice.on { display: block; }
+  #wallNotice code { background: rgba(255,255,255,.09); padding: 1px 5px; border-radius: 4px; font-size: 12px; user-select: all; word-break: break-all; }
+  #wallGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 12px;
+    max-height: 52vh; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: #12151b; }
+  .wc { cursor: pointer; min-width: 0; }
+  .wc-poster { position: relative; aspect-ratio: 2 / 3; border-radius: 8px; overflow: hidden; background: #232733;
+    display: flex; align-items: center; justify-content: center; text-align: center; padding: 8px; font-size: 13px; color: var(--muted); }
+  .wc-poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .wc:hover .wc-poster { outline: 2px solid var(--accent); }
+  .wc-badge, .wc-cnt, .wc-mark { position: absolute; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.72); color: #fff; }
+  .wc-badge { top: 6px; left: 6px; }
+  .wc-badge.b-review { background: #c47a00; }
+  .wc-badge.b-none { background: #8a3a3a; }
+  .wc-badge.b-pin { background: #2d6a3e; }
+  .wc-cnt { top: 6px; right: 6px; }
+  .wc-mark { bottom: 6px; left: 6px; }
+  .wc-title { margin-top: 6px; font-size: 13px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .wc-sub { font-size: 11.5px; color: var(--muted); }
+  .wall-empty { grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+  .wall-foot { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  .wall-foot img { height: 12px; width: auto; vertical-align: middle; }
+  .wall-foot .btn { font-size: 11.5px; padding: 3px 8px; }
+  #wallStats { flex: 1 1 100%; }
+  #scrDetail, #scrFix { z-index: 72; }
+  #scrDetail .modal-card { max-width: 860px; padding: 0; }
+  .sd-hero { position: relative; padding: 18px 22px 14px; background-size: cover; background-position: center top; }
+  .sd-hero::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(26,29,36,.55), #1a1d24 96%); }
+  .sd-hero > * { position: relative; }
+  .sd-top { display: flex; gap: 16px; align-items: flex-start; }
+  .sd-poster { flex: 0 0 132px; aspect-ratio: 2 / 3; border-radius: 8px; background: #232733 center / cover; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  .sd-info { min-width: 0; flex: 1 1 auto; }
+  .sd-info h2 { margin: 0 0 2px; font-size: 22px; }
+  .sd-en { color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+  .sd-meta { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+  .sd-over { font-size: 13.5px; line-height: 1.75; max-height: 9.5em; overflow: auto; }
+  .sd-over-en { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .sd-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .sd-body { padding: 4px 22px 18px; }
+  .sd-seasons { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .sd-seasons .btn.on { background: var(--accent); color: #fff; }
+  .sd-ep { display: flex; gap: 10px; align-items: center; padding: 6px; border-radius: 8px; cursor: pointer; }
+  .sd-ep:hover { background: rgba(255,255,255,.07); }
+  .sd-still { flex: 0 0 96px; aspect-ratio: 16 / 9; border-radius: 6px; background: #232733 center / cover; }
+  .sd-ep-t { min-width: 0; flex: 1 1 auto; font-size: 13px; }
+  .sd-ep-t small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sd-ep-m { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .sd-ep-m.cont { color: #7fb0ff; }
+  .sd-ep-m.done { color: #6fcf8f; }
+  .sd-note { font-size: 12px; color: #e0a040; margin: 6px 0; }
+  .fx-row { display: flex; gap: 10px; padding: 8px; border-radius: 8px; cursor: pointer; align-items: flex-start; }
+  .fx-row:hover { background: rgba(255,255,255,.07); }
+  .fx-row .sd-poster { flex: 0 0 46px; }
+  .fx-row small { color: var(--muted); display: block; font-size: 11.5px; line-height: 1.5; }
+  #fxList { max-height: 40vh; overflow: auto; margin-top: 8px; }
+  #fxCur { font-size: 12.5px; margin-bottom: 8px; color: var(--muted); }
+  @media (max-width: 560px) {
+    .sd-top { flex-direction: column; }
+    .sd-poster { flex-basis: auto; width: 110px; }
+    #wallGrid { grid-template-columns: repeat(auto-fill, minmax(98px, 1fr)); gap: 8px; }
+    .sd-still { flex-basis: 76px; }
+  }
   #btnDisk { display: none; }
   body.has-backend #btnDisk, body.has-backend #startDisk, body.has-backend #startCloud { display: inline-flex; }
   #backendTag { display: none; font-size: 11px; color: var(--muted); }
@@ -680,6 +759,12 @@
         rar / cbr 在<b>后端模式</b>下走后端（磁盘路径 / 压缩包按钮 / 拖拽都行），通过网址（http / https）打开本页时 rar·cbr·7z·cb7·tar·cbt·tgz 浏览器自己解压（libarchive.js，不支持加密包）；
         PDF 通过网址（http / https）打开本页就能直接读（📦 / 拖拽 / 云端书库），加密 PDF 除外</td></tr>
     </table>
+    <div id="helpTmdb" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);line-height:1.8">
+      <img alt="TMDB" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMjczLjQyIDM1LjUyIj48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6dXJsKCNsaW5lYXItZ3JhZGllbnQpO308L3N0eWxlPjxsaW5lYXJHcmFkaWVudCBpZD0ibGluZWFyLWdyYWRpZW50IiB5MT0iMTcuNzYiIHgyPSIyNzMuNDIiIHkyPSIxNy43NiIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzkwY2VhMSIvPjxzdG9wIG9mZnNldD0iMC41NiIgc3RvcC1jb2xvcj0iIzNjYmVjOSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzAwYjNlNSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjx0aXRsZT5Bc3NldCAzPC90aXRsZT48ZyBpZD0iTGF5ZXJfMiIgZGF0YS1uYW1lPSJMYXllciAyIj48ZyBpZD0iTGF5ZXJfMS0yIiBkYXRhLW5hbWU9IkxheWVyIDEiPjxwYXRoIGNsYXNzPSJjbHMtMSIgZD0iTTE5MS44NSwzNS4zN2g2My45QTE3LjY3LDE3LjY3LDAsMCwwLDI3My40MiwxNy43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMjU1Ljc1LDBoLTYzLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTc0LjE4LDE3LjdoMEExNy42NywxNy42NywwLDAsMCwxOTEuODUsMzUuMzdaTTEwLjEsMzUuNDJoNy44VjYuOTJIMjhWMEgwdjYuOUgxMC4xWm0yOC4xLDBINDZWOC4yNWguMUw1NS4wNSwzNS40aDZMNzAuMyw4LjI1aC4xVjM1LjRoNy44VjBINjYuNDVsLTguMiwyMy4xaC0uMUw1MCwwSDM4LjJaTTg5LjE0LjEyaDExLjdhMzMuNTYsMzMuNTYsMCwwLDEsOC4wOCwxLDE4LjUyLDE4LjUyLDAsMCwxLDYuNjcsMy4wOCwxNS4wOSwxNS4wOSwwLDAsMSw0LjUzLDUuNTIsMTguNSwxOC41LDAsMCwxLDEuNjcsOC4yNSwxNi45MSwxNi45MSwwLDAsMS0xLjYyLDcuNTgsMTYuMywxNi4zLDAsMCwxLTQuMzgsNS41LDE5LjI0LDE5LjI0LDAsMCwxLTYuMzUsMy4zNywyNC41MywyNC41MywwLDAsMS03LjU1LDEuMTVIODkuMTRabTcuOCwyOC4yaDRhMjEuNjYsMjEuNjYsMCwwLDAsNS0uNTVBMTAuNTgsMTAuNTgsMCwwLDAsMTEwLDI2YTguNzMsOC43MywwLDAsMCwyLjY4LTMuMzUsMTEuOSwxMS45LDAsMCwwLDEtNS4wOCw5Ljg3LDkuODcsMCwwLDAtMS00LjUyLDkuMTcsOS4xNywwLDAsMC0yLjYzLTMuMThBMTEuNjEsMTEuNjEsMCwwLDAsMTA2LjIyLDhhMTcuMDYsMTcuMDYsMCwwLDAtNC42OC0uNjNoLTQuNlpNMTMzLjA5LjEyaDEzLjJhMzIuODcsMzIuODcsMCwwLDEsNC42My4zMywxMi42NiwxMi42NiwwLDAsMSw0LjE3LDEuMyw3Ljk0LDcuOTQsMCwwLDEsMywyLjcyLDguMzQsOC4zNCwwLDAsMSwxLjE1LDQuNjUsNy40OCw3LjQ4LDAsMCwxLTEuNjcsNSw5LjEzLDkuMTMsMCwwLDEtNC40MywyLjgyVjE3YTEwLjI4LDEwLjI4LDAsMCwxLDMuMTgsMSw4LjUxLDguNTEsMCwwLDEsMi40NSwxLjg1LDcuNzksNy43OSwwLDAsMSwxLjU3LDIuNjIsOS4xNiw5LjE2LDAsMCwxLC41NSwzLjIsOC41Miw4LjUyLDAsMCwxLTEuMiw0LjY4LDkuMzIsOS4zMiwwLDAsMS0zLjEsM0ExMy4zOCwxMy4zOCwwLDAsMSwxNTIuMzIsMzVhMjIuNSwyMi41LDAsMCwxLTQuNzMuNWgtMTQuNVptNy44LDE0LjE1aDUuNjVhNy42NSw3LjY1LDAsMCwwLDEuNzgtLjIsNC43OCw0Ljc4LDAsMCwwLDEuNTctLjY1LDMuNDMsMy40MywwLDAsMCwxLjEzLTEuMiwzLjYzLDMuNjMsMCwwLDAsLjQyLTEuOEEzLjMsMy4zLDAsMCwwLDE1MSw4LjZhMy40MiwzLjQyLDAsMCwwLTEuMjMtMS4xM0E2LjA3LDYuMDcsMCwwLDAsMTQ4LDYuOWE5LjksOS45LDAsMCwwLTEuODUtLjE4aC01LjNabTAsMTQuNjVoN2E4LjI3LDguMjcsMCwwLDAsMS44My0uMiw0LjY3LDQuNjcsMCwwLDAsMS42Ny0uNywzLjkzLDMuOTMsMCwwLDAsMS4yMy0xLjMsMy44LDMuOCwwLDAsMCwuNDctMS45NSwzLjE2LDMuMTYsMCwwLDAtLjYyLTIsNCw0LDAsMCwwLTEuNTgtMS4xOCw4LjIzLDguMjMsMCwwLDAtMi0uNTUsMTUuMTIsMTUuMTIsMCwwLDAtMi4wNS0uMTVoLTUuOVoiLz48L2c+PC9nPjwvc3ZnPg==" style="height:12px;width:auto;vertical-align:middle;margin-right:6px">
+      This product uses the TMDB API but is not endorsed or certified by TMDB.<br>
+      海报 / 简介等影视资料来自 <a href="https://www.themoviedb.org" target="_blank" rel="noopener" style="color:var(--accent)">TMDB</a>
+      （仅本地后端模式、需自行配置令牌；文件名会作为搜索词发给 TMDB，缓存在本机，最长保留 150 天）。
+    </div>
   </div>
 </div>
 
@@ -828,6 +913,28 @@
       <button class="btn icon" id="browseCloudCfg" title="云端账号设置（WebDAV）">⚙</button>
     </div>
     <div id="browseRecent"></div>
+    <div class="brow-view" id="browseView">
+      <button class="btn on" id="viewList" title="文件列表">☰ 列表</button>
+      <button class="btn" id="viewWall" title="海报墙：自动识别电影 / 剧集并显示海报（TMDB）">🎞 海报墙</button>
+    </div>
+    <div id="wallPane">
+      <div class="wall-bar">
+        <input type="text" id="wallFilter" placeholder="筛选标题…" autocomplete="off" spellcheck="false">
+        <select id="wallSort" title="排序">
+          <option value="name">按名称</option><option value="year">按年份（新→旧）</option><option value="rating">按评分（高→低）</option>
+        </select>
+        <button class="btn" id="wallScan" title="只刮削当前这一层目录里的视频（不递归）">刮削当前目录</button>
+      </div>
+      <div id="wallProg"><span id="wallProgText"></span><span class="bar"><i id="wallProgBar"></i></span><button class="btn" id="wallCancel">取消</button></div>
+      <div id="wallNotice"></div>
+      <div id="wallGrid"></div>
+      <div class="wall-foot">
+        <span id="wallStats">刮削：读取中…</span>
+        <img alt="TMDB" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMjczLjQyIDM1LjUyIj48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6dXJsKCNsaW5lYXItZ3JhZGllbnQpO308L3N0eWxlPjxsaW5lYXJHcmFkaWVudCBpZD0ibGluZWFyLWdyYWRpZW50IiB5MT0iMTcuNzYiIHgyPSIyNzMuNDIiIHkyPSIxNy43NiIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzkwY2VhMSIvPjxzdG9wIG9mZnNldD0iMC41NiIgc3RvcC1jb2xvcj0iIzNjYmVjOSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzAwYjNlNSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjx0aXRsZT5Bc3NldCAzPC90aXRsZT48ZyBpZD0iTGF5ZXJfMiIgZGF0YS1uYW1lPSJMYXllciAyIj48ZyBpZD0iTGF5ZXJfMS0yIiBkYXRhLW5hbWU9IkxheWVyIDEiPjxwYXRoIGNsYXNzPSJjbHMtMSIgZD0iTTE5MS44NSwzNS4zN2g2My45QTE3LjY3LDE3LjY3LDAsMCwwLDI3My40MiwxNy43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMjU1Ljc1LDBoLTYzLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTc0LjE4LDE3LjdoMEExNy42NywxNy42NywwLDAsMCwxOTEuODUsMzUuMzdaTTEwLjEsMzUuNDJoNy44VjYuOTJIMjhWMEgwdjYuOUgxMC4xWm0yOC4xLDBINDZWOC4yNWguMUw1NS4wNSwzNS40aDZMNzAuMyw4LjI1aC4xVjM1LjRoNy44VjBINjYuNDVsLTguMiwyMy4xaC0uMUw1MCwwSDM4LjJaTTg5LjE0LjEyaDExLjdhMzMuNTYsMzMuNTYsMCwwLDEsOC4wOCwxLDE4LjUyLDE4LjUyLDAsMCwxLDYuNjcsMy4wOCwxNS4wOSwxNS4wOSwwLDAsMSw0LjUzLDUuNTIsMTguNSwxOC41LDAsMCwxLDEuNjcsOC4yNSwxNi45MSwxNi45MSwwLDAsMS0xLjYyLDcuNTgsMTYuMywxNi4zLDAsMCwxLTQuMzgsNS41LDE5LjI0LDE5LjI0LDAsMCwxLTYuMzUsMy4zNywyNC41MywyNC41MywwLDAsMS03LjU1LDEuMTVIODkuMTRabTcuOCwyOC4yaDRhMjEuNjYsMjEuNjYsMCwwLDAsNS0uNTVBMTAuNTgsMTAuNTgsMCwwLDAsMTEwLDI2YTguNzMsOC43MywwLDAsMCwyLjY4LTMuMzUsMTEuOSwxMS45LDAsMCwwLDEtNS4wOCw5Ljg3LDkuODcsMCwwLDAtMS00LjUyLDkuMTcsOS4xNywwLDAsMC0yLjYzLTMuMThBMTEuNjEsMTEuNjEsMCwwLDAsMTA2LjIyLDhhMTcuMDYsMTcuMDYsMCwwLDAtNC42OC0uNjNoLTQuNlpNMTMzLjA5LjEyaDEzLjJhMzIuODcsMzIuODcsMCwwLDEsNC42My4zMywxMi42NiwxMi42NiwwLDAsMSw0LjE3LDEuMyw3Ljk0LDcuOTQsMCwwLDEsMywyLjcyLDguMzQsOC4zNCwwLDAsMSwxLjE1LDQuNjUsNy40OCw3LjQ4LDAsMCwxLTEuNjcsNSw5LjEzLDkuMTMsMCwwLDEtNC40MywyLjgyVjE3YTEwLjI4LDEwLjI4LDAsMCwxLDMuMTgsMSw4LjUxLDguNTEsMCwwLDEsMi40NSwxLjg1LDcuNzksNy43OSwwLDAsMSwxLjU3LDIuNjIsOS4xNiw5LjE2LDAsMCwxLC41NSwzLjIsOC41Miw4LjUyLDAsMCwxLTEuMiw0LjY4LDkuMzIsOS4zMiwwLDAsMS0zLjEsM0ExMy4zOCwxMy4zOCwwLDAsMSwxNTIuMzIsMzVhMjIuNSwyMi41LDAsMCwxLTQuNzMuNWgtMTQuNVptNy44LDE0LjE1aDUuNjVhNy42NSw3LjY1LDAsMCwwLDEuNzgtLjIsNC43OCw0Ljc4LDAsMCwwLDEuNTctLjY1LDMuNDMsMy40MywwLDAsMCwxLjEzLTEuMiwzLjYzLDMuNjMsMCwwLDAsLjQyLTEuOEEzLjMsMy4zLDAsMCwwLDE1MSw4LjZhMy40MiwzLjQyLDAsMCwwLTEuMjMtMS4xM0E2LjA3LDYuMDcsMCwwLDAsMTQ4LDYuOWE5LjksOS45LDAsMCwwLTEuODUtLjE4aC01LjNabTAsMTQuNjVoN2E4LjI3LDguMjcsMCwwLDAsMS44My0uMiw0LjY3LDQuNjcsMCwwLDAsMS42Ny0uNywzLjkzLDMuOTMsMCwwLDAsMS4yMy0xLjMsMy44LDMuOCwwLDAsMCwuNDctMS45NSwzLjE2LDMuMTYsMCwwLDAtLjYyLTIsNCw0LDAsMCwwLTEuNTgtMS4xOCw4LjIzLDguMjMsMCwwLDAtMi0uNTUsMTUuMTIsMTUuMTIsMCwwLDAtMi4wNS0uMTVoLTUuOVoiLz48L2c+PC9nPjwvc3ZnPg==">
+        <span class="tmdb-note">This product uses the TMDB API but is not endorsed or certified by TMDB.</span>
+        <button class="btn" id="wallPurge" title="清除本机缓存的 TMDB 数据与图片（手动锁定的匹配会保留）">清缓存</button>
+      </div>
+    </div>
     <div id="browseList"><div class="browse-empty">输入路径后点「转到」</div></div>
     <div class="modal-actions">
       <span id="browseInfo"></span>
@@ -838,6 +945,50 @@
       目录 / zip·cbz / <b>rar·cbr</b> / <b>PDF</b> 都可以直接指路径；进度会和桌面版共用同一份
       <code>image_viewer.json</code>。双击目录进入，双击文件直接打开。
     </p>
+  </div>
+</div>
+
+<div id="scrDetail" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" data-close="scrDetail">✕</button>
+    <div class="sd-hero" id="sdHero">
+      <div class="sd-top">
+        <div class="sd-poster" id="sdPoster"></div>
+        <div class="sd-info">
+          <h2 id="sdTitle"></h2>
+          <div class="sd-en" id="sdEn"></div>
+          <div class="sd-meta" id="sdMeta"></div>
+          <div class="sd-over" id="sdOver"></div>
+          <div class="sd-over-en" id="sdOverEn"></div>
+          <div class="sd-note" id="sdNote"></div>
+          <div class="sd-actions">
+            <button class="btn primary" id="sdPlay">▶ 播放</button>
+            <button class="btn" id="sdFix">修正匹配</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="sd-body" id="sdBody"></div>
+  </div>
+</div>
+
+<div id="scrFix" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" data-close="scrFix">✕</button>
+    <h2>修正匹配</h2>
+    <div id="fxCur"></div>
+    <div class="wall-bar">
+      <input type="text" id="fxQ" placeholder="搜索 TMDB（中文或英文名）" autocomplete="off" spellcheck="false">
+      <input type="text" id="fxYear" placeholder="年份" style="flex:0 0 70px;min-width:60px" inputmode="numeric" autocomplete="off">
+      <select id="fxType"><option value="movie">电影</option><option value="tv">剧集</option></select>
+      <button class="btn primary" id="fxGo">搜索</button>
+    </div>
+    <div id="fxList"></div>
+    <p id="fxNote" style="color:var(--muted);font-size:12px;margin-top:8px;line-height:1.7"></p>
+    <div class="modal-actions">
+      <button class="btn" id="fxUnpin" style="margin-right:auto">取消锁定</button>
+      <button class="btn" data-close="scrFix">关闭</button>
+    </div>
   </div>
 </div>
 
@@ -2900,7 +3051,7 @@
       method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     } : undefined).then(function (r) {
       return r.json().then(function (j) {
-        if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+        if (!r.ok || j.ok === false) { var er = new Error(j.error || ('HTTP ' + r.status)); er.code = j.code; throw er; }
         return j;
       });
     });
@@ -4111,7 +4262,7 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent', 'rcloud'];
+  var MODALS = ['scrDetail', 'scrFix', 'help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent', 'rcloud'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
@@ -4907,6 +5058,7 @@
       }).join('');
       list._rows = rows;
       $('#browseInfo').textContent = (j.entries || []).length + ' 项';
+      if (W.on) wallLoad();
       return rows;
     })['catch'](function (e) {
       list.innerHTML = '<div class="browse-empty">打不开：' + esc((e && e.message) || e) + '</div>';
@@ -6076,6 +6228,414 @@
     if (r && (r.dir || r.kind === 'up')) { browseTo(r.path); return; }
     browseOpenSel();
   });
+
+  /* ================= 海报墙 / 媒体刮削（TMDB，仅后端模式）=================
+     令牌只在后端读环境变量 TMDB_TOKEN；本页从不输入、不保存、不显示令牌，只看 /api/scrape/status 的 true/false。
+     列表页只调 /api/scrape/peek（解析文件名 + 读缓存，不联网）；可见的卡片再逐个 /api/scrape/match（后端节流）。 */
+  var LS_WALL = 'iv.wall.v1', LS_PLAYED = 'iv.scrape.played.v1';
+  var W = { on: false, rows: [], remote: false, cards: [], byId: {}, seq: 0, q: [], running: 0, fails: 0,
+            tokenOk: null, stop: '', jobId: '', jobTimer: 0, io: null, purgeArm: 0 };
+  var wallPrefs = lsGet(LS_WALL, null) || {};
+  function wallReq(r) { return W.remote ? { remote: r.path } : { path: r.path }; }
+  function playedKey(path, remote) { return (remote ? 'r:' : 'l:') + normKey(path).toLowerCase(); }
+  function isPlayed(path) { var m = lsGet(LS_PLAYED, null) || {}; return !!m[playedKey(path, W.remote)]; }
+  function markPlayed(path, remote) {
+    var m = lsGet(LS_PLAYED, null) || {};
+    m[playedKey(path, remote)] = 1;
+    var ks = Object.keys(m); if (ks.length > 3000) delete m[ks[0]];
+    lsSet(LS_PLAYED, m);
+  }
+  function wallFmt(ms) { return vpFmtTime(ms / 1000); }
+  function wallImg(p, size) { return p ? apiPath('/api/scrape/image', { p: p, size: size || 'w342' }) : ''; }
+
+  function wallSetView(on) {
+    W.on = !!on;
+    $('#browse').classList.toggle('wall-on', W.on);
+    $('#viewWall').classList.toggle('on', W.on);
+    $('#viewList').classList.toggle('on', !W.on);
+    wallPrefs.view = W.on ? 'wall' : 'list'; lsSet(LS_WALL, wallPrefs);
+    if (W.on) wallLoad(); else wallStopAll();
+  }
+  function wallStopAll() { W.seq++; W.q = []; if (W.io) { W.io.disconnect(); W.io = null; } }
+
+  function wallNotice(html) {
+    var n = $('#wallNotice');
+    n.innerHTML = html || '';
+    n.classList.toggle('on', !!html);
+  }
+  var NOTICE_NO_TOKEN =
+    '<b>还没有配置 TMDB 令牌</b>，现在只能按文件名显示标题，没有海报和简介。<br>' +
+    '配置方法（令牌只放环境变量，本页不会也不应该输入令牌；用 TMDB 的 “API Read Access Token”）：<br>' +
+    '① 在 PowerShell 里执行（写成用户级环境变量，一次即可）：<br>' +
+    '<code>[Environment]::SetEnvironmentVariable(\'TMDB_TOKEN\',\'你的令牌\',\'User\')</code><br>' +
+    '② 关闭并重新启动后端（启动网页版.bat / python web_backend.py），再回到这里点「海报墙」。<br>' +
+    '只想临时试用：<code>$env:TMDB_TOKEN=\'你的令牌\'; python web_backend.py</code>';
+
+  function wallLoad() {
+    var list = $('#browseList');
+    var rows = (list._rows || []).filter(function (r) { return r.kind === 'video'; });
+    var seq = ++W.seq;
+    W.rows = rows; W.remote = browseRemote; W.q = []; W.running = 0; W.fails = 0; W.stop = '';
+    if (W.io) { W.io.disconnect(); W.io = null; }
+    var grid = $('#wallGrid');
+    if (!rows.length) { grid.innerHTML = '<div class="wall-empty">这个目录里没有视频。换到有视频的目录，或切回「列表」。</div>'; wallStats(); return; }
+    grid.innerHTML = '<div class="wall-empty">读取中…</div>';
+    apiJson('/api/scrape/peek', null, 'POST', { items: rows.slice(0, 500).map(wallReq) }).then(function (j) {
+      if (seq !== W.seq) return;
+      W.tokenOk = !!j.token_configured;
+      wallNotice(W.tokenOk ? '' : NOTICE_NO_TOKEN);
+      wallBuild(j.items || []);
+      wallRender();
+      wallStats();
+    }, function (e) {
+      if (seq !== W.seq) return;
+      grid.innerHTML = '<div class="wall-empty">读取失败：' + esc((e && e.message) || e) + '</div>';
+    });
+  }
+
+  function wallBuild(items) {
+    var map = {}, cards = [];
+    W.rows.slice(0, 500).forEach(function (r, i) {
+      var p = items[i];
+      if (!p || p.error) return;
+      var c0 = (p.parsed.title_candidates || [])[0] || r.name.replace(/\.[^.]+$/, '');
+      var ep = p.parsed.kind === 'episode';
+      var id = ep ? 's:' + (p.group_key || ('t:' + c0.toLowerCase())) : 'm:' + r.path;
+      var c = map[id];
+      if (!c) { c = map[id] = { id: id, type: ep ? 'series' : 'movie', files: [], title: c0, year: p.parsed.year, item: null }; cards.push(c); }
+      c.files.push({ row: r, peek: p });
+      if (p.item && (!c.item || p.item.status === 'pinned')) c.item = p.item;
+    });
+    cards.forEach(function (c) {
+      c.files.sort(function (a, b) {
+        var sa = a.peek.parsed.season == null ? 0 : a.peek.parsed.season, sb = b.peek.parsed.season == null ? 0 : b.peek.parsed.season;
+        if (sa !== sb) return sa - sb;
+        var ea = a.peek.parsed.episode == null ? 1e9 : a.peek.parsed.episode, eb = b.peek.parsed.episode == null ? 1e9 : b.peek.parsed.episode;
+        return ea - eb || (a.row.name < b.row.name ? -1 : 1);
+      });
+    });
+    W.cards = cards; W.byId = {};
+    cards.forEach(function (c) { W.byId[c.id] = c; });
+  }
+
+  function cardInfo(c) {
+    var m = c.item && c.item.media;
+    return { title: (m && m.title) || c.title, en: m && m.title_en && m.title_en !== m.title ? m.title_en : '',
+             year: (m && m.year) || (c.year ? String(c.year) : ''), rating: m ? +m.vote_average || 0 : 0,
+             poster: m ? m.poster_path : '' };
+  }
+  function wallMark(c) {
+    var played = 0, resume = 0;
+    c.files.forEach(function (f) {
+      if (isPlayed(f.row.path)) played++;
+      if (f.peek.resume_ms > 0) resume = resume || f.peek.resume_ms;
+    });
+    if (c.type === 'movie') return resume ? '<span class="wc-mark">▶ ' + wallFmt(resume) + '</span>' : (played ? '<span class="wc-mark">✓ 已看</span>' : '');
+    if (resume) return '<span class="wc-mark">▶ 继续</span>';
+    return played ? '<span class="wc-mark">✓ ' + played + '/' + c.files.length + '</span>' : '';
+  }
+  function wallCardHtml(c) {
+    var f = cardInfo(c);
+    var st = c.item ? c.item.status : '';
+    var badge = st === 'needs_review' ? '<span class="wc-badge b-review">待确认</span>' :
+      st === 'unmatched' ? '<span class="wc-badge b-none">未匹配</span>' :
+      st === 'pinned' ? '<span class="wc-badge b-pin">📌</span>' : '';
+    var poster = f.poster ? '<img alt="" data-src="' + esc(wallImg(f.poster)) + '">' : '';
+    var ph = f.poster ? '' : esc(f.title);
+    return '<div class="wc" data-id="' + esc(c.id) + '" title="' + esc(f.title + (f.en ? ' / ' + f.en : '')) + '">' +
+      '<div class="wc-poster">' + ph + poster + badge +
+      (c.type === 'series' ? '<span class="wc-cnt">' + c.files.length + ' 集</span>' : '') + wallMark(c) + '</div>' +
+      '<div class="wc-title">' + esc(f.title) + '</div>' +
+      '<div class="wc-sub">' + esc([f.year, f.rating ? '★' + f.rating.toFixed(1) : '', c.type === 'series' ? '剧集' : ''].filter(Boolean).join(' · ')) + '</div></div>';
+  }
+  function wallRender() {
+    var grid = $('#wallGrid');
+    var q = ($('#wallFilter').value || '').trim().toLowerCase();
+    var sort = $('#wallSort').value;
+    var cards = W.cards.filter(function (c) {
+      if (!q) return true;
+      var f = cardInfo(c);
+      return (f.title + ' ' + f.en + ' ' + c.title + ' ' + c.files.map(function (x) { return x.row.name; }).join(' ')).toLowerCase().indexOf(q) >= 0;
+    });
+    cards.sort(function (a, b) {
+      var fa = cardInfo(a), fb = cardInfo(b);
+      if (sort === 'year') return (+fb.year || 0) - (+fa.year || 0) || (fa.title < fb.title ? -1 : 1);
+      if (sort === 'rating') return fb.rating - fa.rating || (fa.title < fb.title ? -1 : 1);
+      return fa.title.localeCompare(fb.title, 'zh-Hans-CN', { numeric: true });
+    });
+    if (W.io) { W.io.disconnect(); W.io = null; }
+    grid.innerHTML = cards.length ? cards.map(wallCardHtml).join('') : '<div class="wall-empty">没有符合的条目</div>';
+    wallObserve();
+  }
+  function wallObserve() {
+    var els = Array.prototype.slice.call($('#wallGrid').querySelectorAll('.wc'));
+    var seq = W.seq;
+    var visit = function (el) {
+      var c = W.byId[el.dataset.id]; if (!c) return;
+      var img = el.querySelector('img[data-src]');
+      if (img) { img.src = img.dataset.src; img.removeAttribute('data-src'); }
+      if (!c.item) wallQueue(c);
+    };
+    if (typeof IntersectionObserver === 'undefined') { els.forEach(visit); return; }
+    W.io = new IntersectionObserver(function (ents) {
+      if (seq !== W.seq) return;
+      ents.forEach(function (en) { if (en.isIntersecting) { W.io.unobserve(en.target); visit(en.target); } });
+    }, { root: $('#wallGrid'), rootMargin: '120px' });
+    els.forEach(function (el) { W.io.observe(el); });
+  }
+  function wallQueue(c) {
+    if (c.queued || c.item || !W.tokenOk || W.stop) return;
+    c.queued = true; W.q.push(c); wallPump();
+  }
+  function wallPump() {
+    var seq = W.seq;
+    while (W.running < 2 && W.q.length && !W.stop) {
+      (function (c) {
+        W.running++;
+        apiJson('/api/scrape/match', null, 'POST', wallReq(c.files[0].row)).then(function (j) {
+          if (seq !== W.seq) return;
+          W.fails = 0; c.item = j.item; c.full = j.item;
+          wallRefreshCard(c);
+        }, function (e) {
+          if (seq !== W.seq) return;
+          c.queued = false;
+          var msg = (e && e.message) || String(e);
+          if (e && e.code === 'bad_token') { W.stop = 'bad_token'; wallNotice('<b>TMDB 令牌无效（401）</b>：请检查环境变量 TMDB_TOKEN 是不是 “API Read Access Token”（不是 API Key），改好后重启后端。'); }
+          else if (e && e.code === 'no_token') { W.stop = 'no_token'; W.tokenOk = false; wallNotice(NOTICE_NO_TOKEN); }
+          else if (++W.fails >= 3) { W.stop = 'net'; wallNotice('<b>连不上 TMDB</b>（' + esc(msg) + '）。网络不通时只显示文件名；可检查网络 / 代理后点「刮削当前目录」重试。'); }
+        }).then(function () { if (seq === W.seq) { W.running--; wallPump(); } });
+      })(W.q.shift());
+    }
+  }
+  function wallRefreshCard(c) {
+    var el = $('#wallGrid').querySelector('.wc[data-id="' + (window.CSS && CSS.escape ? CSS.escape(c.id) : c.id) + '"]');
+    if (!el) return;
+    var tmp = document.createElement('div');
+    tmp.innerHTML = wallCardHtml(c);
+    var neu = tmp.firstChild;
+    el.parentNode.replaceChild(neu, el);
+    var img = neu.querySelector('img[data-src]');
+    if (img) { img.src = img.dataset.src; img.removeAttribute('data-src'); }
+  }
+
+  /* ---- 状态行 / 清缓存 ---- */
+  function wallStats() {
+    apiJson('/api/scrape/status').then(function (s) {
+      var mb = (s.image_bytes / 1048576).toFixed(1);
+      $('#wallStats').textContent = '刮削：' + (s.token_configured ? '已配置令牌' : '未配置令牌') + ' · 缓存 ' + s.cached_responses +
+        ' 条响应 / ' + s.images + ' 张图（' + mb + ' MB）· 手动锁定 ' + s.pins + ' · 缓存保留 ' + s.ttl_days + ' 天';
+    }, function (e) { $('#wallStats').textContent = '刮削：状态读取失败（' + ((e && e.message) || e) + '）'; });
+  }
+  function wallPurge() {
+    var b = $('#wallPurge');
+    if (!W.purgeArm) {
+      W.purgeArm = setTimeout(function () { W.purgeArm = 0; b.textContent = '清缓存'; }, 4000);
+      b.textContent = '再点一次确认清除';
+      return;
+    }
+    clearTimeout(W.purgeArm); W.purgeArm = 0; b.textContent = '清缓存';
+    apiJson('/api/scrape/purge', null, 'POST', { all: true }).then(function (j) {
+      toast('已清除缓存：' + j.removed.responses + ' 条响应、' + j.removed.images + ' 张图');
+      if (W.on) wallLoad();
+    }, function (e) { toast('清除失败：' + ((e && e.message) || e)); });
+  }
+
+  /* ---- 刮削当前目录（只这一层，不递归）---- */
+  function wallScan() {
+    if (!W.tokenOk) { wallNotice(NOTICE_NO_TOKEN); return; }
+    if (W.jobId) return;
+    var items = W.rows.slice(0, 2000).map(wallReq);
+    if (!items.length) { toast('当前目录没有视频'); return; }
+    apiJson('/api/scrape/scan', null, 'POST', { items: items }).then(function (j) {
+      W.jobId = j.job.id; $('#wallProg').classList.add('on'); $('#wallScan').disabled = true;
+      wallPoll();
+    }, function (e) {
+      if (e && e.code === 'no_token') wallNotice(NOTICE_NO_TOKEN); else toast('无法开始刮削：' + ((e && e.message) || e));
+    });
+  }
+  function wallPoll() {
+    var id = W.jobId; if (!id) return;
+    apiJson('/api/scrape/job', { id: id }).then(function (j) {
+      var job = j.job;
+      var pct = job.total ? Math.round(job.done * 100 / job.total) : 0;
+      $('#wallProgText').textContent = (job.state === 'running' ? '刮削中 ' : '已结束 ') + job.done + '/' + job.total + ' · 已匹配 ' + job.matched +
+        ' · 待确认 ' + job.needs_review + ' · 未匹配 ' + job.unmatched + ' · 失败 ' + job.failed;
+      $('#wallProgBar').style.width = pct + '%';
+      if (job.state === 'running') { W.jobTimer = setTimeout(wallPoll, 700); return; }
+      W.jobId = ''; $('#wallScan').disabled = false;
+      if (job.last_error && job.failed) wallNotice('<b>部分条目刮削失败</b>：' + esc(job.last_error));
+      setTimeout(function () { $('#wallProg').classList.remove('on'); }, 2500);
+      if (W.on) { var keepNotice = job.failed ? $('#wallNotice').innerHTML : ''; wallLoad(); if (keepNotice) setTimeout(function () { wallNotice(keepNotice); }, 300); }
+    }, function (e) { W.jobId = ''; $('#wallScan').disabled = false; $('#wallProgText').textContent = '进度读取失败：' + ((e && e.message) || e); });
+  }
+  function wallCancel() {
+    if (!W.jobId) return;
+    apiJson('/api/scrape/cancel', null, 'POST', { id: W.jobId })['catch'](function () {});
+  }
+
+  /* ---- 详情页 ---- */
+  var D = { card: null, season: null, files: [], seq: 0, full: null };
+  function seasonOf(f) { return f.peek.parsed.season; }
+  function wallOpenDetail(c) {
+    D.card = c; D.seq++;
+    var seasons = [];
+    c.files.forEach(function (f) { var s = seasonOf(f); if (seasons.indexOf(s) < 0) seasons.push(s); });
+    seasons.sort(function (a, b) { return (a == null ? 99 : a) - (b == null ? 99 : b); });
+    D.seasons = seasons;
+    D.season = seasons.length ? seasons[0] : null;
+    toggleModal('scrDetail', true);
+    wallDetailLoad();
+  }
+  function seasonFiles() {
+    return D.card.files.filter(function (f) { return D.card.type !== 'series' || seasonOf(f) === D.season; });
+  }
+  function wallDetailLoad() {
+    var c = D.card, seq = D.seq, files = seasonFiles();
+    wallDetailRender(null);
+    if (!files.length) return;
+    apiJson('/api/scrape/match', null, 'POST', wallReq(files[0].row)).then(function (j) {
+      if (seq !== D.seq) return;
+      c.item = j.item;
+      wallDetailRender(j.item);
+    }, function (e) {
+      if (seq !== D.seq) return;
+      var m = $('#sdNote');
+      m.textContent = (e && e.code === 'no_token') ? '未配置 TMDB 令牌（见海报墙顶部说明）' : (e && e.code === 'bad_token') ? 'TMDB 令牌无效（401）' : '刮削失败：' + ((e && e.message) || e);
+    });
+  }
+  function wallDetailRender(item) {
+    var c = D.card, f = cardInfo(c), m = (item && item.media) || null;
+    $('#sdTitle').textContent = f.title;
+    $('#sdEn').textContent = f.en;
+    var bits = [];
+    if (f.year) bits.push(f.year);
+    if (m && m.vote_average) bits.push('★ ' + (+m.vote_average).toFixed(1));
+    if (m && c.type === 'movie' && m.runtime) bits.push(m.runtime + ' 分钟');
+    if (m && c.type === 'series' && m.number_of_seasons) bits.push(m.number_of_seasons + ' 季');
+    if (m && (m.genres_zh || []).length) bits.push(m.genres_zh.join(' / '));
+    $('#sdMeta').textContent = bits.join(' · ');
+    $('#sdOver').textContent = m ? (m.overview_zh || m.overview_en || '（TMDB 暂无简介）') : (item === null ? '读取中…' : '');
+    $('#sdOverEn').textContent = m && m.overview_zh && m.overview_en ? m.overview_en : '';
+    $('#sdPoster').style.backgroundImage = m && m.poster_path ? 'url("' + wallImg(m.poster_path, 'w342') + '")' : '';
+    $('#sdHero').style.backgroundImage = m && m.backdrop_path ? 'url("' + wallImg(m.backdrop_path, 'w780') + '")' : '';
+    var st = item ? item.status : (c.item && c.item.status);
+    $('#sdNote').textContent = st === 'needs_review' ? '这是暂定匹配（把握不大）。如果不对，点「修正匹配」。' :
+      st === 'unmatched' ? '没有找到匹配。点「修正匹配」手动搜索。' : st === 'pinned' ? '📌 已手动锁定' + (item && item.pin_scope === 'group' ? '（整部剧）' : '') : '';
+    // 播放按钮：电影显示续播
+    var files = c.files, first = files[0];
+    var resume = 0;
+    files.forEach(function (x) { if (!resume && x.peek.resume_ms > 0) { resume = x.peek.resume_ms; first = x; } });
+    $('#sdPlay').textContent = resume ? '▶ 继续观看 ' + wallFmt(resume) : '▶ 播放';
+    $('#sdPlay')._file = first;
+    // 剧集：季 + 分集
+    var body = $('#sdBody');
+    if (c.type !== 'series') { body.innerHTML = ''; return; }
+    var eps = (item && item.season && item.season.episodes) || [];
+    var byNum = {}; eps.forEach(function (e) { byNum[e.number] = e; });
+    var h = '<div class="sd-seasons">' + D.seasons.map(function (s) {
+      return '<button class="btn' + (s === D.season ? ' on' : '') + '" data-season="' + (s == null ? '' : s) + '">' + (s == null ? '未分季' : s === 0 ? '特别篇' : '第 ' + s + ' 季') + '</button>';
+    }).join('') + '</div>';
+    h += seasonFiles().map(function (x, i) {
+      var n = x.peek.parsed.episode, e = n != null ? byNum[n] : null;
+      var nm = e ? (e.name_zh || e.name_en) : '';
+      var sub = e && e.name_zh && e.name_en && e.name_en !== e.name_zh ? e.name_en + ' · ' : '';
+      var mark = x.peek.resume_ms > 0 ? '<span class="sd-ep-m cont">▶ ' + wallFmt(x.peek.resume_ms) + '</span>' :
+        isPlayed(x.row.path) ? '<span class="sd-ep-m done">✓ 已看</span>' : '<span class="sd-ep-m">未看</span>';
+      return '<div class="sd-ep" data-fi="' + i + '"><div class="sd-still" style="' + (e && e.still_path ? 'background-image:url(\'' + wallImg(e.still_path, 'w185') + '\')' : '') + '"></div>' +
+        '<div class="sd-ep-t">' + (n != null ? 'E' + (n < 10 ? '0' : '') + n + ' · ' : '') + esc(nm || x.row.name) + '<small>' + esc(sub + x.row.name) + '</small></div>' + mark + '</div>';
+    }).join('');
+    body.innerHTML = h;
+  }
+  function wallPlay(file) {
+    if (!file) return;
+    if (W.remote) openRemoteVideo(file.row.path, W.rows); else openServerVideo(file.row.path);
+  }
+
+  /* ---- 修正匹配 ---- */
+  var FX = { card: null, seq: 0 };
+  function wallOpenFix() {
+    var c = D.card; if (!c) return;
+    FX.card = c;
+    var cand = (c.files[0].peek.parsed.title_candidates || [])[0] || c.title;
+    $('#fxQ').value = cand;
+    $('#fxYear').value = c.year || '';
+    $('#fxType').value = c.type === 'series' ? 'tv' : 'movie';
+    $('#fxList').innerHTML = '';
+    var it = c.item;
+    $('#fxCur').textContent = it && it.status === 'pinned' ? '当前：已锁定 → ' + (it.media ? it.media.title + (it.media.year ? '（' + it.media.year + '）' : '') : '') + (it.pin_scope === 'group' ? '（整部剧）' : '') :
+      it && it.media ? '当前：自动匹配 → ' + it.media.title + (it.media.year ? '（' + it.media.year + '）' : '') + (it.status === 'needs_review' ? '，待确认' : '') : '当前：没有匹配';
+    $('#fxUnpin').style.display = it && it.status === 'pinned' ? '' : 'none';
+    $('#fxNote').textContent = c.type === 'series' ? '选定后会锁定整部剧（「' + c.title + '」目录下所有季、所有集），之后重新刮削 / 缓存过期都不会改。' : '选定后只锁定这一个视频，之后不会被重新刮削改掉。';
+    toggleModal('scrFix', true);
+    wallFixSearch();
+  }
+  function wallFixSearch() {
+    var seq = ++FX.seq, list = $('#fxList');
+    var q = $('#fxQ').value.trim();
+    if (!q) { list.innerHTML = '<div class="browse-empty">请输入搜索词</div>'; return; }
+    list.innerHTML = '<div class="browse-empty">搜索中…</div>';
+    apiJson('/api/scrape/search', { q: q, year: $('#fxYear').value.trim(), type: $('#fxType').value }).then(function (j) {
+      if (seq !== FX.seq) return;
+      var rs = j.results || [];
+      list.innerHTML = rs.length ? rs.map(function (r, i) {
+        return '<div class="fx-row" data-i="' + i + '"><div class="sd-poster" style="' + (r.poster_path ? 'background-image:url(\'' + wallImg(r.poster_path, 'w92') + '\')' : '') + '"></div><div>' +
+          '<b>' + esc(r.title) + '</b>' + (r.year ? '（' + esc(r.year) + '）' : '') +
+          '<small>' + esc(r.original_title && r.original_title !== r.title ? r.original_title : '') + '</small><small>' + esc(r.overview) + '</small></div></div>';
+      }).join('') : '<div class="browse-empty">TMDB 没有搜到结果，换个关键词 / 去掉年份试试</div>';
+      list._res = rs;
+    }, function (e) {
+      if (seq !== FX.seq) return;
+      list.innerHTML = '<div class="browse-empty">搜索失败：' + esc((e && e.code === 'no_token') ? '未配置 TMDB 令牌' : (e && e.code === 'bad_token') ? 'TMDB 令牌无效（401）' : ((e && e.message) || e)) + '</div>';
+    });
+  }
+  function wallPin(r) {
+    var c = FX.card, body = wallReq(c.files[0].row);
+    body.media_type = r ? r.media_type : 'movie'; body.tmdb_id = r ? r.tmdb_id : null;
+    apiJson('/api/scrape/pin', null, 'POST', body).then(function (j) {
+      toggleModal('scrFix', false); toggleModal('scrDetail', false);
+      toast(r ? '已锁定：' + j.item.media.title : '已取消锁定');
+      var id = c.id;
+      var after = function () { wallLoad(); };
+      if (!r) apiJson('/api/scrape/match', null, 'POST', Object.assign(wallReq(c.files[0].row), { force: true }))['catch'](function () {}).then(after); else after();
+    }, function (e) { toast('锁定失败：' + ((e && e.message) || e)); });
+  }
+
+  (function wireWall() {
+    $('#viewList').addEventListener('click', function () { wallSetView(false); });
+    $('#viewWall').addEventListener('click', function () { wallSetView(true); });
+    $('#wallFilter').addEventListener('input', function () { wallRender(); });
+    $('#wallSort').value = wallPrefs.sort || 'name';
+    $('#wallSort').addEventListener('change', function () { wallPrefs.sort = this.value; lsSet(LS_WALL, wallPrefs); wallRender(); });
+    $('#wallScan').addEventListener('click', wallScan);
+    $('#wallCancel').addEventListener('click', wallCancel);
+    $('#wallPurge').addEventListener('click', wallPurge);
+    $('#wallGrid').addEventListener('click', function (e) {
+      var el = e.target.closest ? e.target.closest('.wc') : null;
+      if (!el || !W.byId[el.dataset.id]) return;
+      wallOpenDetail(W.byId[el.dataset.id]);
+    });
+    $('#sdPlay').addEventListener('click', function () { wallPlay(this._file); });
+    $('#sdFix').addEventListener('click', wallOpenFix);
+    $('#sdBody').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-season]') : null;
+      if (b) { D.season = b.dataset.season === '' ? null : +b.dataset.season; D.seq++; wallDetailLoad(); return; }
+      var ep = e.target.closest ? e.target.closest('.sd-ep') : null;
+      if (ep) wallPlay(seasonFiles()[+ep.dataset.fi]);
+    });
+    $('#fxGo').addEventListener('click', wallFixSearch);
+    $('#fxQ').addEventListener('keydown', function (e) { if (e.key === 'Enter') wallFixSearch(); });
+    $('#fxList').addEventListener('click', function (e) {
+      var row = e.target.closest ? e.target.closest('.fx-row') : null;
+      if (row && this._res) wallPin(this._res[+row.dataset.i]);
+    });
+    $('#fxUnpin').addEventListener('click', function () { wallPin(null); });
+    /* 看完（ended）记「已看」：续播点在结尾 3 秒内会被清掉，所以单独记一个浏览器本地的小标记 */
+    vpV().addEventListener('ended', function () {
+      var it = VP.items[VP.i];
+      if (it && (it.path || it.remotePath)) markPlayed(it.path || it.remotePath, !it.path);
+    });
+    if (wallPrefs.view === 'wall') { $('#browse').classList.add('wall-on'); W.on = true; $('#viewWall').classList.add('on'); $('#viewList').classList.remove('on'); }
+  })();
 
   /* ================= 云端书库（/iv/ 与 WebDAV 同源，没有 CORS）=================
      账号（建议只读账号）只存在本站自己的 IndexedDB（库名 iv-settings）。不去读同源 /reader/ 的库
