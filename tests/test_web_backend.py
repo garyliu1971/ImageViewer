@@ -326,6 +326,68 @@ class TestHttpApi(FixtureCase):
             if old is None: os.environ.pop("IV_TTS_BASE", None)
             else: os.environ["IV_TTS_BASE"] = old
 
+    def test_ocr_relay_forwards_bearer_big_body_retry_after_and_keeps_tts_cap(self):
+        import http.server, threading
+        seen = {}
+
+        class Up(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+
+            def _reply(self, code, data, extra=None):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                for k, v in (extra or {}).items():
+                    self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                seen["get"] = (self.path, self.headers.get("Authorization"))
+                self._reply(200, b'{"pagesToday":3,"pagesLimit":300}')
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                seen["auth"], seen["path"], seen["n"] = self.headers.get("Authorization"), self.path, len(self.rfile.read(n))
+                if self.headers.get("Authorization") == "Bearer slow":
+                    return self._reply(429, b'{"code":"rate_limited","retryAfter":2}', {"Retry-After": "2"})
+                self._reply(200, b'{"text":"ok"}')
+
+        up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Up)
+        threading.Thread(target=up.serve_forever, daemon=True).start()
+        old = os.environ.get("IV_TTS_BASE")
+        os.environ["IV_TTS_BASE"] = "http://127.0.0.1:%d" % up.server_address[1]
+        try:
+            def post(path, auth, body):
+                req = urllib.request.Request(self.base + path, data=body, method="POST",
+                                             headers={"Authorization": auth, "Content-Type": "application/json"})
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as r:
+                        return r.status, r.read(), r.headers
+                except urllib.error.HTTPError as e:
+                    return e.code, e.read(), e.headers
+            big = b"x" * (1500 * 1024)                                           # 一页 JPEG 的 base64 体量：ocr 放行
+            st, body, _ = post("/ocr/v1/page", "Bearer good", big)
+            self.assertEqual((st, body), (200, b'{"text":"ok"}'))
+            self.assertEqual((seen["path"], seen["auth"], seen["n"]), ("/ocr/v1/page", "Bearer good", len(big)))
+            try:                                                                  # ocr 上限 2MB：超了回 413（Windows 上客户端还在发体时可能直接被断开）
+                self.assertEqual(post("/ocr/v1/page", "Bearer good", b"x" * (2 * 1024 * 1024 + 1))[0], 413)
+            except (ConnectionError, urllib.error.URLError):
+                pass
+            self.assertEqual(seen["n"], len(big))                                  # 超限的体没有被转发
+            st, _, hd = post("/ocr/v1/page", "Bearer slow", b"{}")
+            self.assertEqual((st, hd.get("Retry-After")), (429, "2"))             # 上游状态码和 Retry-After 原样回传
+            self.assertEqual(post("/ocr/v1/evil", "Bearer good", b"{}")[0], 404)  # 只放行 page / usage
+            self.assertEqual(post("/tts/v1/speak", "Bearer good", b"x" * 9000)[0], 413)   # tts 的 8KB 上限不变
+            req = urllib.request.Request(self.base + "/ocr/v1/usage", headers={"Authorization": "Bearer good"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                self.assertEqual((r.status, json.loads(r.read())["pagesLimit"]), (200, 300))
+            self.assertEqual(seen["get"], ("/ocr/v1/usage", "Bearer good"))
+        finally:
+            up.shutdown()
+            if old is None: os.environ.pop("IV_TTS_BASE", None)
+            else: os.environ["IV_TTS_BASE"] = old
+
     def test_api_requires_token(self):
         st, _, body = http_get(self.base + "/api/ls?path=" + urllib.parse.quote(self.book))
         self.assertEqual(st, 403)

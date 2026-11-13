@@ -163,6 +163,16 @@ class TestVendorPdfjs(unittest.TestCase):
         with open(os.path.join(B.ROOT, "vendor", "pdfjs", "README.md"), encoding="utf-8") as f:
             self.assertIn("pdfjs-dist@" + m.group(1), f.read())     # 升级 pdf.js 时 sw.js 的缓存名一起改
 
+    def test_sw_never_touches_ocr_requests(self):
+        """AI 朗读的 /ocr/v1/* 是 POST + Authorization：sw.js 的 fetch 处理必须在碰缓存之前就放行（也不在 /iv/ 范围内）。"""
+        with open(os.path.join(B.ROOT, "sw.js"), encoding="utf-8") as f:
+            sw = f.read()
+        body = sw[sw.index("addEventListener('fetch'"):]
+        self.assertIn("if (req.method !== 'GET') return;", body)
+        self.assertIn("req.headers.has('authorization')", body)
+        self.assertIn("u.pathname.startsWith(SCOPE)", body)
+        self.assertNotIn("/ocr", body)                      # 没有任何一条规则会缓存 /ocr 响应
+
     def test_missing_vendor_is_an_error(self):
         old = B.vendor_files
         B.vendor_files = lambda: []

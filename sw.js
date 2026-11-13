@@ -1,5 +1,6 @@
 // /iv/ 的 service worker：只缓存应用外壳（页面本身 + manifest + 图标），让页面能离线打开、秒开。
 //
+// /ocr/v1/*（AI 朗读识别）：同源但不在 /iv/ 范围内，而且是 POST + Authorization，下面的 fetch 处理一开头就放行，不拦截也不缓存（test_build_iv_static 有断言）。
 // 绝不碰书本数据：同源的 WebDAV（/library/…）、Range 请求、带 Authorization 的请求一律不拦截、不缓存，
 // 直接走网络 —— 否则 206 分段会被错误地缓存成整文件，或者把带账号的响应留在缓存里。
 // 作用域只有 /iv/（注册时 scope './'，且文件就放在 /iv/ 下）；缓存名前缀 iv-，清理旧缓存时只动 iv- 开头的，

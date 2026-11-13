@@ -314,6 +314,14 @@
   #ttsBar select { font: inherit; font-size: 12px; color: var(--text); background: #12151b; border: 1px solid var(--border); border-radius: 6px; padding: 4px 4px; }
   #ttsText { max-width: min(38vw, 320px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
   @media (max-width: 640px) { #ttsText { display: none; } #ttsBar { bottom: 54px; } }
+  .btn.hidden { display: none !important; }
+  #aiUse { font-size: 11px; color: var(--muted); white-space: nowrap; }
+  #aiUse:empty { display: none; }
+  #ttsSet h3 { font-size: 14px; margin: 16px 0 0; padding-top: 12px; border-top: 1px solid var(--border); }
+  #ttsSet label.ai-chk { display: flex; gap: 8px; align-items: flex-start; line-height: 1.6; }
+  #ttsSet label.ai-chk input { margin-top: 4px; flex: 0 0 auto; }
+  #aiConsent { z-index: 76; }
+  #aiConsent .modal-card p { line-height: 1.8; margin: 8px 0; font-size: 14px; }
 
   /* ---------- 磁盘路径浏览器（后端模式）---------- */
   #browse .modal-card { max-width: 820px; }
@@ -509,6 +517,7 @@
   <div class="toolbar-group">
     <button class="btn icon" id="btnBm" title="书签：点一下给当前页加 / 取消书签 (K)；长按或 Shift+K 打开书签列表">🔖</button>
     <button class="btn icon" id="btnTts" title="朗读 (V)：读带文字层的 PDF">🔊</button>
+    <button class="btn icon hidden" id="btnAi" title="AI 朗读：这本 PDF 没有文字层，用 AI 识别页面文字后朗读（页面图片会发送到阿里云）">🤖</button>
     <button class="btn icon" id="btnThumbs" title="缩略图 (T)">▤</button>
     <button class="btn icon" id="btnDetail" title="详细信息 (I)">ℹ</button>
     <button class="btn icon" id="btnFull" title="全屏 (F / Enter / F11)">⛶</button>
@@ -543,6 +552,8 @@
     <option value="1.5">1.5×</option><option value="1.75">1.75×</option><option value="2">2×</option>
   </select>
   <span id="ttsText"></span>
+  <span id="aiUse" title="AI 识别今日已用页数"></span>
+  <button class="btn icon hidden" id="ttsRetry" title="重新识别这一页（跳过缓存）">🔄</button>
   <button class="btn icon" id="ttsCfg" title="朗读设置">⚙</button>
   <button class="btn icon" id="ttsClose" title="关闭朗读条（同时停止）">✕</button>
 </div>
@@ -665,11 +676,25 @@
   </div>
 </div>
 
+<div id="aiConsent" class="modal hidden">
+  <div class="modal-card" style="max-width:460px">
+    <button class="modal-close" data-close="aiConsent">✕</button>
+    <h2>🤖 AI 朗读</h2>
+    <p><b>页面图片将发送到阿里云（通义千问）进行文字识别。</b></p>
+    <p>这本 PDF 没有文字层：朗读时，当前页和接下来两页的页面图像会先发到本站服务器，再转发给阿里云的视觉模型识别成文字，然后用现有的语音朗读。识别可能有误；识别结果只缓存在这台设备的浏览器里。令牌和设置只保存在这台设备。</p>
+    <p class="dav-note">之后可以在「朗读设置」里随时撤回同意。</p>
+    <div class="modal-actions">
+      <button class="btn" data-close="aiConsent">取消</button>
+      <button class="btn primary" id="aiConsentOk">同意并开启</button>
+    </div>
+  </div>
+</div>
+
 <div id="ttsSet" class="modal hidden">
   <div class="modal-card" style="max-width:440px">
     <button class="modal-close" data-close="ttsSet">✕</button>
     <h2>🔊 朗读设置</h2>
-    <p class="dav-note">只能朗读<b>带文字层</b>的 PDF（OCR 过的）；纯扫描图片没有文字，读不了。</p>
+    <p class="dav-note">直接朗读<b>带文字层</b>的 PDF（OCR 过的）；纯扫描图片没有文字层，要用下面的 <b>AI 朗读</b>（识别页面文字后再读）。</p>
     <label>语音引擎
       <select id="ttsEngine">
         <option value="auto">自动（有令牌用在线语音，否则用本机）</option>
@@ -686,6 +711,16 @@
       </select>
     </label>
     <label class="tts-consent"><input type="checkbox" id="ttsConsent"> 我同意：正在朗读的文字（逐句）会发送到本站服务器，并转发给 Azure / edge-tts 合成语音。令牌和设置只保存在这台设备的浏览器里。</label>
+    <h3>🤖 AI 朗读（无文字层的扫描 PDF）</h3>
+    <label class="ai-chk"><input type="checkbox" id="aiConsentChk"> 允许把页面图片发送到阿里云（通义千问）识别文字。图片经本站服务器转发，不保存在本站；令牌就是上面的在线语音令牌。</label>
+    <label>版面
+      <select id="aiMode">
+        <option value="vertical-classical">繁体竖排古籍（合页先读右叶）</option>
+        <option value="horizontal">横排（合页先读左叶）</option>
+      </select>
+    </label>
+    <label class="ai-chk"><input type="checkbox" id="aiSkipNotes"> 跳过注文（不朗读【注：……】里的双行小注）</label>
+    <p class="dav-note"><span id="aiUsage"></span> <button class="btn" id="aiClear" style="margin-left:8px">清除识别缓存</button></p>
     <p id="ttsSetMsg" class="dav-note"></p>
     <div class="modal-actions">
       <button class="btn" id="ttsTest" style="margin-right:auto">试听</button>
@@ -2168,6 +2203,318 @@
     });
   }
 
+  /* ---------------- AI 朗读（无文字层的 PDF）：页面图片 → 切叶 → /ocr/v1/page → 文字 → 和有文字层的页一样进朗读管线 ----------------
+     全部是纯逻辑（浏览器相关的东西 —— canvas / fetch / IndexedDB / 定时器 —— 都从参数注入），Node 里直接测。
+     服务端限制（deploy/server/ocr/server.py）：只收 JPEG、长边 ≤ 2048、≤ 1.2MB；所以客户端必须自己缩放并重新编码。
+     服务端会把双行小字注文写成【注：……】；默认原样朗读（owner 要听注），设置里可勾「跳过注文」。 */
+  var AI_EDGE = 2000, AI_MAX_BYTES = 1100 * 1024, AI_MAX_PIXELS = 36e6, AI_NOTE_RE = /【注：[^】]*】/g;
+  var AI_MODEL0 = 'qwen3.8-flash', AI_PROMPT_VER0 = 1;
+  var AI_MODES = { 'vertical-classical': 1, 'horizontal': 1 };
+
+  /** 合页扫描：宽 / 高 ≥ 1.1 当两叶；竖版单页（< 1.0）和接近方形的不切 */
+  function aiIsSpread(w, h) { return w > 0 && h > 0 && w / h >= 1.1; }
+  /** 渲染比例：让「一叶」的长边约 AI_EDGE 像素（太大的页面限总像素） */
+  function aiRenderPlan(vw, vh, edge) {
+    edge = edge || AI_EDGE;
+    var split = aiIsSpread(vw, vh), lw = split ? vw / 2 : vw;
+    var scale = edge / Math.max(lw, vh, 1);
+    scale = Math.min(scale, Math.sqrt(AI_MAX_PIXELS / Math.max(1, vw * vh)), 4);
+    return { split: split, scale: Math.max(0.25, scale) };
+  }
+  /** RGBA 像素 → 每一列的「墨迹」像素数（比整页平均亮度明显更暗的点算墨迹） */
+  function aiColumnInk(rgba, w, h) {
+    var lum = new Float32Array(w * h), i, sum = 0, n = w * h;
+    for (i = 0; i < n; i++) { var o = i * 4; lum[i] = 0.299 * rgba[o] + 0.587 * rgba[o + 1] + 0.114 * rgba[o + 2]; sum += lum[i]; }
+    var thr = (sum / Math.max(1, n)) * 0.7, ink = new Array(w), x, y;
+    for (x = 0; x < w; x++) ink[x] = 0;
+    for (y = 0; y < h; y++) for (x = 0; x < w; x++) if (lum[y * w + x] < thr) ink[x]++;
+    return ink;
+  }
+  /** 装订线（合页扫描的中缝）。先找「版框线」：整列都是墨的竖线（墨迹 ≥ 0.55×页高；实心块也算，取内侧边缘），
+      在 40%-60% 宽度内取中点离页中心最近的一对相邻框线（左页框的右边 ↔ 右页框的左边；右页上别的竖线也会成对，不能按空隙大小选），装订线 = 空隙中点 —— 古籍两页的版框几乎贴在一起（间隙 < 2%）时，
+      光找「空白列」会误选字列之间的缝，只有框线能认出真正的中缝。没有框线就找 40%-60% 内最宽的整段空白列（≥ 2% 宽度），再没有就退回固定中点。
+      h = 缩略图高度（不给就只用空白列这一招）。 */
+  function aiGutter(ink, h) {
+    var n = ink.length, mid = Math.round(n / 2), i;
+    if (n < 20) return mid;
+    var sum = 0;
+    for (i = 0; i < n; i++) sum += ink[i];
+    var mean = sum / n;
+    if (!(mean > 0)) return mid;
+    var lo = Math.floor(n * 0.4), hi = Math.ceil(n * 0.6);
+    function runs(test, a, b) {                                   // [a, b] 内满足 test 的最长连续段 → [{s, e}]（含端点）
+      var out = [], st = -1;
+      for (var k = a; k <= b + 1; k++) {
+        var on = k <= b && test(k);
+        if (on && st < 0) st = k;
+        if (!on && st >= 0) { out.push({ s: st, e: k - 1 }); st = -1; }
+      }
+      return out;
+    }
+    if (h > 0) {
+      var strong = runs(function (k) { return ink[k] >= 0.55 * h; }, Math.floor(n * 0.3), Math.ceil(n * 0.7)), best = null, j;
+      for (j = 0; j + 1 < strong.length; j++) {
+        var gap = strong[j + 1].s - strong[j].e - 1, c = (strong[j].e + strong[j + 1].s) / 2;
+        if (gap >= Math.max(2, n * 0.008) && c >= lo && c <= hi && (!best || Math.abs(c - mid) < Math.abs(best.c - mid))) best = { c: c };
+      }
+      if (best) return Math.round(best.c);
+    }
+    var blank = runs(function (k) { return ink[k] <= 0.05 * mean; }, lo, hi), pick = null;
+    blank.forEach(function (r) {
+      var w = r.e - r.s + 1, c = (r.s + r.e) / 2;
+      if (w >= n * 0.02 && (!pick || w > pick.w || (w === pick.w && Math.abs(c - mid) < Math.abs(pick.c - mid)))) pick = { w: w, c: c };
+    });
+    return pick ? Math.round(pick.c) : mid;
+  }
+  /** 一页切成几叶：合页 = [右叶, 左叶]（竖排古籍右叶先读）或 [左叶, 右叶]（横排）；每叶向装订线外扩 ~2% 防切到字。返回 [{leaf:'R'|'L', x, y, w, h}] */
+  function aiLeafRects(w, h, gutter, rtl, overlap) {
+    var o = Math.round(w * (overlap === undefined ? 0.02 : overlap)), g = Math.round(gutter);
+    var rx = Math.max(0, g - o), right = { leaf: 'R', x: rx, y: 0, w: w - rx, h: h }, left = { leaf: 'L', x: 0, y: 0, w: Math.min(w, g + o), h: h };
+    return rtl ? [right, left] : [left, right];
+  }
+  /** 目标边长（只缩不放） */
+  function aiFitSize(w, h, edge) {
+    var s = Math.min(1, (edge || AI_EDGE) / Math.max(w, h, 1));
+    return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
+  }
+  /** 缩放 + JPEG 编码到服务端限制内：d.resize(canvas, w, h) → canvas；d.toBlob(canvas, 'image/jpeg', q) → Promise<Blob>。
+      质量 0.85 起，超过 1.1MB 就降质量、再缩小边长；都不行 reject（code 'toolarge'）。 */
+  function aiEncode(canvas, d) {
+    var steps = [[AI_EDGE, 0.85], [AI_EDGE, 0.75], [1600, 0.7], [1280, 0.6], [1024, 0.5]], W = canvas.width, H = canvas.height;
+    function at(i) {
+      if (i >= steps.length) { var e = new Error('这一页压缩后仍然太大'); e.code = 'toolarge'; return Promise.reject(e); }
+      var sz = aiFitSize(W, H, steps[i][0]), c = sz.w === W && sz.h === H ? canvas : d.resize(canvas, sz.w, sz.h);
+      return Promise.resolve(d.toBlob(c, 'image/jpeg', steps[i][1])).then(function (b) {
+        if (b && b.size > 0 && b.size <= AI_MAX_BYTES) return { blob: b, w: sz.w, h: sz.h, q: steps[i][1] };
+        return at(i + 1);
+      });
+    }
+    return at(0);
+  }
+  function aiPageId(bookKey, pno, leaf) { return 'b' + hash32(bookKey) + ':p' + pno + ':' + leaf; }      // 服务端只收 [A-Za-z0-9:_.-]：不带书名
+  /** 请求构造：返回 {url, init}（signal 由调用方补）。令牌只放 Authorization 头 */
+  function aiBuildRequest(o) {
+    var mode = AI_MODES[o.mode] ? o.mode : 'vertical-classical';
+    return { url: o.endpoint, init: { method: 'POST', cache: 'no-store', credentials: 'omit',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + o.token },
+      body: JSON.stringify({ image: o.b64, mime: 'image/jpeg', mode: mode, pageId: String(o.pageId).replace(/[^A-Za-z0-9:_.\-]/g, '_').slice(0, 100) }) } };
+  }
+  function aiStripNotes(text) { return String(text).replace(AI_NOTE_RE, ''); }
+  /** 各叶的文字（已按阅读顺序）→ 朗读管线要的页对象 {paras, indentFirst, open}：和 pdfPageParas 的返回形状一致，createTtsRunner 不用改。
+      open 恒为 false：模型已经加了标点，页尾多半是整句，不做跨页拼半句。 */
+  function aiAdapt(texts, o) {
+    var skip = !!(o && o.skipNotes), paras = [];
+    (texts || []).forEach(function (t) {
+      if (typeof t !== 'string') return;
+      var s = skip ? aiStripNotes(t) : t;
+      s.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, ' ').split(/\n+/).forEach(function (p) {
+        p = p.replace(/[ \t　]+/g, ' ').trim();
+        if (p && /[A-Za-z0-9㐀-鿿]/.test(p)) paras.push(p);
+      });
+    });
+    while (paras.length && /^[0-9０-９]{1,4}$/.test(paras[0])) paras.shift();                         // 页码残留
+    while (paras.length && /^[0-9０-９]{1,4}$/.test(paras[paras.length - 1])) paras.pop();
+    return { paras: paras, indentFirst: false, open: false };
+  }
+  function aiWait(sec) { return sec < 90 ? Math.ceil(sec) + ' 秒' : sec < 5400 ? Math.ceil(sec / 60) + ' 分钟' : Math.ceil(sec / 3600) + ' 小时'; }
+  /** 错误分类：status 0 = 网络错误。fatal = 整个功能停（令牌 / 额度）；retry = 值得自动重试；其余 = 只这一页失败 */
+  function aiClassify(status, body, retryAfterHeader) {
+    var code = body && typeof body.code === 'string' ? body.code : '';
+    var ra = Number(retryAfterHeader != null && retryAfterHeader !== '' ? retryAfterHeader : (body && body.retryAfter));
+    ra = isFinite(ra) && ra > 0 ? ra : 0;
+    if (!status) return { kind: 'offline', retry: true, fatal: false, retryAfter: 0, message: '无法连接 AI 识别服务（网络错误）' };
+    if (status === 401) return { kind: 'auth', retry: false, fatal: true, retryAfter: 0, message: '令牌无效或已过期，请在「朗读设置」里重新输入' };
+    if (status === 403) return { kind: 'forbidden', retry: false, fatal: true, retryAfter: 0, message: '这个令牌没有开通 AI 朗读' };
+    if (status === 400 || status === 413 || status === 415) return { kind: 'badimage', retry: false, fatal: false, retryAfter: 0, message: '页面图片被服务器拒收（' + (code || status) + '）' };
+    if (status === 422) return { kind: 'refused', retry: false, fatal: false, retryAfter: 0, message: '模型拒绝识别这一页（内容被过滤）' };
+    if (status === 429) {
+      if (/cap|quota/.test(code)) return { kind: 'quota', retry: false, fatal: true, retryAfter: ra, message: (code === 'monthly_cap' ? '本月 ' : '今日 ') + 'AI 识别额度用完了' + (ra ? '（约 ' + aiWait(ra) + '后恢复）' : '') };
+      return { kind: 'rate', retry: true, fatal: false, retryAfter: ra || 2, message: code === 'busy' ? '服务器忙' : '请求太快被限速' };
+    }
+    if (status === 504) return { kind: 'timeout', retry: true, fatal: false, retryAfter: 0, message: '识别服务超时' };
+    if (status >= 500) return { kind: 'upstream', retry: true, fatal: false, retryAfter: 0, message: '识别服务暂时出错' };
+    return { kind: 'http', retry: false, fatal: false, retryAfter: 0, message: '识别请求失败（HTTP ' + status + '）' };
+  }
+  /** 第 attempt（0 起）次重试前等多久（毫秒）；-1 = 不再重试。网络 / 502 / 504：1s、3s 最多 2 次；429：按 Retry-After，最多 6 次，等待超过 60s 就放弃 */
+  function aiBackoff(cls, attempt) {
+    if (!cls || !cls.retry) return -1;
+    if (cls.kind === 'rate') return attempt < 6 && cls.retryAfter <= 60 ? Math.max(500, cls.retryAfter * 1000) : -1;
+    return attempt < 2 ? [1000, 3000][attempt] : -1;
+  }
+  function aiCacheKey(o) { return [o.bookKey, o.pno, o.leaf, o.mode, o.model || AI_MODEL0, o.promptVer || AI_PROMPT_VER0].join('|'); }
+
+  /** 识别结果缓存：IndexedDB（d.indexedDB 注入），任何一步出错都退回内存 Map，调用方不用处理异常。值 = 各叶文字数组 */
+  function makeAiCache(d) {
+    d = d || {};
+    var mem = Object.create(null), dbp = null, puts = 0, K = { name: d.name || 'iv-ocr', max: d.max || 3000, usingIdb: false };
+    function now() { return d.now ? d.now() : Date.now(); }
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise(function (res) {
+        try {
+          if (!d.indexedDB) return res(null);
+          var rq = d.indexedDB.open(K.name, 1);
+          rq.onupgradeneeded = function () { try { rq.result.createObjectStore('p', { keyPath: 'k' }); } catch (e) { /* 忽略 */ } };
+          rq.onsuccess = function () { K.usingIdb = true; res(rq.result); };
+          rq.onerror = rq.onblocked = function () { res(null); };
+        } catch (e) { res(null); }
+      });
+      return dbp;
+    }
+    /** 在对象仓库上跑一个请求，成功 → 结果，失败 → undefined（永不 reject） */
+    function run(mode, fn) {
+      return open().then(function (db) {
+        if (!db) return undefined;
+        return new Promise(function (res) {
+          try {
+            var t = db.transaction('p', mode), rq = fn(t.objectStore('p'));
+            t.oncomplete = function () { res(rq ? rq.result : true); };
+            t.onerror = t.onabort = function () { res(undefined); };
+          } catch (e) { res(undefined); }
+        });
+      });
+    }
+    K.get = function (key) {
+      if (key in mem) return Promise.resolve(mem[key]);
+      return run('readonly', function (s) { return s.get(key); }).then(function (r) { if (r && Array.isArray(r.v)) { mem[key] = r.v; return r.v; } return null; });
+    };
+    K.put = function (key, v) {
+      mem[key] = v;
+      return run('readwrite', function (s) { return s.put({ k: key, v: v, t: now() }); }).then(function () { if (++puts % 25 === 0) return K.trim(); });
+    };
+    K.remove = function (key) { delete mem[key]; return run('readwrite', function (s) { return s['delete'](key); }); };
+    K.clear = function () { mem = Object.create(null); return run('readwrite', function (s) { return s.clear(); }); };
+    /** 条数超过上限就删最旧的 */
+    K.trim = function () {
+      return run('readonly', function (s) { return s.getAll(); }).then(function (all) {
+        if (!all || all.length <= K.max) return;
+        all.sort(function (a, b) { return (a.t || 0) - (b.t || 0); });
+        var del = all.slice(0, all.length - K.max);
+        return run('readwrite', function (s) { del.forEach(function (r) { s['delete'](r.k); }); return null; });
+      });
+    };
+    return K;
+  }
+
+  /** 取页控制器：把「渲染 → 逐叶请求 → 缓存」包成 getPage(pno) → Promise<{paras,indentFirst,open}|null>，和 pdfPageParas 的结果同形状，
+      所以 createTtsRunner 的 host.getPage 直接换成它就行。
+      d = { bookKey, count, fetch, endpoint(name), getCfg() → {token, mode, skipNotes}, cache, meta:{model, promptVer},
+            render(pno, cfg, signal) → Promise<[{leaf, b64}]>（已按阅读顺序）, sleep(ms), onStatus(pno, kind, info), onUsage(u), onFatal(cls), concurrency }
+      同时最多 2 个请求在飞（服务端每用户并发上限也是 2），页号小的优先；同一页的请求合并；失败的页保持失败（不重复请求 / 不重复提示），直到 retry(pno)。
+      focus(pno)：中止窗口 [pno, pno+2] 之外还在飞的页，并预取这个窗口。 */
+  function createAiPager(d) {
+    var P = { requests: 0, hits: 0 }, pages = Object.create(null), active = 0, waiters = [];
+    var maxConc = d.concurrency || 2, sleep = d.sleep || function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+    function abortErr() { var e = new Error('aborted'); e.name = 'AbortError'; return e; }
+    function newCtl() {
+      if (typeof AbortController !== 'undefined') return new AbortController();
+      var c = { signal: { aborted: false }, abort: function () { c.signal.aborted = true; } };
+      return c;
+    }
+    function status(pno, kind, info) { try { if (d.onStatus) d.onStatus(pno, kind, info || {}); } catch (e) { /* 界面出错不影响识别 */ } }
+    function acquire(ent) {
+      return new Promise(function (res, rej) {
+        function go() { if (ent.ctl.signal.aborted) return rej(abortErr()); active++; res(); }
+        if (active < maxConc) go(); else waiters.push({ go: go, ent: ent, rej: rej });
+      });
+    }
+    function release() {
+      active--;
+      while (waiters.length && active < maxConc) {
+        var bi = 0, i;
+        for (i = 1; i < waiters.length; i++) if (waiters[i].ent.pno < waiters[bi].ent.pno) bi = i;
+        waiters.splice(bi, 1)[0].go();
+      }
+    }
+    function dropWaiters(ent) {
+      waiters = waiters.filter(function (w) { if (w.ent === ent) { w.rej(abortErr()); return false; } return true; });
+    }
+    function requestLeaf(ent, lf) {
+      var attempt = 0;
+      function once() {
+        return acquire(ent).then(function () {
+          var cfg = d.getCfg(), rq = aiBuildRequest({ endpoint: d.endpoint('page'), token: cfg.token, b64: lf.b64, mode: cfg.mode, pageId: aiPageId(d.bookKey, ent.pno, lf.leaf) });
+          rq.init.signal = ent.ctl.signal; P.requests++;
+          return Promise.resolve().then(function () { return d.fetch(rq.url, rq.init); }).then(function (res) {
+            return Promise.resolve(res.json()).then(function (b) { return b; }, function () { return null; }).then(function (b) { return { res: res, body: b }; });
+          }, function (e) { if (ent.ctl.signal.aborted || (e && e.name === 'AbortError')) throw abortErr(); return { net: true }; })
+            .then(function (o) { release(); return o; }, function (e) { release(); throw e; });
+        }).then(function (o) {
+          var cls;
+          if (o.net) cls = aiClassify(0);
+          else if (o.res.ok && o.body && typeof o.body.text === 'string') {
+            if (o.body.model && d.meta) { d.meta.model = o.body.model; if (o.body.promptVer) d.meta.promptVer = o.body.promptVer; }
+            if (o.body.usage && d.onUsage) { try { d.onUsage(o.body.usage); } catch (e) { /* 忽略 */ } }
+            return o.body.text;
+          } else if (o.res.ok) cls = { kind: 'upstream', retry: false, fatal: false, retryAfter: 0, message: '识别服务返回了无法理解的内容' };
+          else cls = aiClassify(o.res.status, o.body, o.res.headers && o.res.headers.get ? o.res.headers.get('Retry-After') : null);
+          var wait = cls.fatal ? -1 : aiBackoff(cls, attempt);
+          if (wait < 0) { var er = new Error(cls.message); er.cls = cls; throw er; }
+          attempt++;
+          status(ent.pno, 'retry', { cls: cls, attempt: attempt, wait: wait });
+          return sleep(wait).then(function () { if (ent.ctl.signal.aborted) throw abortErr(); return once(); });
+        });
+      }
+      return once();
+    }
+    function keyFor(pno, cfg) {
+      return aiCacheKey({ bookKey: d.bookKey, pno: pno, leaf: 'P', mode: cfg.mode, model: d.meta && d.meta.model, promptVer: d.meta && d.meta.promptVer });
+    }
+    function start(pno, force) {
+      var ent = { pno: pno, ctl: newCtl(), done: false, failed: null };
+      ent.p = Promise.resolve().then(function () {
+        var cfg = d.getCfg(), key = keyFor(pno, cfg);
+        return (force ? Promise.resolve(null) : d.cache.get(key)).then(function (hit) {
+          if (hit) { P.hits++; status(pno, 'cached', {}); return hit; }
+          status(pno, 'recognizing', {});
+          return d.render(pno, cfg, ent.ctl.signal).then(function (leaves) {
+            if (ent.ctl.signal.aborted) throw abortErr();
+            var out = [];
+            return leaves.reduce(function (chain, lf) { return chain.then(function () { return requestLeaf(ent, lf).then(function (t) { out.push(t); }); }); }, Promise.resolve())
+              .then(function () { return d.cache.put(keyFor(pno, cfg), out); }).then(function () { return out; });
+          });
+        });
+      }).then(function (texts) {
+        ent.done = true; status(pno, 'done', { empty: !texts.some(function (t) { return /\S/.test(t); }) }); return texts;
+      }, function (e) {
+        ent.done = true;
+        if (ent.ctl.signal.aborted || (e && e.name === 'AbortError')) { if (pages[pno] === ent) delete pages[pno]; throw abortErr(); }
+        ent.failed = e; status(pno, 'failed', { cls: e && e.cls, error: e });
+        if (e && e.cls && e.cls.fatal && d.onFatal) { try { d.onFatal(e.cls); } catch (x) { /* 忽略 */ } }
+        throw e;
+      });
+      ent.p['catch'](function () { /* 失败由 getPage 的调用方处理；这里只防 unhandledrejection */ });
+      pages[pno] = ent;
+      return ent;
+    }
+    function raw(pno) { return pno >= 1 && pno <= d.count ? (pages[pno] || start(pno)).p : Promise.resolve(null); }
+    P.getPage = function (pno) {
+      return raw(pno).then(function (texts) { return texts ? aiAdapt(texts, { skipNotes: !!d.getCfg().skipNotes }) : null; }, function () { return null; });
+    };
+    P.prefetch = function (list) { list.forEach(function (p) { if (p >= 1 && p <= d.count && !pages[p]) start(p); }); };
+    /** 用户读 / 翻到了 pno：窗口外还在飞的请求中止（已计费的结果丢弃，服务端缓存会兜住重来），再预取 pno、pno+1、pno+2 */
+    P.focus = function (pno) {
+      Object.keys(pages).forEach(function (k) {
+        var ent = pages[k];
+        if (!ent.done && (ent.pno < pno || ent.pno > pno + 2)) { try { ent.ctl.abort(); } catch (e) { /* 忽略 */ } dropWaiters(ent); delete pages[k]; }
+      });
+      P.prefetch([pno, pno + 1, pno + 2]);
+    };
+    /** 手动重试一页：丢掉这一页的状态，跳过缓存重新识别（成功后覆盖缓存）。同步登记，之后 getPage(pno) 拿到的就是这次的结果 */
+    P.retry = function (pno) {
+      var ent = pages[pno];
+      if (ent) { if (!ent.done) { try { ent.ctl.abort(); } catch (e) { /* 忽略 */ } dropWaiters(ent); } delete pages[pno]; }
+      if (pno < 1 || pno > d.count) return Promise.resolve(null);
+      return start(pno, true).p.then(function () { return P.getPage(pno); }, function () { return null; });
+    };
+    P.cancelAll = function () {
+      Object.keys(pages).forEach(function (k) { var ent = pages[k]; if (!ent.done) { try { ent.ctl.abort(); } catch (e) { /* 忽略 */ } dropWaiters(ent); } delete pages[k]; });
+    };
+    P.failed = function (pno) { return !!(pages[pno] && pages[pno].failed); };
+    P.inflight = function () { return active; };
+    return P;
+  }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
@@ -2191,7 +2538,11 @@
     bmNormalize: bmNormalize, bmMerge: bmMerge, bmLive: bmLive, bmAtPage: bmAtPage, bmToggle: bmToggle, bmUpdate: bmUpdate, bmRemove: bmRemove, bmSame: bmSame,
     hasCjk: hasCjk, pdfTextLines: pdfTextLines, pdfPageParas: pdfPageParas, ttsTracker: ttsTracker, ttsClean: ttsClean,
     splitSentences: splitSentences, pageSentences: pageSentences, createTtsRunner: createTtsRunner,
-    makeCloudEngine: makeCloudEngine, makeBrowserEngine: makeBrowserEngine, ttsClassify: ttsClassify, ttsRate: ttsRate
+    makeCloudEngine: makeCloudEngine, makeBrowserEngine: makeBrowserEngine, ttsClassify: ttsClassify, ttsRate: ttsRate,
+    AI_EDGE: AI_EDGE, AI_MAX_BYTES: AI_MAX_BYTES, AI_MODEL0: AI_MODEL0, AI_PROMPT_VER0: AI_PROMPT_VER0,
+    aiIsSpread: aiIsSpread, aiRenderPlan: aiRenderPlan, aiColumnInk: aiColumnInk, aiGutter: aiGutter, aiLeafRects: aiLeafRects, aiFitSize: aiFitSize, aiEncode: aiEncode,
+    aiPageId: aiPageId, aiBuildRequest: aiBuildRequest, aiStripNotes: aiStripNotes, aiAdapt: aiAdapt, aiClassify: aiClassify, aiBackoff: aiBackoff,
+    aiCacheKey: aiCacheKey, makeAiCache: makeAiCache, createAiPager: createAiPager
   };
 })(typeof window !== 'undefined' ? window : globalThis);
 </script>
@@ -2625,7 +2976,7 @@
     urlMap.clear();
     probing.clear();
     tQueue.length = 0;
-    ttsStop(true);                                                      /* 朗读跟着这本书：换书 / 关书就停（先于销毁 pdf，免得它还在取下一页的文字） */
+    ttsStop(true); aiReset();                                           /* 朗读跟着这本书：换书 / 关书就停（先于销毁 pdf，免得它还在取下一页的文字） */
     if (activeArch) { activeArch.destroy(); activeArch = null; }       /* 上一本是 rar / 7z / tar：终止 libarchive 的 worker（wasm 堆随之释放），页面的 blob: 地址上面已经 revoke */
     if (activePdf) { activePdf.destroy(); activePdf = null; }          /* 上一本是 PDF：终止它的 worker、清掉渲染队列 */
     pdfSpread = null;                                                   /* PDF 的单页是书级覆盖，没碰过全局 S.spread，这里清掉就行 */
@@ -3469,7 +3820,7 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet'];
+  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
@@ -4024,6 +4375,7 @@
           if (opts.key) o.key = opts.key;
           openItems(items, o);                 // 里面的 closeBook 会销毁上一本的 pdf 上下文
           activePdf = ctx;
+          aiProbe(ctx);                                                      // 抽样看有没有文字层：没有就显示 🤖 AI 朗读
           if (src.size > 300 * 1048576 && SMALL_SCREEN) toast('这个 PDF 很大（' + fmtSize(src.size) + '），手机内存可能不够，卡顿或闪退请改用电脑', 6000);
           return true;
         });
@@ -4526,7 +4878,8 @@
   function ttsCfg() {
     var c = lsGet(LS_TTS, null) || {};
     return { engine: c.engine === 'cloud' || c.engine === 'browser' ? c.engine : 'auto', token: typeof c.token === 'string' ? c.token.trim().slice(0, 512) : '',
-      voice: typeof c.voice === 'string' && c.voice ? c.voice.slice(0, 120) : 'zh-CN-XiaoxiaoNeural', rate: C.ttsRate(c.rate), consent: !!c.consent };
+      voice: typeof c.voice === 'string' && c.voice ? c.voice.slice(0, 120) : 'zh-CN-XiaoxiaoNeural', rate: C.ttsRate(c.rate), consent: !!c.consent,
+      ai: !!c.ai, aiConsent: !!c.aiConsent, aiMode: c.aiMode === 'horizontal' ? 'horizontal' : 'vertical-classical', aiSkipNotes: !!c.aiSkipNotes };
   }
   function ttsEngineId(c) { return tts.forced ? 'forced' : c.engine === 'auto' ? (c.token && c.consent ? 'cloud' : 'browser') : c.engine; }
   function ttsEndpoint(path) { return new URL('../tts/v1/' + path, document.baseURI).href; }
@@ -4578,7 +4931,10 @@
   function ttsFailMessage(info) {
     var le = info && info.lastError, why = le && le.message ? le.message : '';
     switch (info && info.kind) {
-      case 'notext': return '连续 3 页都没有文字层——这本 PDF 是扫描的图片，没有可朗读的文字。需要先做 OCR（生成文字层）才能朗读。';
+      case 'notext':
+        if (aiActive()) return 'AI 识别连续 3 页没有得到文字（识别失败或空白页），已停止。可以点 🔄 重试这一页，或检查令牌 / 网络 / 设置。';
+        if (ai.noText && ai.ctx === activePdf) return '连续 3 页都没有文字层——这本 PDF 是扫描的图片。可以点工具栏的 🤖 开启「AI 朗读」（用视觉模型识别页面文字后朗读，页面图片会发送到阿里云），或先做 OCR 生成文字层。';
+        return '连续 3 页都没有文字层——这本 PDF 是扫描的图片，没有可朗读的文字。需要先做 OCR（生成文字层）才能朗读。';
       case 'nostart': return tts.engineId === 'cloud' ? '在线朗读没能开始（手机浏览器要求点一下才能出声，再点一次 ▶ 试试）。' + why : (why || '本机语音没有开始朗读：浏览器可能没有可用的中文语音，可以在设置里改用在线语音。');
       case 'auth': case 'quota': case 'offline': return why || '在线朗读失败';
       default: return '朗读出错了' + (why ? '：' + why : '') + '。';
@@ -4587,8 +4943,9 @@
   function ttsHost(ctx) {
     return {
       engine: tts.engine, count: ctx.doc.numPages,
-      getPage: function (p) { return ttsPage(ctx, p); },
+      getPage: function (p) { return aiActive() && ctx === activePdf ? aiGetPager(ctx).getPage(p) : ttsPage(ctx, p); },
       onPage: function (p) {
+        if (aiActive() && ctx === activePdf) aiGetPager(ctx).focus(p);                 // 中止窗口外还在飞的识别请求，并预取后面两页
         var i = p - 1;
         if (i === index || !pages[i]) return;
         tts.own = true;
@@ -4597,6 +4954,7 @@
       onSentence: function (s) { $('#ttsText').textContent = s; },
       onState: function (st, info) {
         if (st === 'notext') {
+          if (aiActive()) { toast(ai.failed[info.pno] ? '第 ' + info.pno + ' 页识别失败：' + ai.failed[info.pno] + '，已跳过' : '第 ' + info.pno + ' 页没有识别出文字，已跳过', 4000); return; }
           if (info.run === 1) toast('第 ' + info.pno + ' 页没有文字层，已跳过', 2500);
           return;
         }
@@ -4610,6 +4968,7 @@
     if (!pages.length) { toast('还没有打开书'); return; }
     if (!ttsAvailable()) { toast('朗读目前只支持 PDF（要带文字层，OCR 过的）', 4000); return; }
     var cfg = ttsCfg(), id = ttsEngineId(cfg);
+    if (aiActive() && !(cfg.token && cfg.aiConsent)) { if (!cfg.aiConsent) toggleModal('aiConsent', true); else openTtsSet('AI 朗读要用在线语音令牌。'); return; }
     if (id === 'cloud' && !(cfg.token && cfg.consent)) { openTtsSet('在线语音需要填令牌并勾选同意；也可以改用「本机语音」。'); return; }
     var ctx = pages[index].pdf, eng = ttsBuildEngine(id);
     if (eng.prime) eng.prime();                            // 必须在这次点击 / 按键里：手机浏览器只允许「用户操作」触发的第一次出声
@@ -4626,6 +4985,7 @@
   }
   function ttsStop(hide) {
     if (tts.runner) { tts.runner.stop(); if (hide) tts.runner = null; }
+    if (ai.pager) { try { ai.pager.cancelAll(); } catch (e) { /* 忽略 */ } }          // 停止 = 中止还在飞的识别请求
     if (hide) ttsUi('hidden');
   }
   /** showPage 里调用：用户自己翻了页（不是朗读翻的）→ 从新页开头重新读 */
@@ -4642,19 +5002,30 @@
   function openTtsSet(msg) {
     var c = ttsCfg();
     $('#ttsEngine').value = c.engine; $('#ttsToken').value = c.token; $('#ttsVoice').value = c.voice; $('#ttsConsent').checked = c.consent;
+    $('#aiConsentChk').checked = c.aiConsent; $('#aiMode').value = c.aiMode; $('#aiSkipNotes').checked = c.aiSkipNotes;
+    $('#aiUsage').textContent = aiUsageText();
     $('#ttsSetMsg').textContent = msg || '';
     toggleModal('ttsSet', true);
+    if (c.token && c.aiConsent) aiUsageRefresh();
+  }
+  /** 设置框里现在填的全部内容（和已存的 AI 开关合并：别把 ai 这个开关存丢了） */
+  function ttsFormCfg() {
+    var old = ttsCfg(), consent = $('#aiConsentChk').checked;
+    return { engine: $('#ttsEngine').value, token: $('#ttsToken').value.trim(), voice: $('#ttsVoice').value, consent: $('#ttsConsent').checked, rate: old.rate,
+      ai: old.ai && consent, aiConsent: consent, aiMode: $('#aiMode').value, aiSkipNotes: $('#aiSkipNotes').checked };
   }
   function ttsSaveSet() {
-    var c = { engine: $('#ttsEngine').value, token: $('#ttsToken').value.trim(), voice: $('#ttsVoice').value, consent: $('#ttsConsent').checked, rate: ttsCfg().rate };
+    var c = ttsFormCfg(), wasAi = ttsCfg().ai;
     if ((c.engine === 'cloud') && !(c.token && c.consent)) { $('#ttsSetMsg').textContent = '在线语音需要填令牌，并勾选同意。'; return false; }
     lsSet(LS_TTS, c);
     toggleModal('ttsSet', false);
+    if (wasAi && !c.ai && ai.pager) ai.pager.cancelAll();
+    aiSync();
     if (tts.runner && tts.runner.state !== 'idle') { var p = tts.runner.pno; tts.runner.stop(); ttsBuildEngine(ttsEngineId(ttsCfg())); tts.runner = null; ttsStart(p); }
     return true;
   }
   function ttsTest() {
-    var c = { engine: $('#ttsEngine').value, token: $('#ttsToken').value.trim(), voice: $('#ttsVoice').value, consent: $('#ttsConsent').checked, rate: ttsCfg().rate };
+    var c = ttsFormCfg();
     var id = ttsEngineId(c);
     if (id === 'cloud' && !(c.token && c.consent)) { $('#ttsSetMsg').textContent = '在线语音需要填令牌，并勾选同意。'; return; }
     var prev = lsGet(LS_TTS, null);
@@ -4667,6 +5038,168 @@
       $('#ttsSetMsg').textContent = r === 'end' ? '试听完成。' : ttsFailMessage({ kind: r, lastError: eng.lastError });
       if (prev) lsSet(LS_TTS, prev); else try { localStorage.removeItem(LS_TTS); } catch (e) { /* 忽略 */ }
     });
+  }
+
+  /* ================= AI 朗读（没有文字层的扫描 PDF） =================
+     只在「打开时抽样第 1 / 中 / 末页，都没有文字」的 PDF 上出现 🤖 开关。开启后朗读的 getPage 换成 C.createAiPager：
+     pdf.js 把该页渲染到离屏 canvas → 合页切成右 / 左叶 → 缩到 ≤2000px、JPEG ≤1.1MB → POST 同源 /ocr/v1/page（Bearer = 在线语音令牌）→ 文字，
+     结果带 {paras, indentFirst, open} 形状，朗读管线（runner / 切句 / 引擎）一行不改。识别结果缓存在 IndexedDB（iv-ocr）。
+     数据性质不同于逐句朗读（这里发出去的是页面图像），所以同意是单独的一份：iv.tts.v1.aiConsent，没同意 / 没令牌不发任何请求。 */
+  var ai = { noText: false, ctx: null, pager: null, pagerCtx: null, pagerKey: '', cache: null, meta: { model: C.AI_MODEL0, promptVer: C.AI_PROMPT_VER0 },
+    usage: null, failed: {}, empty: {}, lastLeaves: [], probeGen: 0, probed: null };
+  function ocrEndpoint(path) { return new URL('../ocr/v1/' + path, document.baseURI).href; }
+  function ttsPut(patch) { var c = lsGet(LS_TTS, null) || {}; for (var k in patch) if (Object.prototype.hasOwnProperty.call(patch, k)) c[k] = patch[k]; lsSet(LS_TTS, c); }
+  /** 当前这本书是不是在用 AI 朗读 */
+  function aiActive() { return !!(ai.noText && ai.ctx && ai.ctx === activePdf && ttsCfg().ai); }
+  function aiSync() {
+    var c = ttsCfg(), vis = !!(ai.noText && ai.ctx && ai.ctx === activePdf);
+    $('#btnAi').classList.toggle('hidden', !vis);
+    $('#btnAi').classList.toggle('on', vis && c.ai);
+    $('#ttsRetry').classList.toggle('hidden', !(vis && c.ai));
+    var u = ai.usage;
+    $('#aiUse').textContent = vis && c.ai && u && u.pagesLimit ? '今日 ' + u.pagesToday + '/' + u.pagesLimit : '';
+  }
+  function aiReset() {
+    ai.probeGen++; ai.noText = false; ai.ctx = null; ai.probed = null; ai.failed = {}; ai.empty = {}; ai.lastLeaves = [];
+    if (ai.pager) { try { ai.pager.cancelAll(); } catch (e) { /* 忽略 */ } }
+    ai.pager = null; ai.pagerCtx = null;
+    aiSync();
+  }
+  /** 打开 PDF 后抽样第 1 / 中间 / 末页的文字层：全空 = 扫描件，显示 🤖 开关。任何一页取文字出错 → 不判定（宁可不显示） */
+  function aiProbe(ctx) {
+    var gen = ++ai.probeGen, n = ctx.doc.numPages, want = [1, Math.ceil(n / 2), n].filter(function (p, i, a) { return a.indexOf(p) === i; });
+    ai.noText = false; ai.ctx = null; ai.probed = null; aiSync();
+    var p = Promise.all(want.map(function (pn) {
+      return ttsRaw(ctx, pn).then(function (r) { return !!(r && r.items.some(function (it) { return /\S/.test(it.s); })); }, function () { return null; });
+    })).then(function (res) {
+      if (gen !== ai.probeGen || ctx !== activePdf) return null;
+      var textless = res.every(function (x) { return x === false; });
+      ai.noText = textless; ai.ctx = textless ? ctx : null; ai.probed = res;
+      aiSync();
+      if (textless && ttsCfg().ai && ttsCfg().aiConsent && ttsCfg().token) aiUsageRefresh();
+      return textless;
+    });
+    return p;
+  }
+  function aiUsageText() {
+    var u = ai.usage;
+    return u && u.pagesLimit ? '今日已识别 ' + u.pagesToday + ' / ' + u.pagesLimit + ' 页' + (u.monthLimit ? '（本月 ' + u.pagesMonth + ' / ' + u.monthLimit + '）' : '') : '';
+  }
+  function aiUsageRefresh() {
+    var c = ttsCfg();
+    if (!c.token || !c.aiConsent) return Promise.resolve(null);
+    return fetch(ocrEndpoint('usage'), { headers: { 'Authorization': 'Bearer ' + c.token }, cache: 'no-store', credentials: 'omit' }).then(function (r) {
+      return r.ok ? r.json() : null;
+    }).then(function (j) {
+      if (j && typeof j.pagesToday === 'number') { ai.usage = j; if (j.model) ai.meta.model = j.model; aiSync(); $('#aiUsage').textContent = aiUsageText(); }
+      return j;
+    }, function () { return null; });
+  }
+  function blobToB64(blob) {
+    return new Promise(function (res, rej) {
+      var fr = new FileReader();
+      fr.onload = function () { var s = String(fr.result), i = s.indexOf(','); res(i >= 0 ? s.slice(i + 1) : ''); };
+      fr.onerror = function () { rej(new Error('读取图片失败')); };
+      fr.readAsDataURL(blob);
+    });
+  }
+  /** 一页 → 渲染 → 切叶 → 每叶编码成 JPEG（≤2000px / ≤1.1MB）→ [{leaf, b64}]（已按阅读顺序） */
+  function aiRenderLeaves(ctx, pno, cfg, signal) {
+    var pg = null, plan = null;
+    function chk() { if ((signal && signal.aborted) || ctx.closed) { var e = new Error('aborted'); e.name = 'AbortError'; throw e; } }
+    function mkCanvas(w, h) { var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+    function free(c) { if (c) c.width = c.height = 0; }
+    var big = null;
+    return ctx.getPage(pno).then(function (g) {
+      pg = g; chk();
+      var v1 = pg.getViewport({ scale: 1 }); plan = C.aiRenderPlan(v1.width, v1.height);
+      var vp = pg.getViewport({ scale: plan.scale }), W = Math.max(1, Math.floor(vp.width)), H = Math.max(1, Math.floor(vp.height));
+      big = mkCanvas(W, H);
+      var g2 = big.getContext('2d');
+      if (!g2) throw new Error('浏览器给不出这么大的画布（内存不足）：' + W + '×' + H);
+      g2.fillStyle = '#fff'; g2.fillRect(0, 0, W, H);
+      var rt = pg.render({ canvasContext: g2, viewport: vp });
+      if (signal) signal.addEventListener('abort', function () { try { rt.cancel(); } catch (e) { /* 忽略 */ } });
+      return Promise.race([rt.promise, ctx.fatalPromise]).then(function () { chk(); });
+    }).then(function () {
+      var W = big.width, H = big.height, rects;
+      if (plan.split) {                                          // 装订线：缩略图上算每列墨迹，40%-60% 找谷，找不到退回中点
+        var sw = Math.min(W, 800), sh = Math.max(1, Math.round(H * sw / W)), sm = mkCanvas(sw, sh), sg = sm.getContext('2d');
+        sg.drawImage(big, 0, 0, sw, sh);
+        var gx = C.aiGutter(C.aiColumnInk(sg.getImageData(0, 0, sw, sh).data, sw, sh), sh) * W / sw;
+        free(sm);
+        rects = C.aiLeafRects(W, H, gx, cfg.mode === 'vertical-classical');
+      } else rects = [{ leaf: 'S', x: 0, y: 0, w: W, h: H }];
+      var out = [], meta = [];
+      var enc = { resize: function (c, w, h) { var t = mkCanvas(w, h), x = t.getContext('2d'); x.imageSmoothingQuality = 'high'; x.drawImage(c, 0, 0, w, h); return t; },
+        toBlob: function (c, type, q) { return new Promise(function (res, rej) { c.toBlob(function (b) { b ? res(b) : rej(new Error('浏览器没能把这一页转成图片（内存不足？）')); }, type, q); }); } };
+      return rects.reduce(function (chain, r) {
+        return chain.then(function () {
+          chk();
+          var lc = mkCanvas(r.w, r.h); lc.getContext('2d').drawImage(big, r.x, r.y, r.w, r.h, 0, 0, r.w, r.h);
+          return C.aiEncode(lc, enc).then(function (e) { free(lc); return blobToB64(e.blob).then(function (b64) { out.push({ leaf: r.leaf, b64: b64 }); meta.push({ leaf: r.leaf, x: r.x, w: r.w, h: r.h, jw: e.w, jh: e.h, q: e.q, bytes: e.blob.size, W: W, H: H }); }); },
+            function (er) { free(lc); throw er; });
+        });
+      }, Promise.resolve()).then(function () { free(big); big = null; ai.lastLeaves = meta; return out; });
+    }).then(function (out) { if (pg) { try { pg.cleanup(); } catch (e) { /* 忽略 */ } } return out; },
+      function (e) { free(big); if (pg) { try { pg.cleanup(); } catch (x) { /* 忽略 */ } } throw e; });
+  }
+  function aiCurrentPno() { return tts.runner && tts.runner.state !== 'idle' ? tts.runner.pno : (pages[index] ? pages[index].pno : 0); }
+  function aiStatus(pno, kind, info) {
+    var cur = aiCurrentPno() === pno;
+    if (kind === 'recognizing' && cur) $('#ttsText').textContent = 'AI 识别中…（第 ' + pno + ' 页）';
+    else if (kind === 'retry' && cur) $('#ttsText').textContent = 'AI 识别：' + info.cls.message + '，' + Math.ceil(info.wait / 1000) + ' 秒后重试（第 ' + info.attempt + ' 次）…';
+    else if (kind === 'failed') ai.failed[pno] = (info.cls && info.cls.message) || (info.error && info.error.message) || '未知错误';
+    else if (kind === 'done' && info.empty) ai.empty[pno] = true;
+    else if (kind === 'done') { delete ai.failed[pno]; delete ai.empty[pno]; }
+  }
+  function aiGetPager(ctx) {
+    if (ai.pager && ai.pagerCtx === ctx && ai.pagerKey === bookKey) return ai.pager;
+    if (ai.pager) { try { ai.pager.cancelAll(); } catch (e) { /* 忽略 */ } }
+    if (!ai.cache) { var idb = null; try { idb = window.indexedDB || null; } catch (e) { /* 隐私模式：访问就抛 */ } ai.cache = C.makeAiCache({ indexedDB: idb }); }
+    ai.failed = {}; ai.empty = {};
+    ai.pagerCtx = ctx; ai.pagerKey = bookKey;
+    ai.pager = C.createAiPager({
+      bookKey: bookKey, count: ctx.doc.numPages, concurrency: 2, cache: ai.cache, meta: ai.meta,
+      fetch: function () { return fetch.apply(window, arguments); }, endpoint: ocrEndpoint,
+      getCfg: function () { var c = ttsCfg(); return { token: c.token, mode: c.aiMode, skipNotes: c.aiSkipNotes }; },
+      render: function (pno, cfg, signal) { return aiRenderLeaves(ctx, pno, cfg, signal); },
+      onStatus: aiStatus,
+      onUsage: function (u) { ai.usage = u; aiSync(); },
+      onFatal: function (cls) { toast('AI 朗读已停止：' + cls.message, 7000); if (tts.runner) tts.runner.stop(); }
+    });
+    return ai.pager;
+  }
+  /** 🤖 开关：没同意先弹同意框；没令牌去设置；否则开 / 关 */
+  function aiEnable() {
+    var c = ttsCfg();
+    if (!c.token) { openTtsSet('AI 朗读要用在线语音令牌（和 PyReader 里填的是同一个），填好后再点 🤖。'); return; }
+    ttsPut({ ai: true }); aiSync(); aiUsageRefresh();
+    toast('AI 朗读已开启（识别可能有误）。点 ▶ 开始朗读', 4000);
+  }
+  function aiToggle() {
+    if (!(ai.noText && ai.ctx === activePdf)) return;
+    var c = ttsCfg();
+    if (c.ai) {
+      ttsPut({ ai: false }); ttsStop(false);
+      if (ai.pager) ai.pager.cancelAll();
+      aiSync(); toast('AI 朗读已关闭');
+      return;
+    }
+    if (!c.aiConsent) { toggleModal('aiConsent', true); return; }
+    aiEnable();
+  }
+  function aiConsentOk() {
+    ttsPut({ aiConsent: true });
+    toggleModal('aiConsent', false);
+    aiEnable();
+  }
+  function aiRetryHere() {
+    if (!aiActive()) return;
+    var p = aiCurrentPno(); if (!p) return;
+    delete ai.failed[p]; delete ai.empty[p];
+    aiGetPager(activePdf).retry(p);
+    if (tts.runner && tts.runner.state !== 'idle') tts.runner.seek(p); else ttsStart(p);
   }
 
   /* ================= 绑定 ================= */
@@ -4720,6 +5253,13 @@
   $('#ttsNext').addEventListener('click', function () { ttsJump(1); });
   $('#ttsCfg').addEventListener('click', function () { openTtsSet(''); });
   $('#ttsSave').addEventListener('click', ttsSaveSet);
+  $('#btnAi').addEventListener('click', aiToggle);
+  $('#aiConsentOk').addEventListener('click', aiConsentOk);
+  $('#ttsRetry').addEventListener('click', aiRetryHere);
+  $('#aiClear').addEventListener('click', function () {
+    if (ai.pager) ai.pager.cancelAll();
+    (ai.cache ? ai.cache.clear() : Promise.resolve()).then(function () { $('#ttsSetMsg').textContent = '已清除这台设备上的 AI 识别缓存。'; });
+  });
   $('#ttsTest').addEventListener('click', ttsTest);
   $('#ttsRate').addEventListener('change', function () {
     var c = lsGet(LS_TTS, null) || {};
@@ -5532,7 +6072,12 @@
     bm: { toggle: bmToggleHere, list: bmList, open: openBookmarks, go: bmGo, commit: bmCommit, merge: mergeRemoteBookmarks, render: bmRender },
     tts: { start: ttsStart, toggle: ttsToggle, stop: ttsStop, page: function (p) { return ttsPage(activePdf, p); }, cfg: ttsCfg,
       state: function () { return tts.runner ? { state: tts.runner.state, pno: tts.runner.pno, text: $('#ttsText').textContent } : { state: 'idle', pno: 0, text: '' }; },
-      useEngine: function (e) { tts.forced = e; tts.engine = null; tts.runner = null; } }
+      useEngine: function (e) { tts.forced = e; tts.engine = null; tts.runner = null; } },
+    ai: { probe: function () { return activePdf ? aiProbe(activePdf) : Promise.resolve(null); }, toggle: aiToggle,
+      state: function () { return { noText: ai.noText, active: aiActive(), btnHidden: $('#btnAi').classList.contains('hidden'), usage: ai.usage, failed: ai.failed, empty: ai.empty,
+        requests: ai.pager ? ai.pager.requests : 0, hits: ai.pager ? ai.pager.hits : 0, leaves: ai.lastLeaves, meta: ai.meta, probed: ai.probed }; },
+      cacheStats: function () { return ai.cache ? { usingIdb: ai.cache.usingIdb } : null; }, usageRefresh: aiUsageRefresh,
+      render: function (pno) { return aiRenderLeaves(activePdf, pno, { mode: ttsCfg().aiMode }, null).then(function (o) { return { n: o.length, leaves: ai.lastLeaves }; }); } }
   };
 })();
 </script>
