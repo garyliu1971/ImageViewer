@@ -341,3 +341,9 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 - 后端新增 `peek` / `search` / `cancel`；列表读取全程不联网。设计与已知解析缺口见 `docs/scrape-design.md` §12-13。
 - 测试：`tests/web_scrape_e2e.mjs`（33 项，真 Chrome + 真后端 + 假 TMDB）；`tests/test_scrape.py` 50 项。截图用 `SHOT_DIR=... node tests/web_scrape_e2e.mjs`。
 - 没有对真实 TMDB 经 UI 验证、没有真实 AList / 手机验证。
+
+### 第 2 步追加（同分支）
+- **内网直连修复（独立提交 `80cde17`，排在本分支所有提交之前，可单独 cherry-pick）**：shell 里设了 `HTTP_PROXY/HTTPS_PROXY` 而 `NO_PROXY` 没列 192.168.* 时，访问局域网 AList 会被送去代理而超时。新增 `netutil.py`：内网 / 回环 / 链路本地 / `.local` / 单段主机名一律直连，公网照旧走代理（逐请求判断，重定向后的新主机重新判断）；WebDAV、`/api/remote/*`、DLNA、TTS 转发、caption 接口都改用它。`tests/test_netutil.py` 11 项含「死代理 + 内网成功 / 对照组原生 urllib 失败 / 公网仍走代理」。TMDB 客户端改用它的是单独的后续提交（`b32c88b`）。
+- **已看状态**：新配置 key `_video_watched_`（`watched_store.py`，桌面 + 网页共用；`_video_resume_` 格式不变）。网页端有标记 / 手动开关 / 剧集「全部已看才算已看完」；桌面端写入（`image_viewer.py` 两处）但界面暂不显示，GUI 跑不了、只测了纯逻辑。
+- **播放后回到原视图**、**分季目录按 TMDB id 合并成一张剧集卡**（含「含子目录」开关）、解析器支持 `Episode 05`。
+- 测试：`tests/test_watched.py`（13）、`tests/test_netutil.py`（11）、`tests/web_scrape_e2e.mjs` 扩到 44 项。
