@@ -279,6 +279,16 @@
     font-size: 14px; line-height: 1.7; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center;
   }
   #vpMsg.hidden { display: none; }
+  #vpLoad { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center;
+    gap: 8px; padding: 14px 18px; border-radius: 12px; background: rgba(0,0,0,.55); font-size: 13px; text-align: center; pointer-events: none;
+    max-width: min(460px, calc(100% - 32px)); z-index: 2; }
+  #vpLoad.hidden { display: none; }
+  #vpLoadHint { color: #e0b060; font-size: 12px; line-height: 1.7; }
+  #vpLoadHint:empty { display: none; }
+  #vpLoadTry { pointer-events: auto; font-size: 12px; padding: 4px 10px; background: rgba(255,255,255,.12); }
+  #vpLoadTry.hidden { display: none; }
+  .vp-spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; animation: vpspin .9s linear infinite; }
+  @keyframes vpspin { to { transform: rotate(360deg); } }
   .vp-bar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px; flex: 0 0 auto;
     background: var(--panel); padding-bottom: max(8px, env(safe-area-inset-bottom));
@@ -1009,6 +1019,7 @@
   <div class="vp-stage">
     <video id="vpVideo" controls playsinline preload="metadata"></video>
     <div id="vpMsg" class="hidden"><div id="vpMsgText"></div><button class="btn primary hidden" id="vpTry">仍然尝试播放</button></div>
+    <div id="vpLoad" class="hidden" role="status" aria-live="polite"><div class="vp-spin"></div><div id="vpLoadText">加载中…</div><div id="vpLoadHint"></div><button class="btn hidden" id="vpLoadTry">仍然尝试播放</button></div>
   </div>
   <div class="vp-bar">
     <button class="btn" id="vpPrev" title="上一个视频">⏮ 上一个</button>
@@ -2789,6 +2800,12 @@
     if (r === 'maybe') return VIDEO_NATIVE_EXTS.test(name) ? 'yes' : 'maybe';
     return 'no';
   }
+  /** 要不要直接试着播：canPlayType 只是个猜测（对 mkv 常常回 '' 或 'maybe'，但 Chrome 其实能播里面的 H.264），
+   *  所以 yes / maybe 一律试；mkv 这类 Chrome 常能播的容器即使回 '' 也试；其余被判 'no' 的（avi / wmv…）才先拦住并给「仍然尝试」按钮。 */
+  function videoShouldTry(name, canPlay) {
+    var s = videoSupport(name, canPlay);
+    return s !== 'no' || (!!videoMime(name) && /\.(mkv|mka)$/i.test(String(name || '')));
+  }
   /** MediaError.code -> 中文说明（code 4 = 格式 / 编码不支持，最常见） */
   function videoErrorMessage(err, name) {
     var code = err && err.code;
@@ -2975,7 +2992,7 @@
     ARCHIVE_EXTS: ARCHIVE_EXTS, ARCH_EXTS: ARCH_EXTS, ARCH_WARN_BYTES: ARCH_WARN_BYTES, archKind: archKind, archPickImages: archPickImages,
     archErrorMessage: archErrorMessage, fetchWhole: fetchWhole,
     subSuffix: subSuffix, subLabel: subLabel, subRank: subRank, subPick: subPick, plainHttpRisk: plainHttpRisk, SUB_MAX_BYTES: SUB_MAX_BYTES,
-    isVideoName: isVideoName, videoMime: videoMime, videoSupport: videoSupport, videoErrorMessage: videoErrorMessage,
+    isVideoName: isVideoName, videoMime: videoMime, videoSupport: videoSupport, videoShouldTry: videoShouldTry, videoErrorMessage: videoErrorMessage,
     decodeSubtitle: decodeSubtitle, srtToVtt: srtToVtt, assToVtt: assToVtt, subtitleToVtt: subtitleToVtt, SUB_EXTS: SUB_EXTS,
     clamp: clamp, naturalCompare: naturalCompare, baseName: baseName, topDir: topDir,
     commonRoot: commonRoot, rotatedSize: rotatedSize, computeZoom: computeZoom,
@@ -5166,6 +5183,7 @@
     vpSaveResume(true);
     var it = VP.items[i];
     VP.i = i; VP.tryAnyway = false; VP.resumeMs = null; VP.lastSave = 0;
+    vpLoadStop(); VP.metaReady = false;
     vpSubReset();
     vpMsg('');
     $('#vpTitle').textContent = it.name; $('#vpTitle').title = it.path || it.name;
@@ -5173,8 +5191,7 @@
     $('#vpPrev').disabled = i <= 0; $('#vpNext').disabled = i >= VP.items.length - 1;
     document.title = it.name;
     /* canPlayType 只看容器：'no' 时先提示，但允许「仍然尝试」（Chrome 对 mkv 里的 H.264 常常其实能播） */
-    var sup = C.videoSupport(it.name, v.canPlayType.bind(v));
-    if (sup === 'no') {
+    if (!C.videoShouldTry(it.name, v.canPlayType.bind(v))) {
       v.removeAttribute('src'); v.load();
       vpMsg('这个浏览器声称不支持 ' + (C.videoMime(it.name) || it.name) + ' 格式。' + C.videoErrorMessage({ code: 4 }, it.name), true);
     } else {
@@ -5232,8 +5249,34 @@
     v.src = it.url;
     v.playbackRate = vpPrefs.rate || 1;
     v.defaultPlaybackRate = vpPrefs.rate || 1;
+    VP.metaReady = false;
+    vpLoadStart('load');
     var p = v.play();
     if (p && p['catch']) p['catch'](function () { /* 自动播放被拦：用户点播放即可 */ });
+  }
+  /* ---- 加载 / 缓冲状态：从设置 src 起到 canplay / playing 一直显示「加载中…」，3 秒后带上已等待秒数；
+     播放中 waiting / stalled 显示「缓冲中…」。加载慢（mkv 的索引在文件尾、云端要多次 Range 读）不是错误：
+     只有 error 事件才报错；超过 hintMs 还没拿到元数据只给一条中性提示，不中止加载。---- */
+  var VP_LOAD = { showMs: 3000, hintMs: 45000 };          /* 测试可调：window.__IV.videoLoadTuning */
+  var VP_HINT_SLOW = '加载较慢或格式不受浏览器支持（如 HEVC / AC3 / DTS）。可继续等待，或点「仍然尝试播放」。';
+  function vpLoadTick() {
+    var L = VP.load; if (!L) return;
+    var el = Math.floor((Date.now() - L.t0) / 1000), showAfter = Math.floor(VP_LOAD.showMs / 1000);
+    $('#vpLoadText').textContent = (L.kind === 'buffer' ? '缓冲中…' : '加载中…') + (Date.now() - L.t0 >= VP_LOAD.showMs ? ' 已等待 ' + el + ' 秒' : '');
+    void showAfter;
+    var slow = L.kind === 'load' && !VP.metaReady && Date.now() - L.t0 >= VP_LOAD.hintMs;
+    $('#vpLoadHint').textContent = slow ? VP_HINT_SLOW : '';
+    $('#vpLoadTry').classList.toggle('hidden', !slow);
+  }
+  function vpLoadStart(kind) {
+    if (VP.load) { if (kind === 'buffer' && VP.load.kind === 'load' && VP.metaReady) { VP.load.kind = 'buffer'; VP.load.t0 = Date.now(); vpLoadTick(); } return; }
+    VP.load = { kind: kind, t0: Date.now(), timer: setInterval(vpLoadTick, 500) };
+    $('#vpLoad').classList.remove('hidden');
+    vpLoadTick();
+  }
+  function vpLoadStop() {
+    if (VP.load) { clearInterval(VP.load.timer); VP.load = null; }
+    $('#vpLoad').classList.add('hidden'); $('#vpLoadHint').textContent = '';
   }
   function vpApplyResume() {
     var v = vpV();
@@ -5335,6 +5378,7 @@
 
   function vpClose() {
     var v = vpV();
+    vpLoadStop();
     vpSaveResume(true);
     VP.seq++;
     try { v.pause(); } catch (e) { /* ignore */ }
@@ -5440,8 +5484,12 @@
       var it = VP.items[VP.i]; if (!it) return;
       VP.tryAnyway = true; vpMsg(''); vpSetSrc(it);
     });
-    v.addEventListener('loadedmetadata', function () { vpMsg(''); vpApplyResume(); });
-    v.addEventListener('playing', function () { vpMsg(''); });
+    v.addEventListener('loadedmetadata', function () { VP.metaReady = true; $('#vpLoadHint').textContent = ''; vpMsg(''); vpApplyResume(); });
+    $('#vpLoadTry').addEventListener('click', function () { var pr = v.play(); if (pr && pr['catch']) pr['catch'](function () {}); });   /* 不重新加载，只是催一下播放 */
+    v.addEventListener('canplay', function () { vpLoadStop(); });
+    v.addEventListener('playing', function () { vpMsg(''); vpLoadStop(); });
+    v.addEventListener('waiting', function () { if (v.getAttribute('src') && !v.error) vpLoadStart('buffer'); });
+    v.addEventListener('stalled', function () { if (v.getAttribute('src') && !v.error && v.readyState < 3) vpLoadStart('buffer'); });
     v.addEventListener('timeupdate', function () { vpSaveResume(false); });
     v.addEventListener('pause', function () { vpSaveResume(true); });
     v.addEventListener('ended', function () {
@@ -5451,6 +5499,7 @@
     v.addEventListener('error', function () {
       var it = VP.items[VP.i];
       if (!it || !v.getAttribute('src')) return;
+      vpLoadStop();                                        /* 真正的 error 事件才算失败 */
       vpMsg(C.videoErrorMessage(v.error, it.name), false);
     });
     document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden' && vpOpen()) vpSaveResume(true); });
@@ -7542,6 +7591,7 @@
       areaCap: c.areaCap, maxCanvas: c.maxCanvas, canvasPx: c.canvas ? c.canvas.width * c.canvas.height : 0, reads: c.adapter.reads, bytes: c.adapter.bytes, authGen: c.authGen } : null; },
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
       dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },
+    videoLoadTuning: VP_LOAD, openVideoList: openVideoList,
     openServerPath: openServerPath, openViaBackend: openViaBackend, openProg: openProgBegin,
     uploadFile: uploadFile, canServeFile: canServeFile, browseTo: browseTo, backend: function () { return BE; },
     showDetails: showDetails, m3uUrl: m3uUrl, copyText: copyText,

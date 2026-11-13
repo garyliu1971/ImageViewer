@@ -348,3 +348,4 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 - **播放后回到原视图**、**分季目录按 TMDB id 合并成一张剧集卡**（含「含子目录」开关）、解析器支持 `Episode 05`。
 - 测试：`tests/test_watched.py`（13）、`tests/test_netutil.py`（11）、`tests/web_scrape_e2e.mjs` 扩到 44 项。
 - **后续修正（同分支）**：「忽略（不是影视）」忽略记录（不联网、purge 不清、普通文件卡）；≤ 2 汉字标题只靠外语别名命中时不自动接受；TMDB 缺某一季时降级而不是 404 失败（1 小时负缓存）；剧集年份只做软提示；解析器：`S06E01` 跟在 `第六季` 后、站点水印、`HD1080P`、`Episode 05`；分集按钮改成明确动作（标为已看 / 取消已看）。详见 `docs/scrape-design.md` §15。
+- **视频加载 / 缓冲状态**：播放层（`#vplayer`）新增转圈：设置 src 起显示「加载中…」，3 秒后带「已等待 N 秒」，直到 `canplay` / `playing`；播放中 `waiting` / `stalled` 显示「缓冲中…」。慢不是错：只有 `error` 事件才报错；45 秒还没有元数据只给中性提示「加载较慢或格式不受浏览器支持（如 HEVC / AC3 / DTS）…」（转圈继续、不中止、给「仍然尝试播放」）。`canPlayType` 预检不再拦 mkv（回 '' 也试，`IVCore.videoShouldTry`）；avi / wmv 等仍先拦并给「仍然尝试」。本机后端文件、云端中转、blob 都走同一个 `vpSetSrc`。测试：`tests/web_video_loading_e2e.mjs`（11 项，含故意拖慢首字节的 Range 服务器）、`web_core` 的 `videoShouldTry`。没有真实 MKV（索引在文件尾）/ AList 验证。
