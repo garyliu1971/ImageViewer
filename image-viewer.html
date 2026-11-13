@@ -2726,6 +2726,81 @@
     return /\.(ass|ssa)$/i.test(String(name || '')) ? assToVtt(text) : srtToVtt(text);
   }
 
+  /* ================= 字幕文件名 -> 标签 / 默认选择；明文 HTTP 风险判断（纯函数，Node 可测）================= */
+  var SUB_LANGS = [
+    { re: /^(zh[-_]?(cn|hans|sg)?|chs|sc|gb|gbk|simplified|简体|简中|中文)$/i, label: '简体中文', rank: 0 },
+    { re: /^(cht|tc|zh[-_]?(tw|hk|hant|mo)|big5|traditional|繁体|繁體|繁中)$/i, label: '繁體中文', rank: 1 },
+    { re: /^(en|eng|english|英文|英语)$/i, label: 'English', rank: 3 },
+    { re: /^(ja|jp|jpn|japanese|日文|日语|日本語)$/i, label: '日本語', rank: 3 },
+    { re: /^(ko|kor|korean|韩文|韩语)$/i, label: '한국어', rank: 3 }
+  ];
+  /** 字幕文件名相对视频名的「后缀」：S01E01.zh.srt（视频 S01E01.mkv）-> 'zh'；同名（clip.srt）-> ''；对不上主名 -> null */
+  function subSuffix(videoName, subName) {
+    var stem = String(videoName || '').replace(/\.[^.\/\\]+$/, '').toLowerCase();
+    var sub = String(subName || '').replace(/\.[^.\/\\]+$/, '');
+    if (sub.toLowerCase() === stem) return '';
+    if (sub.toLowerCase().indexOf(stem + '.') === 0) return sub.slice(stem.length + 1);
+    return null;
+  }
+  /** 后缀 -> 命中的语言 [{label, rank}]：先整体匹配（zh-tw 是繁体，不能拆成 zh + tw），不中再按 . & + , _ - 拆开逐个匹配（chs&eng、zh-en） */
+  function subLangHits(suf) {
+    var hits = [];
+    function add(t) { SUB_LANGS.forEach(function (l) { if (l.re.test(t) && !hits.some(function (h) { return h.label === l.label; })) hits.push({ label: l.label, rank: l.rank }); }); }
+    add(suf);
+    if (!hits.length) suf.split(/[.&+,_\-]+/).filter(Boolean).forEach(add);
+    return hits;
+  }
+  /** 给字幕起个人话名字：简体中文 / 繁體中文 / English…，认不出的后缀原样显示；中英双语 -> 中英双语 */
+  function subLabel(videoName, subName) {
+    var suf = subSuffix(videoName, subName);
+    var ext = (/\.([^.\/\\]+)$/.exec(String(subName || '')) || ['', ''])[1].toLowerCase();
+    if (suf === null) return String(subName || '');
+    if (suf === '') return '字幕 (' + ext + ')';
+    var hits = subLangHits(suf);
+    var zh = hits.some(function (h) { return h.rank <= 1; });
+    if (zh && hits.length > 1) return '中英双语 (' + suf + ')';
+    if (hits.length === 1) return hits[0].label + ' (' + ext + ')';
+    return suf + ' (' + ext + ')';
+  }
+  function subRank(videoName, subName) {
+    var suf = subSuffix(videoName, subName);
+    if (suf === null) return 3;
+    if (suf === '') return 2;
+    var best = 3;
+    subLangHits(suf).forEach(function (h) { if (h.rank < best) best = h.rank; });
+    return best;
+  }
+  /** 默认选哪条：简体 > 繁体 > 没后缀的同名字幕 > 其它；同级取靠前的。返回下标，-1 = 没有 */
+  function subPick(videoName, subNames) {
+    var bi = -1, br = 99;
+    (subNames || []).forEach(function (n, i) { var r = subRank(videoName, n); if (r < br) { br = r; bi = i; } });
+    return bi;
+  }
+  var SUB_MAX_BYTES = 4 * 1024 * 1024;
+  /** 明文 HTTP 填到公网地址：密码会在互联网上裸奔。内网（10.x / 172.16-31.x / 192.168.x / 169.254.x / localhost / 127.x /
+   *  *.local / 单段主机名 / IPv6 本地）不提示；https 不提示。返回 { warn, host, scheme }。 */
+  function plainHttpRisk(url) {
+    var u = String(url == null ? '' : url).trim();
+    var m = /^([a-z][a-z0-9+.-]*):\/\//i.exec(u);
+    var scheme = m ? m[1].toLowerCase() : 'http';
+    var rest = m ? u.slice(m[0].length) : u;
+    var auth = rest.split(/[\/?#]/)[0];
+    auth = auth.slice(auth.lastIndexOf('@') + 1);
+    var host = auth.charAt(0) === '[' ? auth.slice(1, auth.indexOf(']') < 0 ? undefined : auth.indexOf(']')) : auth.replace(/:\d*$/, '');
+    host = host.toLowerCase();
+    if (scheme !== 'http' || !host) return { warn: false, host: host, scheme: scheme };
+    var v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host), priv = false;
+    if (v4) {
+      var a = +v4[1], b = +v4[2];
+      priv = a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+    } else if (host.indexOf(':') >= 0) {
+      priv = host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host);
+    } else {
+      priv = host === 'localhost' || /\.local$/.test(host) || host.indexOf('.') < 0;
+    }
+    return { warn: !priv, host: host, scheme: scheme };
+  }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
@@ -2740,6 +2815,7 @@
     WEB_IMAGE_EXTS: WEB_IMAGE_EXTS, DESKTOP_EXTS: DESKTOP_EXTS, MEDIA_EXTS: MEDIA_EXTS,
     ARCHIVE_EXTS: ARCHIVE_EXTS, ARCH_EXTS: ARCH_EXTS, ARCH_WARN_BYTES: ARCH_WARN_BYTES, archKind: archKind, archPickImages: archPickImages,
     archErrorMessage: archErrorMessage, fetchWhole: fetchWhole,
+    subSuffix: subSuffix, subLabel: subLabel, subRank: subRank, subPick: subPick, plainHttpRisk: plainHttpRisk, SUB_MAX_BYTES: SUB_MAX_BYTES,
     isVideoName: isVideoName, videoMime: videoMime, videoSupport: videoSupport, videoErrorMessage: videoErrorMessage,
     decodeSubtitle: decodeSubtitle, srtToVtt: srtToVtt, assToVtt: assToVtt, subtitleToVtt: subtitleToVtt, SUB_EXTS: SUB_EXTS,
     clamp: clamp, naturalCompare: naturalCompare, baseName: baseName, topDir: topDir,
@@ -4943,22 +5019,50 @@
       vpSetSrc(it);
     }
     /* 续播点 + 旁挂字幕（后端模式才有）：各自异步，过期（切到别的视频）就丢 */
-    if (BE.on && it.path) {
-      apiJson('/api/videoresume', { path: it.path }).then(function (j) {
+    VP.subChosen = false;
+    if (BE.on && (it.path || it.remotePath)) {
+      apiJson('/api/videoresume', it.path ? { path: it.path } : { remote: it.remotePath }).then(function (j) {
         if (seq !== VP.seq || !j || !j.ms) return;
         VP.resumeMs = j.ms;
         if (v.readyState >= 1) vpApplyResume();
       })['catch'](function () { /* 没有续播点也不影响播放 */ });
+    }
+    if (BE.on && it.path) {
       apiJson('/api/subtitle', { path: it.path }).then(function (j) {
         if (seq !== VP.seq) return;
         (j.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, remote: it.path }); });
-        vpSubRefresh();
-        if (VP.subs.length && VP.subIdx < 0) vpSubSelect(0);
+        vpSubRefresh(); vpSubAuto(seq);
       })['catch'](function () { /* 列不出字幕就算了 */ });
     }
     (it.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, file: s.file, url: s.url }); });
-    vpSubRefresh();
-    if (it.subs && it.subs.length && VP.subIdx < 0) vpSubSelect(0);
+    vpSubRefresh(); vpSubAuto(seq);
+  }
+
+  /* 每个视频记住自己选过的字幕（本浏览器 localStorage；key 和续播点同一套：本机路径 / 云端路径）。'' = 用户关掉了字幕 */
+  var LS_VSUB = 'iv.video.sub.v1';
+  function vpKeyOf(it) {
+    if (!it) return null;
+    if (it.path) return normKey(it.path).toLowerCase();
+    if (it.remotePath) { var r = it.remotePath; try { r = decodeURIComponent(r); } catch (e) { /* 保持原样 */ } return 'dav:' + r; }
+    return null;
+  }
+  function vpSubSaved() { var k = vpKeyOf(VP.items[VP.i]); var m = lsGet(LS_VSUB, {}) || {}; return k && Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined; }
+  function vpSubRemember(name) {
+    var k = vpKeyOf(VP.items[VP.i]); if (!k) return;
+    var m = lsGet(LS_VSUB, {}) || {};
+    delete m[k]; m[k] = name || '';
+    var ks = Object.keys(m); if (ks.length > 300) ks.slice(0, ks.length - 300).forEach(function (x) { delete m[x]; });
+    lsSet(LS_VSUB, m);
+  }
+  /** 字幕列表有新内容时：没被用户动过 -> 记住的选择优先，其次简体 > 繁体 > 同名 > 第一条 */
+  function vpSubAuto(seq) {
+    if (seq !== VP.seq || VP.subChosen || VP.subIdx >= 0 || !VP.subs.length) return;
+    var it = VP.items[VP.i], saved = vpSubSaved();
+    if (saved === '') { VP.subChosen = true; return; }                 /* 上次明确关掉了 */
+    var idx = -1;
+    if (saved) idx = VP.subs.findIndex(function (x) { return x.name === saved; });
+    if (idx < 0) idx = C.subPick(it.name, VP.subs.map(function (x) { return x.name; }));
+    if (idx >= 0) vpSubSelect(idx, true);
   }
 
   function vpSetSrc(it) {
@@ -4979,15 +5083,16 @@
   }
   function vpSaveResume(force) {
     var v = vpV(), it = VP.items[VP.i];
-    if (!BE.on || !it || !it.path || !v.src || !isFinite(v.duration) || v.duration <= 0) return;
+    if (!BE.on || !it || !(it.path || it.remotePath) || !v.src || !isFinite(v.duration) || v.duration <= 0) return;
     var now = Date.now();
     if (!force && now - VP.lastSave < 5000) return;
     VP.lastSave = now;
     var ms = v.ended ? Math.floor(v.duration * 1000) : Math.floor(v.currentTime * 1000);
     try {
-      fetch(apiPath('/api/videoresume', { path: it.path }), {
+      var who = it.path ? { path: it.path } : { remote: it.remotePath };
+      fetch(apiPath('/api/videoresume', who), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-        body: JSON.stringify({ path: it.path, ms: ms, length: Math.floor(v.duration * 1000) })
+        body: JSON.stringify(Object.assign({ ms: ms, length: Math.floor(v.duration * 1000) }, who))
       })['catch'](function () { /* 后端没了就算了，下次再记 */ });
     } catch (e) { /* ignore */ }
   }
@@ -5003,7 +5108,8 @@
   function vpSubRefresh() {
     var sel = $('#vpSubSel');
     sel.innerHTML = '<option value="-1">无字幕</option>' + VP.subs.map(function (s, i) {
-      return '<option value="' + i + '">' + esc(s.name) + '</option>';
+      var it = VP.items[VP.i];
+      return '<option value="' + i + '" title="' + esc(s.name) + '">' + esc(it ? C.subLabel(it.name, s.name) : s.name) + '</option>';
     }).join('');
     sel.value = String(VP.subIdx);
   }
@@ -5020,11 +5126,26 @@
     tr.addEventListener('load', function () { try { tr.track.mode = 'showing'; } catch (e) { /* ignore */ } });
     try { tr.track.mode = 'showing'; } catch (e2) { /* ignore */ }
   }
-  function vpSubSelect(i) {
+  function vpFetchSub(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) { var m = ''; try { m = JSON.parse(t).error || ''; } catch (e) { m = ''; } throw new Error(m || ('HTTP ' + r.status)); });
+      }
+      var n = parseInt(r.headers.get('Content-Length') || '0', 10);
+      if (n > C.SUB_MAX_BYTES) throw new Error('字幕文件太大（' + Math.round(n / 1024) + ' KB，上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）');
+      return r.arrayBuffer().then(function (b) {
+        if (b.byteLength > C.SUB_MAX_BYTES) throw new Error('字幕文件太大（上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）');
+        return b;
+      });
+    });
+  }
+  function vpSubSelect(i, auto) {
     var s = VP.subs[i], seq = VP.seq;
     VP.subIdx = s ? i : -1;
+    if (!auto) { VP.subChosen = true; vpSubRemember(s ? s.name : ''); }
     $('#vpSubSel').value = String(VP.subIdx);
     if (!s) { vpSubAttach(null); return Promise.resolve(); }
+    function fail(e) { if (seq === VP.seq) { toast('读取字幕「' + s.name + '」失败：' + ((e && e.message) || e)); } }
     function use(bytesOrText) {
       if (seq !== VP.seq) return;
       var text = typeof bytesOrText === 'string' ? bytesOrText : C.decodeSubtitle(new Uint8Array(bytesOrText));
@@ -5033,12 +5154,12 @@
       vpSubAttach(vtt, s.name);
     }
     if (s.text != null) { use(s.text); return Promise.resolve(); }
-    if (s.url) return fetch(s.url).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
-    if (s.file) return s.file.arrayBuffer().then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
-    return fetch(apiPath('/api/subtitle', { path: s.remote, name: s.name })).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.arrayBuffer();
-    }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
+    if (s.url) return vpFetchSub(s.url).then(use, fail);
+    if (s.file) {
+      if (s.file.size > C.SUB_MAX_BYTES) { fail(new Error('字幕文件太大（上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）')); return Promise.resolve(); }
+      return s.file.arrayBuffer().then(use, fail);
+    }
+    return vpFetchSub(apiPath('/api/subtitle', { path: s.remote, name: s.name })).then(use, fail);
   }
   function vpSubAddFiles(files) {
     var added = -1;
@@ -5911,6 +6032,14 @@
     var url = $('#rcUrl').value.trim(), btn = this;
     if (!url) { $('#rcMsg').textContent = '请填 WebDAV 地址'; return; }
     if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    var risk = C.plainHttpRisk(url);
+    if (risk.warn && rcArmed !== url) {                  /* 明文 HTTP + 公网地址：要二次确认 */
+      rcArmed = url;
+      $('#rcMsg').textContent = '⚠ 「' + risk.host + '」看起来是公网地址，而你填的是 http://（不加密）：用户名和密码会在互联网上明文传输，可能被截获。' +
+        '请确认地址没填错（内网地址形如 192.168.x.x）；确实要连请再点一次「仍然连接」，或改用 https://。';
+      btn.textContent = '仍然连接';
+      return;
+    }
     btn.disabled = true; $('#rcMsg').textContent = '正在连接…';
     apiJson('/api/remote/config', null, 'POST', { base_url: url, username: $('#rcUser').value.trim(), password: $('#rcPass').value }).then(function () {
       $('#rcPass').value = '';
@@ -5922,8 +6051,10 @@
       var hint = /404|Not Found/i.test(m) ? '（地址对吗？AList 要带 /dav，例如 http://主机:5244/dav）'
         : /401|Unauthorized/i.test(m) ? '（用户名或密码不对？AList 需要在「用户」里开启 WebDAV 读取权限）' : '';
       $('#rcMsg').textContent = '连接失败：' + m + hint;
-    }).then(function () { btn.disabled = false; });
+    }).then(function () { btn.disabled = false; rcArmed = ''; btn.textContent = '连接'; });
   });
+  var rcArmed = '';
+  $('#rcUrl').addEventListener('input', function () { rcArmed = ''; $('#rcConnect').textContent = '连接'; });
   $('#rcPass').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#rcConnect').click(); } });
   $('#rcDisconnect').addEventListener('click', function () {
     apiJson('/api/remote/disconnect', null, 'POST', {}).then(function () {
