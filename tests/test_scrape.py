@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scrape
 import web_backend as wb
-from tests.fake_tmdb import FakeTmdb, PNG
+from tests.fake_tmdb import FakeTmdb, make_png
 
 TOKEN = "SECRET_TMDB_TOKEN_do_not_leak_9f8e7d"
 DAY = 86400
@@ -290,7 +290,7 @@ class TestScraper(Base):
 
     def test_image_cache_and_expiry(self):
         d = self.sc.image("/matrix_poster1.jpg", "w342")
-        self.assertEqual(d, PNG)
+        self.assertEqual(d, make_png("matrix_poster1.jpg"))
         self.sc.image("/matrix_poster1.jpg", "w342")
         self.assertEqual(self.fake.image_hits, 1)
         self.sc.image("/matrix_poster1.jpg", "w500")                  # 另一个尺寸另存
@@ -441,7 +441,7 @@ class TestEndpoints(Base):
 
     def test_image_endpoint(self):
         st, h, b = http("GET", self.u("/api/scrape/image", p="/matrix_poster1.jpg", size="w342"))
-        self.assertEqual((st, b), (200, PNG))
+        self.assertEqual((st, b), (200, make_png("matrix_poster1.jpg")))
         self.assertTrue(h["Content-Type"].startswith("image/png"))
         for p in ("http://evil.example/a.jpg", "/../a.jpg", "/a/b.jpg"):
             st, _, _ = http("GET", self.u("/api/scrape/image", p=p, size="w342"))

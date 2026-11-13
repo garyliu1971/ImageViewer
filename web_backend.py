@@ -1137,7 +1137,8 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as e:
                         out.append({"error": "%s" % e})
                         continue
-                    r = sc.peek(k)
+                    orig = urllib.parse.unquote(str(i.get("remote") or "")) if i.get("remote") else str(i.get("path") or "")
+                    r = sc.peek(k, orig)
                     r["resume_ms"] = video_resume_get(key=k)
                     out.append(r)
                 return self._json({"ok": True, "items": out, "token_configured": sc.client.has_token()})

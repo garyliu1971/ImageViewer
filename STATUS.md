@@ -335,3 +335,9 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 - 测试：`tests/test_scrape_parser.py`（表驱动解析）、`tests/test_scrape.py`（客户端 / 缓存 / TTL / pin / 令牌不泄露 / 端点，对 `tests/fake_tmdb.py`）。
 - 体检脚本（仓库外）：`c:\tmp\tmdb_check.py`。
 - **没有对真实 TMDB 验证过**；没有 UI；署名（TMDB logo + 声明）要在第 2 步 UI 里补，发布前必须有。
+
+### 第 2 步：海报墙 UI（同分支，仅后端模式）
+- `image-viewer.html`：磁盘路径窗口里「列表 / 海报墙」切换；海报网格（w342、懒加载、占位、待确认 / 未匹配 / 📌 徽标）、排序（名称 / 年份 / 评分）、筛选、剧集合并成一张卡；详情页（中英双语标题、简介、背景图、分集列表、继续观看 / 已看）；「修正匹配」对话框（TMDB 搜索 → 锁定 / 取消锁定）；「刮削当前目录」（仅当前层，进度 + 取消）；状态行 + 清缓存；未配置令牌的中文设置说明；帮助页与海报墙脚注的 TMDB 署名 + 官方 logo。
+- 后端新增 `peek` / `search` / `cancel`；列表读取全程不联网。设计与已知解析缺口见 `docs/scrape-design.md` §12-13。
+- 测试：`tests/web_scrape_e2e.mjs`（33 项，真 Chrome + 真后端 + 假 TMDB）；`tests/test_scrape.py` 50 项。截图用 `SHOT_DIR=... node tests/web_scrape_e2e.mjs`。
+- 没有对真实 TMDB 经 UI 验证、没有真实 AList / 手机验证。

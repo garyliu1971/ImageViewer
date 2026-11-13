@@ -10,6 +10,8 @@
 """
 import json
 import re
+import struct
+import zlib
 import sys
 import threading
 import urllib.parse
@@ -17,6 +19,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
        b"\x00\x00\x00\rIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfe\xa7\x9a\xa0\xa0\x00\x00\x00\x00IEND\xaeB`\x82")
+
+def make_png(name, w=120, h=180):
+    """按文件名上色的竖向渐变 PNG（让截图 / 肉眼验收看得出海报）。"""
+    seed = sum(ord(c) * (i + 3) for i, c in enumerate(name))
+    r, g, b = (seed * 37) % 160 + 40, (seed * 91) % 160 + 40, (seed * 53) % 160 + 40
+    rows = b"".join(bytes([0]) + bytes([min(255, r + y // 3), min(255, g + y // 4), min(255, b + y // 5)]) * w for y in range(h))
+
+    def chunk(t, d):
+        c = struct.pack(">I", len(d)) + t + d
+        return c + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    return (bytes([0x89]) + b"PNG" + bytes([13, 10, 26, 10]) + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
 
 MOVIES = {
     603: {"zh": {"title": "黑客帝国", "overview": "一个程序员发现世界是虚拟的。", "tagline": ""},
@@ -114,7 +129,7 @@ class FakeTmdb:
                         return self._send(404, {"status_message": "nope"})
                     with fake._lock:
                         fake.image_hits += 1
-                    return self._send(200, PNG, "image/png")
+                    return self._send(200, make_png(m.group(2)), "image/png")
                 if auth != "Bearer " + fake.token:
                     return self._send(401, {"success": False, "status_code": 7, "status_message": "Invalid API key"})
                 with fake._lock:

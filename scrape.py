@@ -51,6 +51,11 @@ chs cht big5 gb jpn eng chi kor sub
 国语 国粤 粤语 中字 中英 双语 简体 繁体 简繁 简中 繁中 内封 内嵌 外挂 字幕 无字 高清 超清 蓝光 原盘 国配 台配 日语 英语
 完整版 导演剪辑 修复版 特效字幕 官方中字
 """.split())
+def add_noise(*words):
+    """扩展「要从标题里剥掉的噪声词」（发布组 / 平台 / 语言标记等）。词用小写。"""
+    NOISE.update(w.lower() for w in words)
+
+
 RES_RE = re.compile(r"^(\d{3,4}[pi]|[248]k|\d{3,4}x\d{3,4})$", re.I)
 YEAR_RE = re.compile(r"^(19[2-9]\d|20[0-3]\d)$")
 CJK_RE = re.compile(r"[぀-ヿ㐀-鿿]")
@@ -884,9 +889,14 @@ class Scraper:
             self._tl.offline = False
         return None
 
-    def peek(self, key):
-        """列表页用：只解析 + 读缓存，绝不联网。返回精简信息。"""
+    def peek(self, key, orig=None):
+        """列表页用：只解析 + 读缓存，绝不联网。返回精简信息。
+        orig = 原始路径（保留大小写，只用于显示用的标题；key 在 Windows 上是全小写的）。"""
         parsed, group = self.parse_key(key)
+        if orig:
+            fn, parents = names_from_key(orig)
+            shown = parse_video(fn, parents)
+            parsed = dict(parsed, title_candidates=shown["title_candidates"])
         it = self.item(key)
         return {"key": key, "group_key": group, "parsed": parsed, "item": brief(it) if it else None}
 

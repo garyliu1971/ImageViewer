@@ -1,7 +1,7 @@
 # 媒体刮削（海报 / 元数据）设计 · 第 1 步：引擎
 
-状态：引擎 + HTTP 接口 + 测试已实现（分支 `feature/iv-scrape-engine`，**依赖** `feature/iv-cloud-video-polish`，未推送）。
-UI（第 2 步）、剧集分组 / 继续观看 / NFO（第 3 步）尚未做。
+状态：第 1 步（引擎 + HTTP 接口）与第 2 步（海报墙 UI）已实现（分支 `feature/iv-scrape-engine`，**依赖** `feature/iv-cloud-video-polish`，未推送）。
+第 3 步（系列合并 / 继续观看横栏 / 可选 NFO）尚未做。Owner 已确认：令牌只走环境变量、阈值 0.8 / 0.08、缓存 150 天、按需刮削 + 只刮当前层、不做 NFO、`include_adult=false`、署名放帮助页底部与海报墙脚注。
 
 ## 1. 范围与已定决策
 
@@ -97,7 +97,7 @@ TMDB 在中国大陆直连常不稳。`TMDB_API_BASE`（默认 `https://api.them
   “This product uses the TMDB API but is not endorsed or certified by TMDB.” 并放 TMDB 官方批准的 logo（尺寸小于应用自己的标识）。引擎阶段尚无 UI，因此尚未展示——**发布含刮削 UI 之前必须补上**。
 - 豆瓣等无官方 API 的站点：不爬（见 §1）。
 
-## 9. 第 2 步：UI（后续）
+## 9. 第 2 步：UI（已实现，仅后端模式；静态 /iv/ 没有后端所以看不到）
 
 1. 浏览窗口里的**海报墙**网格（`/api/scrape/image` w342），排序：名称 / 评分 / 年份；电影 vs 剧集自动区分；多季 + Specials。
 2. **详情页**：中文主标题 + 英文副标题、简介（中 / 英切换）、类型、评分、背景图；剧集显示季选择与**分集列表**（分集名中英、剧照、播放进度）。
@@ -114,6 +114,7 @@ TMDB 在中国大陆直连常不稳。`TMDB_API_BASE`（默认 `https://api.them
 
 ## 11. 待 Owner 确认的问题
 
+（以下问题 1~8 已由 Owner 回复并采纳，保留作记录；新问题见文末「第 2 步后的新问题」。）
 1. TMDB 令牌能否在你的网络直连？不能的话你有可信的网关 / 反代吗（`tmdb_check.py` 可测）？
 2. 需要 `TMDB_TOKEN` 之外的配置方式吗（例如 Windows 用户环境变量即可，还是要在 UI 里填？UI 填的话令牌存哪、如何不进 `image_viewer.json`）。
 3. needs_review 阈值（0.8 / 差距 0.08）偏保守还是偏激进？你的片库命名风格能给几个典型样例吗？
@@ -122,3 +123,49 @@ TMDB 在中国大陆直连常不稳。`TMDB_API_BASE`（默认 `https://api.them
 6. 是否要在第 3 步做 `.nfo` 导出？目标目录是否可写？
 7. 成人 / R 级内容：目前搜索固定 `include_adult=false`，是否合适？
 8. 署名 logo 放在哪个页面（About / 设置）？
+
+## 12. 第 2 步实现说明（image-viewer.html）
+
+- 入口：「按磁盘路径打开」窗口（本机或 ☁ 云端目录）里新增 `☰ 列表 / 🎞 海报墙` 切换（选择会记住）。
+- 列表页只调 `POST /api/scrape/peek`（解析文件名 + 读缓存，**绝不联网**，最多 500 项）；卡片进入视口时才逐个 `POST /api/scrape/match`（前端并发 2，后端再节流）。剧集卡只匹配代表集，其余集共享缓存。
+- 卡片：电影一张；同一剧名目录（或同名）的剧集合并成一张剧集卡（「N 集」）；徽标 待确认 / 未匹配 / 📌 锁定；排序 名称 / 年份 / 评分；标题或文件名筛选。
+- 详情页：背景图 + 海报、中文主标题 + 英文副标题、年份 / 评分 / 时长或季数 / 类型、简介（中文优先，英文作辅）；剧集有季标签和分集列表（中英片名、剧照）。
+  播放复用现有播放器（`openServerVideo` / `openRemoteVideo`，字幕等一并复用）。
+- 继续观看：卡片 / 分集上显示 `▶ mm:ss`，数据来自 peek 返回的 `resume_ms`（直接读 `_video_resume_`，没有新增存储）。
+  **「已看」标记例外**：续播点在看完时会被清掉（结尾 3 秒内），无法区分「看完」和「没看过」，所以播放器 `ended` 事件会在浏览器 localStorage（`iv.scrape.played.v1`）记一个小标记。它只是本浏览器的显示便利，不同步、不进后端。
+- 修正匹配：`GET /api/scrape/search?q=&year=&type=`（只代理 TMDB 搜索，q ≤ 100 字符）→ 点选 → `POST /api/scrape/pin`（剧集锁整部剧）；可「取消锁定」（取消后立即重新自动匹配）。
+- 刮削当前目录：`POST /api/scrape/scan`（只当前这一层，≤ 2000）+ 轮询 `GET /api/scrape/job` 显示进度（已匹配 / 待确认 / 未匹配 / 失败），`POST /api/scrape/cancel` 取消。
+- 状态行：令牌已配置 / 未配置（只来自 `token_configured`）、缓存统计、「清缓存」（两次点击确认，锁定保留）。未配置令牌时给出中文设置说明（用户级环境变量命令 + 重启后端），界面上**没有任何令牌输入框**。
+- 错误：401 / 令牌缺失 / 连不上（连续 3 次失败后暂停懒加载并提示）都有明确提示；TMDB 不可用时仍按文件名显示标题。
+- 署名：帮助页底部与海报墙脚注都有 “This product uses the TMDB API but is not endorsed or certified by TMDB.” 和 TMDB 官方短版 logo（12px 高，远小于应用自身标识；SVG 取自 TMDB 品牌页 themoviedb.org/about/logos-attribution 列出的文件，原样内嵌，副本在 `icons/tmdb-logo-short.svg`）。
+  TMDB 品牌页本身没有给出声明的固定措辞，这里用的是其 API 条款里通行的那句，**请 Owner 对照 API Terms of Use 再确认一次措辞**。
+
+新增后端接口：`POST /api/scrape/peek`、`GET /api/scrape/search`、`POST /api/scrape/cancel`；`item` / `peek` 对过期详情不再联网（离线模式）；item 增加 `pin_scope`（video / group）。
+
+## 13. 文件名解析：已知缺口与如何扩展
+
+Owner 还没有提供真实文件名样本，以下是**已知处理不了或容易错**的情形（没有测试保证它们正确）：
+
+| 情形 | 现状 |
+|---|---|
+| 按日期命名的日更节目 `Show.2019-03-05.mkv` | 日期被当年份；没有集号，会按电影搜 |
+| 无连字符的尾部集号 `Show 03.mkv`、`Show 12 完.mp4` | 当成标题的一部分（`Show 03`），搜索可能偏 |
+| 标题里自带点号的名字 `S.W.A.T.2017.mkv`、`Mr.Robot` 之外的缩写 | 点号当分隔符，拆成多个词 |
+| 标题本身像噪声词 / 以数字开头的续集 `Ocean's 11`、`Se7en`、`Movie 2` | `- 2` 形式的会被当集号；`Movie 2` 保持标题 |
+| 一个文件含多集 `S01E01-E03` | 只取第一集 |
+| 绝对集号动漫（`进击的巨人 - 75` 对应第 4 季第 16 集） | 按季 1 第 75 集处理，分集名对不上 |
+| 目录名是发布名而文件名只有 `movie.mkv` | 从目录取标题，但目录里的噪声词清理不如文件名完整 |
+| 简繁混排 / 全角标点标题 | 搜索时原样发给 TMDB，不做简繁转换 |
+
+扩展方法：
+1. 先在 `tests/test_scrape_parser.py` 的 `CASES` 表加一行（文件名、上层目录、期望 kind / 标题 / 年 / 季 / 集）——这张表就是规格，加完先看红。
+2. 噪声词：在 `scrape.py` 的 `NOISE` 集合里加词，或运行时 `scrape.add_noise("某字幕组", ...)`；分辨率 / 年份 / 集号写法在 `_parse_stem()` 的 token 规则里。
+3. 目录规则（季目录写法）在 `SEASON_DIR_RES`，泛名黑名单（`video` / `cd1` 等）在 `GENERIC_STEM_RE`。
+
+### 第 2 步后的新问题
+
+1. 「已看」标记目前只存在本浏览器 localStorage（因为续播点看完会被清掉）。要不要让后端的 `_video_resume_` 保留「已看完」状态（会改桌面版共用存储的语义，需要桌面版一起改）？
+2. 播放后回到海报墙：现有播放器打开时会关掉所有弹窗，回来要重新进「磁盘路径」。要不要让播放器关闭后自动回到刚才的海报墙目录？
+3. 同一部剧分散在多个目录（每季一个独立目录，目录名不同）目前是多张卡；要不要按 TMDB id 合并成一张？（第 3 步）
+4. 手机端实测（触摸、小屏）还没做；窄屏布局只在 390px 宽的无头 Chrome 里看过。
+5. 声明措辞（见 §12）请对照 TMDB API Terms 再确认。
