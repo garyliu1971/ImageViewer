@@ -411,6 +411,7 @@
   .wc-badge.b-review { background: #c47a00; }
   .wc-badge.b-none { background: #8a3a3a; }
   .wc-badge.b-pin { background: #2d6a3e; }
+  .wc-badge.b-ign { background: #555b6b; font-weight: normal; }
   .wc-cnt { top: 6px; right: 6px; }
   .wc-mark { bottom: 6px; left: 6px; }
   .wc-mark.done { background: #2d6a3e; }
@@ -991,6 +992,7 @@
     <div id="fxList"></div>
     <p id="fxNote" style="color:var(--muted);font-size:12px;margin-top:8px;line-height:1.7"></p>
     <div class="modal-actions">
+      <button class="btn" id="fxIgnore" title="这个文件 / 目录不是影视（比如网盘的介绍视频）：以后不再向 TMDB 查询，也不会被「刮削当前目录」处理">忽略此项（不是影视）</button>
       <button class="btn" id="fxUnpin" style="margin-right:auto">取消锁定</button>
       <button class="btn" data-close="scrFix">关闭</button>
     </div>
@@ -6403,9 +6405,11 @@
       if (!p || p.error) return;
       var c0 = (p.parsed.title_candidates || [])[0] || r.name.replace(/\.[^.]+$/, '');
       var ep = p.parsed.kind === 'episode';
-      var id = ep ? 's:' + (p.group_key || ('t:' + c0.toLowerCase())) : 'm:' + r.path;
+      var ign = !!(p.item && p.item.status === 'ignored');          /* 用户标记「不是影视」：当普通文件卡显示，不再刮削 */
+      if (ign) { ep = false; c0 = r.name; }
+      var id = ign ? 'i:' + r.path : ep ? 's:' + (p.group_key || ('t:' + c0.toLowerCase())) : 'm:' + r.path;
       var c = map[id];
-      if (!c) { c = map[id] = { id: id, type: ep ? 'series' : 'movie', files: [], title: c0, year: p.parsed.year, item: null }; cards.push(c); }
+      if (!c) { c = map[id] = { id: id, type: ep ? 'series' : 'movie', files: [], title: c0, year: ign ? null : p.parsed.year, item: null, ignored: ign }; cards.push(c); }
       c.files.push({ row: r, peek: p });
       if (p.item && (!c.item || p.item.status === 'pinned')) c.item = p.item;
     });
@@ -6478,10 +6482,10 @@
   function wallCardHtml(c) {
     var f = cardInfo(c);
     var st = c.item ? c.item.status : '';
-    var badge = st === 'needs_review' ? '<span class="wc-badge b-review">待确认</span>' :
+    var badge = c.ignored ? '<span class="wc-badge b-ign">已忽略</span>' : st === 'needs_review' ? '<span class="wc-badge b-review">待确认</span>' :
       st === 'unmatched' ? '<span class="wc-badge b-none">未匹配</span>' :
       st === 'pinned' ? '<span class="wc-badge b-pin">📌</span>' : '';
-    var poster = f.poster ? '<img alt="" data-src="' + esc(wallImg(f.poster)) + '">' : '';
+    var poster = f.poster && !c.ignored ? '<img alt="" data-src="' + esc(wallImg(f.poster)) + '">' : '';
     var ph = f.poster ? '' : esc(f.title);
     return '<div class="wc" data-id="' + esc(c.id) + '" title="' + esc(f.title + (f.en ? ' / ' + f.en : '')) + '">' +
       '<div class="wc-poster">' + ph + poster + badge +
@@ -6601,7 +6605,7 @@
       var job = j.job;
       var pct = job.total ? Math.round(job.done * 100 / job.total) : 0;
       $('#wallProgText').textContent = (job.state === 'running' ? '刮削中 ' : '已结束 ') + job.done + '/' + job.total + ' · 已匹配 ' + job.matched +
-        ' · 待确认 ' + job.needs_review + ' · 未匹配 ' + job.unmatched + ' · 失败 ' + job.failed;
+        ' · 待确认 ' + job.needs_review + ' · 未匹配 ' + job.unmatched + (job.ignored ? ' · 已忽略 ' + job.ignored : '') + ' · 失败 ' + job.failed;
       $('#wallProgBar').style.width = pct + '%';
       if (job.state === 'running') { W.jobTimer = setTimeout(wallPoll, 700); return; }
       W.jobId = ''; $('#wallScan').disabled = false;
@@ -6634,7 +6638,7 @@
   function wallDetailLoad() {
     var c = D.card, seq = D.seq, files = seasonFiles();
     wallDetailRender(null);
-    if (!files.length) return;
+    if (!files.length || c.ignored) return;
     apiJson('/api/scrape/match', null, 'POST', wallReq(files[0].row)).then(function (j) {
       if (seq !== D.seq) return;
       c.item = j.item;
@@ -6650,6 +6654,15 @@
     var c = D.card, f = cardInfo(c), m = (item && item.media) || null;
     $('#sdTitle').textContent = f.title;
     $('#sdEn').textContent = f.en;
+    if (c.ignored) {
+      $('#sdMeta').textContent = ''; $('#sdOver').textContent = ''; $('#sdOverEn').textContent = '';
+      $('#sdPoster').style.backgroundImage = ''; $('#sdHero').style.backgroundImage = '';
+      $('#sdNote').textContent = '已忽略：这不是影视条目，不会再向 TMDB 查询。要恢复，点「修正匹配」里的「取消忽略」。';
+      $('#sdPlay').textContent = '▶ 播放'; $('#sdPlay')._file = c.files[0];
+      $('#sdWatch').textContent = c.files[0].peek.watched ? '取消已看' : '标为已看'; $('#sdWatch')._flag = !c.files[0].peek.watched;
+      $('#sdBody').innerHTML = '';
+      return;
+    }
     var bits = [];
     if (f.year) bits.push(f.year);
     if (m && m.vote_average) bits.push('★ ' + (+m.vote_average).toFixed(1));
@@ -6713,6 +6726,8 @@
     $('#fxCur').textContent = it && it.status === 'pinned' ? '当前：已锁定 → ' + (it.media ? it.media.title + (it.media.year ? '（' + it.media.year + '）' : '') : '') + (it.pin_scope === 'group' ? '（整部剧）' : '') :
       it && it.media ? '当前：自动匹配 → ' + it.media.title + (it.media.year ? '（' + it.media.year + '）' : '') + (it.status === 'needs_review' ? '，待确认' : '') : '当前：没有匹配';
     $('#fxUnpin').style.display = it && it.status === 'pinned' ? '' : 'none';
+    $('#fxIgnore').textContent = c.ignored ? '取消忽略' : '忽略此项（不是影视）';
+    if (c.ignored) $('#fxCur').textContent = '当前：已忽略（不当作影视，不会向 TMDB 查询）';
     $('#fxNote').textContent = c.type === 'series' ? '选定后会锁定整部剧（「' + c.title + '」目录下所有季、所有集），之后重新刮削 / 缓存过期都不会改。' : '选定后只锁定这一个视频，之后不会被重新刮削改掉。';
     toggleModal('scrFix', true);
     wallFixSearch();
@@ -6758,6 +6773,22 @@
     }, function (e) { toast('锁定失败：' + ((e && e.message) || e)); });
   }
 
+  function wallIgnore(flag) {
+    var c = FX.card;
+    var seenG = {}, reps = c.files.filter(function (f) {
+      var g = f.peek.group_key || f.row.path;
+      if (seenG[g]) return false;
+      return (seenG[g] = true);
+    });
+    Promise.all(reps.map(function (f) {
+      return apiJson('/api/scrape/pin', null, 'POST', Object.assign(wallReq(f.row), { ignore: flag }));
+    })).then(function () {
+      toggleModal('scrFix', false); toggleModal('scrDetail', false);
+      toast(flag ? '已忽略：不再向 TMDB 查询' : '已取消忽略');
+      wallLoad();
+    }, function (e) { toast('操作失败：' + ((e && e.message) || e)); });
+  }
+
   (function wireWall() {
     $('#viewList').addEventListener('click', function () { wallSetView(false); });
     $('#viewWall').addEventListener('click', function () { wallSetView(true); });
@@ -6801,6 +6832,7 @@
       if (row && this._res) wallPin(this._res[+row.dataset.i]);
     });
     $('#fxUnpin').addEventListener('click', function () { wallPin(null); });
+    $('#fxIgnore').addEventListener('click', function () { wallIgnore(!(FX.card && FX.card.ignored)); });
     W.sub = wallPrefs.sub !== false;
     if (wallPrefs.view === 'wall') { $('#browse').classList.add('wall-on'); W.on = true; $('#viewWall').classList.add('on'); $('#viewList').classList.remove('on'); }
   })();

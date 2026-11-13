@@ -396,6 +396,64 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
     check('列表模式：从列表播放视频，Esc 回来仍是列表且选中项不变', r4.wall === false && r4.sel.includes('Dune.mkv'), r4);
     await cdp.eval(`document.querySelector('#viewWall').click(); await __wait(500); return 1;`);
 
+
+    log('\n[7e] 忽略（不是影视）');
+    const ign = path.join(tmp, '忽略库'); fs.mkdirSync(ign);
+    fs.writeFileSync(path.join(ign, '夸克.mp4'), 'x');
+    fs.writeFileSync(path.join(ign, '流浪地球 (2019).mp4'), 'x');
+    const stats = () => new Promise((res) => http.get(apiBase.replace(/\/3$/, '') + '/__stats', (r) => { let b = ''; r.on('data', d => (b += d)); r.on('end', () => res(JSON.parse(b))); }));
+    await openWall(cdp, port, ign);
+    await cdp.eval(ensureSub);
+    await cdp.eval(`await __until(() => document.querySelectorAll('#wallGrid .wc-badge').length >= 1 || document.querySelectorAll('#wallGrid .wc img').length >= 1, 10000); await __wait(1200); return 1;`);
+    const i0 = await cdp.eval(`return ${cards};`);
+    check('「夸克」只能靠外语别名命中德国老片：不自动接受 -> 未匹配（不是待确认）', i0.some(c => c.title.includes('夸克') && c.badge === '未匹配'), i0);
+    const ig = await cdp.eval(`
+      Array.from(document.querySelectorAll('#wallGrid .wc')).find(e => e.textContent.includes('夸克')).click();
+      await __until(() => !document.querySelector('#scrDetail').classList.contains('hidden'));
+      document.querySelector('#sdFix').click();
+      await __until(() => !document.querySelector('#scrFix').classList.contains('hidden'));
+      const label = document.querySelector('#fxIgnore').textContent;
+      document.querySelector('#fxIgnore').click();
+      await __until(() => document.querySelector('#wallGrid .wc-badge.b-ign'), 8000);
+      await __wait(500);
+      const cs = ${cards};
+      return { label, cs };`);
+    const ic = ig.cs.find(c => c.badge === '已忽略');
+    check('修正匹配里有「忽略此项（不是影视）」；点后变成普通文件卡：文件名标题、「已忽略」小标签、无海报、无待确认 / 未匹配徽标',
+      ig.label === '忽略此项（不是影视）' && ic && ic.title === '夸克.mp4' && !ic.img && !ig.cs.some(c => c.title.includes('夸克') && c.badge !== '已忽略'), ig);
+    await shot(cdp, 'wall-ignored.png', 1100, 860);
+    const before = await stats();
+    const sc2 = await cdp.eval(`
+      document.querySelector('#wallScan').click();
+      await __until(() => document.querySelector('#wallProgText').textContent.startsWith('已结束'), 15000);
+      const t = document.querySelector('#wallProgText').textContent;
+      await __wait(800);
+      return { t, cs: ${cards} };`);
+    const after = await stats();
+    check('刮削当前目录：已忽略的算「已忽略 1」，且没有为它发任何 TMDB 搜索（只为另一个文件搜）', /已忽略 1/.test(sc2.t) && /已结束 2\/2/.test(sc2.t) && after.search === before.search, { t: sc2.t, before, after });
+    const peekIgn = await cdp.eval(`const t = window.__IV.backend().token; const q = await (await fetch('/api/scrape/peek?t=' + t, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items:[{path: ${JSON.stringify(path.join(ign, '夸克.mp4'))}}]})})).json(); return q.items[0].item.status;`);
+    check('peek 返回 ignored；刷新页面后仍是已忽略', peekIgn === 'ignored');
+    const purged = await cdp.eval(`const t = window.__IV.backend().token; await fetch('/api/scrape/purge?t=' + t, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({all:true})}); const q = await (await fetch('/api/scrape/status?t=' + t)).json(); return q.pins;`);
+    check('清缓存（all）不清忽略记录', purged >= 1, purged);
+    const cnt0 = (await stats()).search;
+    await openWall(cdp, port, ign);
+    await cdp.eval(`await __until(() => document.querySelectorAll('#wallGrid .wc').length === 2); await __wait(1500); return 1;`);
+    const cnt1 = (await stats()).search;
+    const un = await cdp.eval(`
+      const cs = ${cards}; const ok = cs.some(c => c.badge === '已忽略');
+      Array.from(document.querySelectorAll('#wallGrid .wc')).find(e => e.textContent.includes('夸克')).click();
+      await __until(() => !document.querySelector('#scrDetail').classList.contains('hidden'));
+      const note = document.querySelector('#sdNote').textContent;
+      document.querySelector('#sdFix').click();
+      await __until(() => !document.querySelector('#scrFix').classList.contains('hidden'));
+      const label = document.querySelector('#fxIgnore').textContent;
+      document.querySelector('#fxIgnore').click();
+      await __until(() => !document.querySelector('#wallGrid .wc-badge.b-ign'), 8000);
+      await __wait(1500);
+      return { ok, note, label, cs2: ${cards} };`);
+    check('清缓存后重新打开：夸克仍是已忽略、没有为它搜索（只有流浪地球的重新刮削）；详情页有说明；弹窗里能「取消忽略」恢复刮削',
+      un.ok && /不会再向 TMDB 查询/.test(un.note) && un.label === '取消忽略' && un.cs2.some(c => c.title.includes('夸克') && c.badge === '未匹配') && cnt1 - cnt0 <= 2, { un, cnt0, cnt1 });
+
     log('\n[8] 令牌不泄露 + 署名');
     const leak = await cdp.eval(`
       const t = window.__IV.backend().token; const out = [];

@@ -237,6 +237,74 @@ class TestScraper(Base):
         self.assertEqual(self.sc.match(local_key("lib", "进击的巨人 S01", "02.mkv"))["status"], "pinned")
         self.assertNotEqual(self.sc.match(local_key("lib", "进击的巨人 第二季", "01.mkv"))["status"], "pinned")
 
+    def test_short_cjk_title_never_auto_accepted_via_foreign_alias(self):
+        """「夸克」（<= 2 个汉字）只能靠外语别名命中 1941 年德国片：不得自动接受（既不 matched 也不 needs_review）。"""
+        for name in ("夸克.mp4", "夸克 (1941).mp4", "夸克.1941.1080p.mp4"):
+            it = self.sc.match(local_key("m", name))
+            self.assertEqual(it["status"], "unmatched", name)
+            self.assertIsNone(it["media"], name)
+            alt = [a for a in it["alternatives"] if a["tmdb_id"] == 7003]
+            self.assertTrue(alt and alt[0]["weak"], name)            # 仍作为候选留给手动修正
+            self.assertIsNone(self.sc._get_row("pins", local_key("m", name)))
+
+    def test_short_cjk_title_direct_match_still_works(self):
+        it = self.sc.match(local_key("m", "沙丘 (2021).mkv"))
+        self.assertEqual((it["status"], it["media"]["tmdb_id"]), ("matched", 7002))
+        amb = self.sc.match(local_key("m", "沙丘.mkv"))                # 同名两部：待确认，不自动锁定
+        self.assertEqual(amb["status"], "needs_review")
+
+    def test_longer_cjk_title_not_restricted(self):
+        self.assertEqual(self.sc.match(local_key("m", "流浪地球.mp4"))["status"], "matched")
+
+    def test_ignore_never_hits_tmdb_and_survives_purge(self):
+        k = local_key("m", "夸克.mp4")
+        n = len(self.fake.requests)
+        it = self.sc.set_ignore(k, True)
+        self.assertEqual((it["status"], it["source"], it["media"], it["pin_scope"]), ("ignored", "pin", None, "video"))
+        for force in (False, True):
+            again = self.sc.match(k, force=force)
+            self.assertEqual(again["status"], "ignored")
+        self.assertEqual(self.sc.item(k)["status"], "ignored")
+        self.assertEqual(len(self.fake.requests), n)                # 一次 TMDB 请求都没有
+        self.sc.purge(everything=True)
+        self.assertEqual(self.sc.match(k)["status"], "ignored")     # purge 不清忽略（和锁定一样）
+        self.assertEqual(self.sc.status()["pins"], 1)
+        self.assertEqual(len(self.fake.requests), n)
+        self.assertIsNone(self.sc.set_ignore(k, False))
+        self.assertEqual(self.sc.match(k)["status"], "unmatched")   # 取消后恢复正常刮削
+
+    def test_ignore_group_scope_for_series_folder(self):
+        a = local_key("tv", "Intro Videos", "Season 1", "S01E01.mkv")
+        b = local_key("tv", "Intro Videos", "Season 2", "S02E01.mkv")
+        it = self.sc.set_ignore(a, True)
+        self.assertEqual(it["pin_scope"], "group")
+        n = len(self.fake.requests)
+        self.assertEqual(self.sc.match(b)["status"], "ignored")     # 同一系列目录的其它季也被忽略
+        self.assertEqual(len(self.fake.requests), n)
+
+    def test_unignore_keeps_real_pin(self):
+        k = local_key("m", "Matrix.mkv")
+        self.sc.pin(k, "movie", 603)
+        self.sc.set_ignore(k, False)                                # 没有忽略记录：不动锁定
+        self.assertEqual(self.sc.match(k)["status"], "pinned")
+        self.sc.set_ignore(k, True)                                 # 忽略会覆盖锁定
+        self.assertEqual(self.sc.match(k)["status"], "ignored")
+
+    def test_scan_skips_ignored(self):
+        k1, k2 = local_key("m", "夸克.mp4"), local_key("m", "流浪地球 (2019).mp4")
+        self.sc.set_ignore(k1, True)
+        n_before = len(self.fake.requests)
+        jid = self.sc.start_scan([k1])
+        for _ in range(100):
+            j = self.sc.job(jid)
+            if j["state"] == "done":
+                break
+            time.sleep(0.05)
+        self.assertEqual((j["ignored"], j["failed"], j["matched"]), (1, 0, 0))
+        self.assertEqual(len(self.fake.requests), n_before)
+        self.assertEqual(j["queue"][0]["state"], "ignored")
+        self.assertEqual(self.sc.match(k2)["status"], "matched")
+
     def test_year_disambiguates(self):
         it = self.sc.match(local_key("m", "Dune (2021).mkv"))
         self.assertEqual((it["status"], it["media"]["tmdb_id"]), ("matched", 7002))
@@ -527,6 +595,10 @@ class TestEndpoints(Base):
         st, _, b = self.post("/api/scrape/scan", {"items": [{"path": self.vid}]})
         jid = json.loads(b)["job"]["id"]
         self.assertEqual(self.post("/api/scrape/cancel", {"id": jid})[0], 200)
+        for _ in range(100):                                          # 等后台线程收尾，免得它的请求串进后面的用例
+            if json.loads(http("GET", self.u("/api/scrape/job", id=jid))[2])["job"]["state"] == "done":
+                break
+            time.sleep(0.05)
 
     def test_pin_scope_reported(self):
         ep = os.path.join(os.path.abspath(os.sep), "tv", "Weird Show", "S01E01.mkv")
@@ -534,6 +606,21 @@ class TestEndpoints(Base):
         self.assertEqual((it["status"], it["pin_scope"]), ("pinned", "group"))
         j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": ep}]})[2])
         self.assertEqual(j["items"][0]["item"]["pin_scope"], "group")
+
+    def test_ignore_endpoint_and_peek(self):
+        v = os.path.join(os.path.abspath(os.sep), "movies", "夸克.mp4")
+        n = len(self.fake.requests)
+        st, _, b = self.post("/api/scrape/pin", {"path": v, "ignore": True})
+        self.assertEqual((st, json.loads(b)["item"]["status"]), (200, "ignored"))
+        j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": v}]})[2])
+        self.assertEqual(j["items"][0]["item"]["status"], "ignored")
+        self.assertEqual(self.post("/api/scrape/match", {"path": v})[0], 200)
+        self.assertEqual(self.fake.requests[n:], [])
+        self.assertEqual(self.post("/api/scrape/pin", {"path": v, "ignore": "yes"})[0], 400)
+        st, _, b = self.post("/api/scrape/pin", {"path": v, "ignore": False})
+        self.assertEqual(st, 200)
+        j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": v}]})[2])
+        self.assertIsNone(j["items"][0]["item"])
 
     def test_token_never_leaks_anywhere(self):
         """用错令牌 / 429 / 网络失败各走一遍，所有响应体、响应头、stdout/stderr 里都不能出现令牌。"""

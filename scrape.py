@@ -571,6 +571,11 @@ def title_score(cands, result, year):
     return round(best, 4)
 
 
+def _short_cjk(c):
+    """<= 2 个汉字（且没有拉丁字母）的标题候选。"""
+    return len(CJK_RE.findall(c)) <= 2 and bool(CJK_RE.search(c)) and not re.search(r"[A-Za-z]", c)
+
+
 def _has_cjk(s):
     return bool(s and CJK_RE.search(s))
 
@@ -719,6 +724,21 @@ class Scraper:
                 if scored and max(s["score"] for s in scored) >= 0.95:
                     break
         scored.sort(key=lambda s: -s["score"])
+        if cands and _short_cjk(cands[0]):         # 以主候选（文件名里的标题）为准；目录名候选不能替它「洗白」
+            # 「夸克」「沙丘」这种 <= 2 个汉字的标题太短：TMDB 会通过外语别名把它匹配到毫不相干的片子
+            # （例：夸克 -> 1941 年德国片 Quax, der Bruchpilot）。只有结果自己的标题 / 原名里真的含有这个词才算数，
+            # 否则只留作候选，供手动修正，不自动接受。
+            norm = [_norm(cands[0])]
+            for x in scored:
+                names = [_norm(x.get("title")), _norm(x.get("original_title"))]
+                x["weak"] = not any(n and n in nm for n in norm for nm in names)
+            strong = [x for x in scored if not x.get("weak")]
+            best = strong[0] if strong and strong[0]["score"] >= MATCH_MIN_SCORE else None
+            if best:
+                rival = next((x for x in strong[1:] if x["tmdb_id"] != best["tmdb_id"] and x["media_type"] == best["media_type"]), None)
+                if best["score"] < CONFIDENT_SCORE or (rival and best["score"] - rival["score"] < CLOSE_MARGIN):
+                    best = dict(best, needs_review=True)
+            return best, scored[:6]
         best = scored[0] if scored and scored[0]["score"] >= MATCH_MIN_SCORE else None
         if best:
             rival = next((x for x in scored[1:] if x["tmdb_id"] != best["tmdb_id"]
@@ -806,7 +826,7 @@ class Scraper:
 
     def _assemble(self, key, parsed, group, status, source, ref, score, alternatives, updated):
         item = {"key": key, "group_key": group, "kind": parsed["kind"], "parsed": parsed,
-                "pin_scope": getattr(self._tl, "pin_scope", None) if status == "pinned" else None,
+                "pin_scope": getattr(self._tl, "pin_scope", None) if status in ("pinned", "ignored") else None,
                 "status": status, "source": source, "score": score, "alternatives": alternatives,
                 "media": None, "season": None, "episode": None,
                 "updated_at": updated, "expires_at": (updated or self.now()) + TTL_SECONDS}
@@ -840,6 +860,8 @@ class Scraper:
         """按需刮削一个视频（可能联网，别在持锁处调用）。已锁定的永不被改写。"""
         parsed, group = self.parse_key(key)
         pin, at = self._find_pin(key, group)
+        if pin and pin.get("ignore"):                     # 用户标记「不是影视」：永不联网
+            return self._assemble(key, parsed, group, "ignored", "pin", None, 0, [], at)
         if pin:
             return self._assemble(key, parsed, group, "pinned", "pin", pin, 1.0, [], at)
         if not force:
@@ -866,6 +888,8 @@ class Scraper:
         pin, at = self._find_pin(key, group)
         self._tl.offline = True
         try:
+            if pin and pin.get("ignore"):
+                return self._assemble(key, parsed, group, "ignored", "pin", None, 0, [], at)
             if pin:
                 return self._assemble(key, parsed, group, "pinned", "pin", pin, 1.0, [], at)
             row = self._get_row("matches", key)
@@ -913,6 +937,27 @@ class Scraper:
                         "poster_path": r.get("poster_path") or "", "overview": (r.get("overview") or "")[:160]})
         return out
 
+    def set_ignore(self, key, flag, scope="auto"):
+        """标记 / 取消「不是影视」。和手动锁定同一张表、同一套 key（剧集默认作用于所在系列目录组）；
+        被忽略的条目永远不会发给 TMDB，purge 也不会清掉它。取消时只删忽略记录，不动真正的锁定。"""
+        parsed, group = self.parse_key(key)
+        target = key
+        if scope == "group" or (scope == "auto" and parsed["kind"] == "episode" and group):
+            if not group:
+                raise ValueError("该视频没有可用的系列目录，请用 scope=video")
+            target = group
+        elif scope not in ("auto", "video", "group"):
+            raise ValueError("scope 不合法")
+        with self._lock, self._conn() as c:
+            if flag:
+                c.execute("INSERT OR REPLACE INTO pins VALUES(?,?,?)", (target, json.dumps({"ignore": True}), self.now()))
+            else:
+                row = c.execute("SELECT body FROM pins WHERE key=?", (target,)).fetchone()
+                if row and json.loads(row[0]).get("ignore"):
+                    c.execute("DELETE FROM pins WHERE key=?", (target,))
+        self._tl.pin_scope = "group" if target != key else "video"
+        return self.item(key) if flag else None
+
     def pin(self, key, media_type, tmdb_id, scope="auto"):
         """用户指定正确的条目。电视剧默认锁整个系列目录（group），电影锁单个视频。tmdb_id=None 取消锁定。"""
         parsed, group = self.parse_key(key)
@@ -945,7 +990,7 @@ class Scraper:
                 raise RuntimeError("已有刮削任务在运行")
             jid = uuid.uuid4().hex[:12]
             job = {"id": jid, "state": "running", "total": len(keys), "done": 0, "matched": 0,
-                   "needs_review": 0, "unmatched": 0, "failed": 0, "last_error": "", "cancel": False,
+                   "needs_review": 0, "unmatched": 0, "ignored": 0, "failed": 0, "last_error": "", "cancel": False,
                    "queue": [{"key": k, "state": "pending"} for k in keys[:2000]]}
             self._jobs[jid] = job
             for old in list(self._jobs)[:-10]:

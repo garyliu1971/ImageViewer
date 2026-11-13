@@ -51,6 +51,10 @@ MOVIES = {
            "orig": "The Matrix Reloaded", "date": "2003-05-15", "poster": "/matrix2_poster.jpg", "backdrop": "",
            "pop": 40, "runtime": 138, "genres": []},
 }
+MOVIES[7003] = {"zh": {"title": "Quax, der Bruchpilot", "overview": "", "tagline": ""},
+                "en": {"title": "Quax, der Bruchpilot", "overview": "A 1941 German film.", "tagline": ""}, "orig": "Quax, der Bruchpilot",
+                "date": "1941-12-18", "poster": "/quax1941_poster.jpg", "backdrop": "", "pop": 5, "runtime": 118, "genres": [],
+                "aliases": ["夸克"]}
 MOVIES[7001] = {"zh": {"title": "沙丘", "overview": "1984 版。", "tagline": ""},
                 "en": {"title": "Dune", "overview": "The 1984 film.", "tagline": ""}, "orig": "Dune",
                 "date": "1984-12-14", "poster": "/dune1984_poster.jpg", "backdrop": "", "pop": 40, "runtime": 137, "genres": []}
@@ -123,6 +127,11 @@ class FakeTmdb:
                 auth = self.headers.get("Authorization")
                 with fake._lock:
                     fake.requests.append((u.path, q, auth, self.headers.get("User-Agent")))
+                if u.path == "/__stats":
+                    with fake._lock:
+                        n = len(fake.requests) - 1
+                        srch = len([r for r in fake.requests if r[0].startswith("/3/search")])
+                    return self._send(200, {"requests": n, "search": srch})
                 if u.path.startswith("/t/p/"):
                     m = re.match(r"^/t/p/(w\d+|original)/([A-Za-z0-9_-]+\.(?:jpg|png))$", u.path)
                     if not m:
@@ -174,6 +183,7 @@ class FakeTmdb:
         for tid, d in (MOVIES if kind == "movie" else TV).items():
             names = [d[lk].get("title") or d[lk].get("name"), d["en"].get("title") or d["en"].get("name"),
                      d["zh"].get("title") or d["zh"].get("name"), d["orig"]]
+            names += d.get("aliases", [])          # 外语别名：TMDB 的搜索会按它命中，但结果里的标题不含它
             hit = any(qn and (qn in re.sub(r"[\W_]+", "", (n or "").casefold())) for n in names)
             if not hit:
                 continue

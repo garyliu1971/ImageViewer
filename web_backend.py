@@ -1134,6 +1134,10 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/scrape/match":
                 return self._json({"ok": True, "item": sc.match(scrape_key(body), force=bool(body.get("force")))})
             if route == "/api/scrape/pin":
+                if "ignore" in body:
+                    if not isinstance(body["ignore"], bool):
+                        return self._err("ignore 必须是布尔值")
+                    return self._json({"ok": True, "item": sc.set_ignore(scrape_key(body), body["ignore"], str(body.get("scope") or "auto"))})
                 tid = body.get("tmdb_id")
                 item = sc.pin(scrape_key(body), body.get("media_type"), tid, str(body.get("scope") or "auto"))
                 return self._json({"ok": True, "item": item})
