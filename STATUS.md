@@ -266,3 +266,48 @@ python web_backend.py --lan           # 局域网：手机/VLC 可访问，终�
 - `core.autocrlf=true` + 无 `.gitattributes` 会把 `tests/fixtures/sample.pdf` 的 xref 偏移换行改坏
 - 本机多网卡（WSL `172.24.x`、WireGuard `10.0.0.2`、WLAN `192.168.1.x`）：`lan_ip()` 一般取对，但开全隧道 VPN 后要手动拼 URL
 - `tests/fixtures/` 已入库（18KB），但 `网页版测试样本/`、`网页版预览*.png`、`web_backend.log/.pid` 都在 gitignore 里
+
+
+---
+
+## 12. 视频播放 Phase 1（`feature/iv-video`，2026-11-13）
+
+**做了什么**
+- 后端 `/api/data` 改成流式 + 真 HTTP Range：无 Range 回 200；`Range: bytes=a-b / a- / -N` 回 206 + `Content-Range`；
+  越界 / 非法回 416 + `Content-Range: bytes */size`；永远带 `Accept-Ranges: bytes`。不再把整段读进内存。
+  视频 Content-Type 显式映射（mp4/m4v/webm/ogv/mov/mkv/avi…，`VIDEO_MIME`）。`?range=bytes=a-b` 旧写法仍兼容。
+- `media_source.VIDEO_EXTS` 补上 `.ogv`（桌面版也受益）。仍然只能读白名单扩展名，token 校验不变。
+- 新接口 `/api/subtitle?path=<视频>`（列同主名旁挂字幕 .srt/.vtt/.ass/.ssa）、`&name=` 取字节（只能取列出来的纯文件名，防穿越）。
+- 新接口 `/api/videoresume`（GET/PUT）：续播点写桌面版同一个 `_video_resume_`（key = 规范化绝对路径，值 = 毫秒，开头 / 结尾 3 秒不记），没有新建存储。
+- 前端：全屏播放层 `#vplayer`（`<video controls playsinline>`）：倍速、画中画（浏览器支持才显示）、上一个 / 下一个（同目录视频当播放列表）、
+  字幕下拉 / 载入本地字幕 / 字幕大小；`canPlayType` 判断 + `error` 事件给中文提示（"仍然尝试播放"可绕过 canPlayType 误判）。
+- 入口：后端「按磁盘路径打开」里点视频文件；路径框输入视频路径；打开只含视频的目录；拖放 / 「图片/视频」按钮选本地视频（blob URL，不上传后端，可同时选字幕）。
+- 字幕转换在 `IVCore`（纯函数，Node 可测）：`srtToVtt`（BOM / CRLF / 逗号→点 / 补 3 位毫秒 / 去 `<font>` `{\an8}`）、`assToVtt`（只取 Dialogue 文本）、
+  `decodeSubtitle`（UTF-8 / UTF-16 BOM → 严格 UTF-8 → GBK 回退）。
+
+**测试**：`python -m unittest tests.test_web_backend`（新增 `TestVideoServing` 14 项）、`node --test tests/web_core.test.mjs`（新增 5 项）、
+`node tests/web_video_e2e.mjs`（真 Chrome + 真后端，19 项；样本 webm 由页面 MediaRecorder 现录，无需 ffmpeg）。
+
+**刻意没做（后续阶段）**
+- 服务端 ffmpeg 转码 / remux（VM 太小，明确不做）；不支持的编码（HEVC / AC3 / avi / wmv…）只提示，不转。
+- mkv 内嵌字幕 / 多音轨切换；ASR 字幕（caption_engine）和翻译字幕（translation_engine）。
+- 纯静态 /iv/ 页面（无本地后端）里 WebDAV 书架的视频：`<video src>` 带不了 Basic 头，仍未支持（后端模式已用中转解决，见上）。
+- 纯浏览器（file://）模式的续播点（没有落盘处）；音频文件仍提示"需桌面版"。
+- 没在真实手机 / Safari 上测过；`::cue` 字号百分比在不同浏览器表现略有差异。
+
+**补充（云端视频）**：后端模式下「磁盘路径」窗口新增「☁ 云端」开关，浏览后端已配置的 WebDAV（凭据与桌面版共用 `_webdav_`），
+点视频即播，同目录视频成列表，同主名字幕自动挂。字节经 `/api/remote/data` 流式中转（Range 透传、416 透传、按扩展名纠正 video/* 类型），
+Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authenticate。`/api/data` 的 `Cache-Control: max-age=60` 现在只加在视频上，图片行为不变。
+云端暂只开放视频（图 / 压缩包仍用书架）；云端视频没有续播点（续播接口只认本机路径）。
+
+**补充（云端账号表单 + AList 兼容）**
+- 后端模式下「☁ 云端」未配置时弹出账号表单（地址 / 用户名 / 密码，type=password）；⚙ 可随时改；「断开并忘记」清掉后端保存的账号。
+  连接走 `POST /api/remote/config`（后端先连一次自检，成功才保存），页面不显示、不保存密码。AList 地址形如 `http://主机:5244/dav`（要带 /dav）。
+- 中转兼容 AList：跟随 302 到网盘 CDN，但跨主机重定向时丢掉 Authorization（`remote_source._SafeRedirect`，桌面版流代理同受益），Range 照常带给 CDN；
+  上游忽略 Range（回 200）时中转按总长自行切片回 206（最多替它跳过 256MB，超了给出明确错误）；没有 Content-Length 的上游按流转发并以关连接结束，`Accept-Ranges: none`。
+- PROPFIND：目录 href 带尾斜杠、绝对 URL href、中文、`/dav` 前缀都有测试（`TestAListLikeRelay`）；字幕类文件在网页版后端列表里标为 `subtitle`。
+- 没有真实 AList 验证过；只用假 WebDAV + 假 CDN 模拟。
+
+**补充（起始页入口）**：起始页的全屏层（z-index 50）盖住了顶部工具栏（z-index 40），所以后端模式下「🖧 磁盘路径」「☁ 云端」在没打开内容前点不到（原有问题）。
+起始页按钮行新增这两个按钮（仅后端模式显示）；「☁ 云端」未配置账号时直接弹出账号表单。e2e 用 `elementFromPoint` 断言按钮没被遮挡。
+
