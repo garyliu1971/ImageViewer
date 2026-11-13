@@ -565,6 +565,109 @@ def scrape_key(src):
     return _resume_key(path)
 
 
+
+# ----------------------------- ffmpeg 转码 / 探测 / VLC（可选；没装 ffmpeg 时整块隐藏，播放照旧）-----------------------------
+import time as _time
+import ffmpeg_tools
+
+_inputs = {}                         # nonce -> {"kind": "remote"|"local", "path": ..., "exp": 到期时间}
+_inputs_lock = threading.Lock()
+_probe_cache = {}                    # key -> (ts, analysis)
+_sub_cache = {}                      # (key, stream) -> (ts, vtt)
+PROBE_TTL = 1800
+_popen_external = None                         # 测试可替换（open-external 启动 VLC 用）
+_popen_ffmpeg = None                          # 测试可替换（用假 ffmpeg 校验 argv）
+
+
+def mint_input(kind, path, ttl):
+    """签发一次性回环输入：给 ffmpeg / VLC 用的 http://127.0.0.1:PORT/api/media/in/<nonce>。
+    凭据（WebDAV 账号）只在后端 -> 网盘这一段；子进程 argv 里只有这个只对「这一个文件」有效、到期 / 进程结束即作废的随机串。"""
+    n = secrets.token_urlsafe(18)
+    now = _time.time()
+    with _inputs_lock:
+        for k in [k for k, v in _inputs.items() if v["exp"] < now]:
+            _inputs.pop(k, None)
+        _inputs[n] = {"kind": kind, "path": path, "exp": now + ttl}
+    return n
+
+
+def revoke_input(n):
+    with _inputs_lock:
+        _inputs.pop(n, None)
+
+
+def lookup_input(n):
+    with _inputs_lock:
+        v = _inputs.get(n)
+    return v if v and v["exp"] >= _time.time() else None
+
+
+class MediaSrc:
+    """一个已校验的视频源：key（和续播同一套）、给 ffmpeg 的输入串、结束时要作废的 nonce。"""
+
+    def __init__(self, key, kind, path, ff_input, nonce=None):
+        self.key, self.kind, self.path, self.ff_input, self.nonce = key, kind, path, ff_input, nonce
+
+    def close(self):
+        if self.nonce:
+            revoke_input(self.nonce)
+            self.nonce = None
+
+
+def media_src(spec, port, ttl=6 * 3600):
+    """{path | remote} -> MediaSrc。本机路径必须是白名单里的视频且存在；云端路径走已配置的 WebDAV。绝不接受任意 URL。"""
+    if not isinstance(spec, dict):
+        raise ValueError("请求不合法")
+    if spec.get("remote"):
+        rk = remote_resume_key(spec["remote"])
+        nonce = mint_input("remote", str(spec["remote"]), ttl)
+        return MediaSrc(rk, "remote", str(spec["remote"]), "http://127.0.0.1:%d/api/media/in/%s" % (port, nonce), nonce)
+    path = str(spec.get("path") or "")
+    if not path or len(path) > REMOTE_PATH_MAX or any(ord(c) < 32 for c in path):
+        raise ValueError("缺少 path / remote")
+    if ext_of(path) not in VIDEO_EXTS or not is_servable(path):
+        raise PermissionError("不允许读取该文件")
+    ap = os.path.abspath(path)
+    if not os.path.isfile(ap):
+        raise FileNotFoundError("找不到文件")
+    return MediaSrc(_resume_key(path), "local", ap, ap)
+
+
+def probe_media(src):
+    """ffprobe + 判断（缓存 30 分钟）。"""
+    ck = src.key
+    if src.kind == "local":
+        try:
+            st = os.stat(src.path)
+            ck = "%s|%d|%d" % (src.key, st.st_mtime_ns, st.st_size)
+        except OSError:
+            pass
+    hit = _probe_cache.get(ck)
+    if hit and _time.time() - hit[0] < PROBE_TTL:
+        return hit[1]
+    a = ffmpeg_tools.analyze(ffmpeg_tools.run_probe(src.ff_input))
+    if len(_probe_cache) > 200:
+        _probe_cache.clear()
+    _probe_cache[ck] = (_time.time(), a)
+    return a
+
+
+def vlc_launch(spec, port):
+    """用本机 VLC 打开（仅 Windows）。云端文件给 VLC 的是后端自己的回环 URL（12 小时有效、只对这一个文件），不含账号密码。"""
+    if os.name != "nt":
+        raise OSError("「用 VLC 打开」目前只支持 Windows")
+    vlc = ffmpeg_tools.find_vlc()
+    if not vlc:
+        raise FileNotFoundError("没找到 VLC（装好后重试，或用环境变量 IV_VLC_PATH 指向 vlc.exe）")
+    src = media_src(spec, port, ttl=12 * 3600)
+    target = src.path if src.kind == "local" else src.ff_input + "/" + urllib.parse.quote(os.path.basename(src.path.replace("\\", "/")) or "video")
+    import subprocess as _sp
+    fn = _popen_external or _sp.Popen
+    flags = getattr(_sp, "DETACHED_PROCESS", 0) | getattr(_sp, "CREATE_NEW_PROCESS_GROUP", 0)
+    fn([vlc, target], stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, close_fds=True, creationflags=flags)
+    return {"vlc": vlc, "kind": src.kind}
+
+
 def capabilities():
     rar_ok = rarfile is not None and configure_rar_tool()
     return {
@@ -578,6 +681,8 @@ def capabilities():
         "lan_url": getattr(Handler, "lan_url", "") or "",
         "extensions": sorted(SERVABLE),
         "video_exts": sorted(BROWSER_VIDEO_EXTS),
+        "ffmpeg": ffmpeg_tools.info(),
+        "vlc": bool(os.name == "nt" and ffmpeg_tools.find_vlc()),
     }
 
 
@@ -808,6 +913,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_pdfjs(u.path)
         if u.path.startswith(("/tts/v1/", "/ocr/v1/")):
             return self._tts_relay(u.path)
+        if u.path.startswith("/api/media/in/"):
+            return self._media_in(u.path)
         if u.path == "/api/ping":
             return self._json({"ok": True, "token": self.token, **capabilities()})
         if not self._ok_token(q):
@@ -953,6 +1060,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._bytes(data, "image/png", extra={"Cache-Control": "private, max-age=300"})
         if route.startswith("/api/scrape/"):
             return self._scrape_get(route, q)
+        if route == "/api/media/probe":
+            return self._media_probe(q)
+        if route == "/api/media/stream":
+            return self._media_stream(q)
+        if route == "/api/media/subtitle":
+            return self._media_subtitle(q)
         if route == "/api/videoresume":
             remote = (q.get("remote") or [""])[0]
             if remote:                                       # 云端视频：key 由后端按已配置的 WebDAV 地址算
@@ -1095,6 +1208,181 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+
+    # ---------------- ffmpeg 转码 / 探测 ----------------
+    def _is_loopback(self):
+        return (self.client_address[0] or "") in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+
+    def _media_in(self, upath):
+        """ffmpeg / VLC 回来取原始字节的一次性回环入口：不要 token（nonce 就是凭证），只认回环地址，Range 照常。"""
+        if not self._is_loopback():
+            return self._err("只允许本机访问", 403)
+        n = upath[len("/api/media/in/"):].split("/", 1)[0]
+        v = lookup_input(n)
+        if not v:
+            return self._err("链接已失效", 404)
+        try:
+            if v["kind"] == "remote":
+                return self._remote_data({"path": [v["path"]]})
+            return self._send_file(v["path"], video_mime(v["path"]), self.headers.get("Range"))
+        except Exception as e:
+            return self._err("%s: %s" % (type(e).__name__, e), 502)
+
+    def _media_need_ffmpeg(self):
+        if not ffmpeg_tools.info().get("available"):
+            self._json({"ok": False, "code": "no_ffmpeg", "error": "没找到 ffmpeg（winget install Gyan.FFmpeg；装好后重启后端，PATH 只对新开的终端生效）"}, 501)
+            return False
+        return True
+
+    def _media_spec(self, q, body=None):
+        if body is not None:
+            return {"path": body.get("path"), "remote": body.get("remote")}
+        return {"path": (q.get("path") or [""])[0], "remote": (q.get("remote") or [""])[0]}
+
+    def _media_probe(self, q, body=None):
+        if not self._media_need_ffmpeg():
+            return
+        port = self.server.server_address[1]
+        try:
+            src = media_src(self._media_spec(q, body), port, ttl=300)
+        except (ValueError, PermissionError, FileNotFoundError, RuntimeError) as e:
+            return self._err("%s: %s" % (type(e).__name__, e), 400 if not isinstance(e, FileNotFoundError) else 404)
+        try:
+            a = probe_media(src)
+        except Exception as e:
+            return self._err("探测失败：%s" % e, 502)
+        finally:
+            src.close()
+        return self._json({"ok": True, "probe": a, "transcode": {"max": ffmpeg_tools.MAX_CONCURRENT, "live": ffmpeg_tools.live_count()}})
+
+    def _media_stream(self, q):
+        if self.command == "HEAD":
+            return self._err("不支持 HEAD", 405)
+        if not self._media_need_ffmpeg():
+            return
+        port = self.server.server_address[1]
+        try:
+            src = media_src(self._media_spec(q), port)
+        except (ValueError, PermissionError, FileNotFoundError, RuntimeError) as e:
+            return self._err("%s: %s" % (type(e).__name__, e), 400 if not isinstance(e, FileNotFoundError) else 404)
+        slot = False
+        proc = None
+        sent = False
+        try:
+            mode = (q.get("mode") or ["auto"])[0]
+            if mode not in ffmpeg_tools.MODES:
+                return self._err("mode 不合法")
+            try:
+                start = float((q.get("start") or ["0"])[0] or 0)
+                audio = (q.get("audio") or [""])[0]
+                audio = int(audio) if audio != "" else None
+            except ValueError:
+                return self._err("start / audio 不合法")
+            if not (0 <= start <= 3 * 24 * 3600) or (audio is not None and not 0 <= audio < 64):
+                return self._err("start / audio 超出范围")
+            stereo = (q.get("stereo") or ["0"])[0] == "1"
+            a = probe_media(src)
+            if audio is None:
+                audio = a.get("audio_index", 0)
+            if mode == "auto":
+                mode = {"direct": "remux", "remux": "remux", "transcode_audio": "audio", "transcode_video": "video"}.get(a["action"])
+                if not mode:
+                    return self._err("这个文件没法转码：%s" % a.get("reason"), 422)
+            venc = ffmpeg_tools.video_encoder() if mode == "video" else None
+            argv = ffmpeg_tools.build_stream_argv(ffmpeg_tools.find_tool("ffmpeg"), src.ff_input, mode, audio_index=audio, start=start,
+                                                  venc=venc or "libx264", stereo=stereo)
+            try:
+                ffmpeg_tools.acquire_slot()
+                slot = True
+            except ffmpeg_tools.Busy as e:
+                return self._err(str(e), 503)
+            proc = ffmpeg_tools.popen(argv, _popen_ffmpeg or __import__("subprocess").Popen)
+            watchdog = threading.Timer(ffmpeg_tools.FIRST_BYTE_TIMEOUT, ffmpeg_tools.kill, args=(proc,))
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                first = proc.stdout.read(65536)
+            finally:
+                watchdog.cancel()
+            if not first:
+                proc.wait()
+                return self._err("ffmpeg 没有输出：%s" % (ffmpeg_tools.err_tail(proc) or "（超时或源文件打不开）"), 502)
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Accept-Ranges", "none")
+            self.send_header("X-IV-Transcode", mode)
+            self.send_header("X-IV-Encoder", venc or "")
+            self.send_header("Connection", "close")
+            self.close_connection = True
+            self.end_headers()
+            sent = True
+            try:
+                self.wfile.write(first)
+                while True:
+                    chunk = proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (ConnectionError, OSError):
+                pass                                   # 浏览器断开（拖进度条 / 关播放器）：下面 finally 杀进程
+        except Exception as e:
+            try:
+                if not sent:
+                    self._err("转码失败：%s: %s" % (type(e).__name__, e), 502)
+            except Exception:
+                pass
+        finally:
+            if proc is not None:
+                ffmpeg_tools.kill(proc)
+            if slot:
+                ffmpeg_tools.release_slot()
+            src.close()
+
+    def _media_subtitle(self, q):
+        if not self._media_need_ffmpeg():
+            return
+        port = self.server.server_address[1]
+        try:
+            src = media_src(self._media_spec(q), port, ttl=600)
+        except (ValueError, PermissionError, FileNotFoundError, RuntimeError) as e:
+            return self._err("%s: %s" % (type(e).__name__, e), 400 if not isinstance(e, FileNotFoundError) else 404)
+        slot = False
+        try:
+            try:
+                n = int((q.get("stream") or [""])[0])
+                start = float((q.get("start") or ["0"])[0] or 0)
+            except ValueError:
+                return self._err("stream / start 不合法")
+            a = probe_media(src)
+            subs = a["subtitles"]
+            if not 0 <= n < len(subs):
+                return self._err("没有这个字幕流", 404)
+            if not subs[n]["extractable"]:
+                return self._err("图形字幕（%s）没法转成文字字幕" % subs[n]["codec"], 422)
+            ck = (src.key, n)
+            hit = _sub_cache.get(ck)
+            if hit and _time.time() - hit[0] < PROBE_TTL:
+                vtt = hit[1]
+            else:
+                try:
+                    ffmpeg_tools.acquire_slot()
+                    slot = True
+                except ffmpeg_tools.Busy as e:
+                    return self._err(str(e), 503)
+                vtt = ffmpeg_tools.extract_subtitle(src.ff_input, n)
+                if len(_sub_cache) >= 8:
+                    _sub_cache.pop(next(iter(_sub_cache)))
+                _sub_cache[ck] = (_time.time(), vtt)
+            out = ffmpeg_tools.shift_vtt(vtt, start) if start > 0 else vtt
+            return self._bytes(out.encode("utf-8"), "text/vtt; charset=utf-8", extra={"Cache-Control": "private, max-age=60"})
+        except Exception as e:
+            return self._err("提取字幕失败：%s" % e, 502)
+        finally:
+            if slot:
+                ffmpeg_tools.release_slot()
+            src.close()
+
     # ---------------- 刮削接口 ----------------
     def _scrape_err(self, e):
         import scrape
@@ -1198,6 +1486,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if route.startswith("/api/scrape/"):
                 return self._scrape_post(route)
+            if route == "/api/media/probe":
+                return self._media_probe({}, self._read_json_body())
+            if route == "/api/open-external":
+                if not self._is_loopback():
+                    return self._err("只允许本机页面调用", 403)
+                try:
+                    return self._json({"ok": True, **vlc_launch(self._media_spec({}, self._read_json_body()), self.server.server_address[1])})
+                except FileNotFoundError as e:
+                    return self._err(str(e), 404)
+                except PermissionError as e:
+                    return self._err(str(e), 403)
+                except OSError as e:
+                    return self._err(str(e), 501)
             if route == "/api/progress":
                 body = self._read_json_body()
                 key = str(body.get("key") or "")
@@ -1353,6 +1654,7 @@ def start_server(port=0, open_browser=True, lan=False):
 def stop_server():
     """关后端（桌面版退出时调）。"""
     httpd = _instance.get("httpd")
+    ffmpeg_tools.kill_all()                       # 还在跑的转码进程一并收掉
     if httpd:
         try:
             httpd.shutdown()
