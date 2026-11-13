@@ -373,15 +373,10 @@ class TmdbError(Exception):
         self.code = code
 
 
-def _is_private_host(host):
-    h = (host or "").strip("[]").lower()
-    if h in ("localhost", "") or h.endswith(".local") or "." not in h and ":" not in h:
-        return True
-    try:
-        ip = ipaddress.ip_address(h)
-        return ip.is_private or ip.is_loopback or ip.is_link_local
-    except ValueError:
-        return False
+import netutil
+
+
+_is_private_host = netutil.is_private_host
 
 
 def validate_base(url, what):
@@ -398,15 +393,9 @@ def validate_base(url, what):
     return str(url).rstrip("/")
 
 
-_direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
 def _open(req, timeout):
-    """内网 / 回环地址强制直连；公网走系统代理（urllib 默认行为）。"""
-    host = urllib.parse.urlsplit(req.full_url).hostname
-    if _is_private_host(host):
-        return _direct_opener.open(req, timeout=timeout)
-    return urllib.request.urlopen(req, timeout=timeout)
+    """内网 / 回环直连；公网走环境 / 系统代理（见 netutil）。"""
+    return netutil.build_opener().open(req, timeout=timeout)
 
 
 class TmdbClient:
