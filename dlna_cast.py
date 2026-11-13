@@ -16,6 +16,8 @@ import re
 import socket
 import threading
 import urllib.request
+
+import netutil
 import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -78,7 +80,7 @@ def _ssdp_search(st=ST_MEDIA_RENDERER, timeout=3.0):
 
 def _get(url, timeout=5.0):
     req = urllib.request.Request(url, headers={"User-Agent": "ImageViewer/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with netutil.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
@@ -119,7 +121,7 @@ class DlnaRenderer:
                 "SOAPACTION": f'"{AVT_NS}#{action}"',
             })
         try:
-            with urllib.request.urlopen(req, timeout=6.0) as r:
+            with netutil.urlopen(req, timeout=6.0) as r:
                 resp = r.read()
                 if not resp:
                     return None

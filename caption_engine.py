@@ -32,6 +32,8 @@ import queue
 import threading
 import urllib.request
 
+import netutil
+
 SAMPLE_RATE = 16000
 
 # 输出流每次写入帧数（16kHz 下约 32ms）。显式给出低延迟 + 小 blocksize，
@@ -148,7 +150,7 @@ def _llm_translate(text, cfg, history=None):
         headers={"Content-Type": "application/json",
                  "Authorization": "Bearer " + key},
     )
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with netutil.urlopen(req, timeout=20) as r:
         return json.loads(r.read())["choices"][0]["message"]["content"].strip()
 
 

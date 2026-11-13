@@ -37,6 +37,7 @@ from urllib.parse import urlparse, parse_qs
 from media_source import (IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS, ARCHIVE_EXTS, PDF_EXTS,
                           RAR_EXTS, media_files_in, build_zip_chapters, natural_key, is_junk)
 import config_store
+import netutil
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # 打包成 exe 后：HTML 在 PyInstaller 的 _MEIPASS 里，进度文件跟着 exe 走，
@@ -804,7 +805,7 @@ class Handler(BaseHTTPRequestHandler):
                      "Content-Type": self.headers.get("Content-Type", "application/json")})
         extra = {"Cache-Control": "no-store"}
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
+            with netutil.urlopen(req, timeout=timeout) as r:
                 body, code, ctype = r.read(), r.status, r.headers.get("Content-Type", "application/octet-stream")
         except urllib.error.HTTPError as e:
             body, code, ctype = e.read(), e.code, e.headers.get("Content-Type", "application/json")
