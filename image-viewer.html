@@ -428,6 +428,15 @@
     display: block; width: 100%; margin-top: 4px; font: inherit; color: var(--text); background: #12151b;
     border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; outline: none;
   }
+  #rcloud { z-index: 77; }
+  #rcloud .dav-note { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 4px; }
+  #rcloud label { display: block; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  #rcloud input[type=text], #rcloud input[type=password] {
+    display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 16px; color: var(--text); background: #12151b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; outline: none;
+  }
+  #rcState { margin-top: 8px; font-size: 13px; color: #7fd18b; word-break: break-all; }
+  #rcMsg { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff9d5c; word-break: break-all; }
   #davMsg { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff9d5c; }
 
   /* ---------- 读书时换书（云端书库里的书才出现）---------- */
@@ -814,6 +823,7 @@
       <button class="btn" id="browseGo">转到</button>
       <button class="btn" id="browseUp">上一级</button>
       <button class="btn" id="browseCloud" title="浏览后端已配置的 WebDAV 云端（目前可播放里面的视频）">☁ 云端</button>
+      <button class="btn icon" id="browseCloudCfg" title="云端账号设置（WebDAV）">⚙</button>
     </div>
     <div id="browseRecent"></div>
     <div id="browseList"><div class="browse-empty">输入路径后点「转到」</div></div>
@@ -857,6 +867,26 @@
   </div>
 </div>
 <input type="file" id="vpSubInput" accept=".srt,.vtt,.ass,.ssa,text/vtt" hidden>
+
+<div id="rcloud" class="modal hidden">
+  <div class="modal-card" style="max-width:460px">
+    <button class="modal-close" data-close="rcloud">✕</button>
+    <h2>云端账号（WebDAV）</h2>
+    <p class="dav-note">连接 AList / 坚果云 / NAS 等的 WebDAV，然后在「☁ 云端」里浏览并播放里面的视频。
+      账号只保存在运行后端的这台电脑上（与桌面版共用），不会发给浏览器；建议用<b>只读</b>账号。
+      AList 的地址通常是 <code>http://主机:5244/dav</code>（<b>要带 /dav</b>）。</p>
+    <div id="rcState"></div>
+    <label>WebDAV 地址<input type="text" id="rcUrl" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.10:5244/dav" inputmode="url"></label>
+    <label>用户名<input type="text" id="rcUser" autocomplete="username" spellcheck="false"></label>
+    <label>密码<input type="password" id="rcPass" autocomplete="current-password"></label>
+    <p id="rcMsg"></p>
+    <div class="modal-actions">
+      <button class="btn" id="rcDisconnect" style="margin-right:auto" title="删除后端保存的这个云端账号">断开并忘记</button>
+      <button class="btn" data-close="rcloud">取消</button>
+      <button class="btn primary" id="rcConnect">连接</button>
+    </div>
+  </div>
+</div>
 
 <div id="toast"></div>
 <div id="openProg" role="status" aria-live="polite"><div class="op-t"></div><div class="op-s"></div><div class="op-bar"><i></i></div></div>
@@ -4003,7 +4033,7 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent'];
+  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent', 'rcloud'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
@@ -5778,7 +5808,7 @@
   document.querySelectorAll('[data-close]').forEach(function (b) {
     b.addEventListener('click', function () { toggleModal(b.dataset.close, false); });
   });
-  ['help', 'detail', 'jump', 'browse', 'dav', 'shelf'].forEach(function (id) {
+  ['help', 'detail', 'jump', 'browse', 'dav', 'shelf', 'rcloud'].forEach(function (id) {
     $('#' + id).addEventListener('click', function (e) { if (e.target === $('#' + id)) toggleModal(id, false); });
   });
   $('#folderInput').addEventListener('change', function (e) {
@@ -5844,18 +5874,61 @@
     browseTo(up || p);
   });
   $('#browseOpen').addEventListener('click', function () { browseOpenSel(); });
+  /* 云端（后端 WebDAV）账号：后端 POST /api/remote/config 会先连一次自检，成功才保存；密码从不回显 */
+  function rcRefresh() {
+    return apiJson('/api/remote/config').then(function (c) {
+      $('#rcState').textContent = c.connected ? '已连接：' + c.base_url + (c.username ? '（' + c.username + '）' : '') : '尚未连接';
+      $('#rcDisconnect').disabled = !c.connected;
+      if (c.connected) { $('#rcUrl').value = c.base_url; $('#rcUser').value = c.username || ''; }
+      return c;
+    });
+  }
+  function openRcloud(msg) {
+    $('#rcMsg').textContent = msg || ''; $('#rcPass').value = '';
+    toggleModal('rcloud', true);
+    rcRefresh()['catch'](function (e) { $('#rcMsg').textContent = '读取配置失败：' + ((e && e.message) || e); });
+    setTimeout(function () { try { $('#rcUrl').value ? $('#rcPass').focus() : $('#rcUrl').focus(); } catch (e) {} }, 60);
+  }
+  function enterCloud() {
+    browseRemote = true; $('#browseCloud').classList.add('on');
+    return browseTo('');
+  }
+  function leaveCloud() {
+    browseRemote = false; $('#browseCloud').classList.remove('on');
+    return browseTo(browseLocalPath || $('#browsePath').value || '');
+  }
   $('#browseCloud').addEventListener('click', function () {
-    var btn = this;
-    if (browseRemote) {                       /* 切回本机 */
-      browseRemote = false; btn.classList.remove('on');
-      browseTo(browseLocalPath || $('#browsePath').value || '');
-      return;
-    }
+    if (browseRemote) { leaveCloud(); return; }
     apiJson('/api/remote/config').then(function (c) {
-      if (!c.connected) { toast('后端还没配置 WebDAV（POST /api/remote/config，或在桌面版里配置；凭据与桌面版共用）'); return; }
-      browseRemote = true; btn.classList.add('on');
-      browseTo('');
+      if (!c.connected) { openRcloud('先填 WebDAV 账号（AList 地址形如 http://主机:5244/dav）'); return; }
+      enterCloud();
     })['catch'](function (e) { toast('读取云端配置失败：' + ((e && e.message) || e)); });
+  });
+  $('#browseCloudCfg').addEventListener('click', function () { openRcloud(''); });
+  $('#rcConnect').addEventListener('click', function () {
+    var url = $('#rcUrl').value.trim(), btn = this;
+    if (!url) { $('#rcMsg').textContent = '请填 WebDAV 地址'; return; }
+    if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    btn.disabled = true; $('#rcMsg').textContent = '正在连接…';
+    apiJson('/api/remote/config', null, 'POST', { base_url: url, username: $('#rcUser').value.trim(), password: $('#rcPass').value }).then(function () {
+      $('#rcPass').value = '';
+      toggleModal('rcloud', false);
+      toast('云端已连接');
+      if (!$('#browse').classList.contains('hidden')) return enterCloud();
+    }, function (e) {
+      var m = String((e && e.message) || e);
+      var hint = /404|Not Found/i.test(m) ? '（地址对吗？AList 要带 /dav，例如 http://主机:5244/dav）'
+        : /401|Unauthorized/i.test(m) ? '（用户名或密码不对？AList 需要在「用户」里开启 WebDAV 读取权限）' : '';
+      $('#rcMsg').textContent = '连接失败：' + m + hint;
+    }).then(function () { btn.disabled = false; });
+  });
+  $('#rcPass').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#rcConnect').click(); } });
+  $('#rcDisconnect').addEventListener('click', function () {
+    apiJson('/api/remote/disconnect', null, 'POST', {}).then(function () {
+      $('#rcUrl').value = ''; $('#rcUser').value = ''; $('#rcPass').value = '';
+      toggleModal('rcloud', false); toast('已断开并删除云端账号');
+      if (browseRemote) leaveCloud();
+    }, function (e) { $('#rcMsg').textContent = '断开失败：' + ((e && e.message) || e); });
   });
   $('#browseList').addEventListener('click', function (e) {
     var it = e.target.closest ? e.target.closest('.brow-item') : null;

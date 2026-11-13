@@ -16,9 +16,15 @@ NS = 'xmlns:D="DAV:"'
 class FakeWebDav:
     """files: {路径: bytes}，路径以 /dav/ 开头；目录从路径推导。"""
 
-    def __init__(self, files, user="u", pw="p"):
+    def __init__(self, files, user="u", pw="p", cdn=None, ignore_range=False, no_length=False,
+                 trailing_slash_dirs=False, absolute_href=False):
+        """cdn: FakeCdn（有的话文件 GET 回 302 到它，像 AList 的 302 策略）；
+        ignore_range: 上游忽略 Range 一律回 200；no_length: 回 200 但不带 Content-Length（以关连接结束）；
+        trailing_slash_dirs: 目录 href 以 / 结尾（AList 风格）；absolute_href: href 用绝对 URL。"""
         self.files = files
         self.user, self.pw = user, pw
+        self.cdn, self.ignore_range, self.no_length = cdn, ignore_range, no_length
+        self.trailing_slash_dirs, self.absolute_href = trailing_slash_dirs, absolute_href
         self.requests = []
         self.httpd = None
         self.thread = None
@@ -91,7 +97,21 @@ class FakeWebDav:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                rng = self.headers.get("Range") or ""
+                if outer.cdn is not None:
+                    self.send_response(302)
+                    self.send_header("Location", outer.cdn.url + urllib.parse.quote(self._path()))
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if outer.no_length:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/octet-stream")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    self.wfile.write(data)
+                    self.close_connection = True
+                    return
+                rng = "" if outer.ignore_range else (self.headers.get("Range") or "")
                 if rng.startswith("bytes="):
                     a, _, b = rng[6:].partition("-")
                     if a == "":                      # 后缀 Range：最后 N 字节
@@ -140,6 +160,10 @@ class FakeWebDav:
 
                 def item(p, is_dir, size=0):
                     href = "/" + "/".join(urllib.parse.quote(seg) for seg in p.split("/") if seg)
+                    if is_dir and outer.trailing_slash_dirs:
+                        href += "/"
+                    if outer.absolute_href:
+                        href = "http://127.0.0.1:%d%s" % (outer.httpd.server_address[1], href)
                     body = ("<D:response><D:href>%s</D:href><D:propstat><D:prop>"
                             "<D:resourcetype>%s</D:resourcetype>"
                             "<D:getcontentlength>%d</D:getcontentlength>"
@@ -163,6 +187,72 @@ class FakeWebDav:
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         return "http://127.0.0.1:%d/dav" % self.httpd.server_address[1]
+
+    def stop(self):
+        if self.httpd:
+            self.httpd.shutdown()
+            self.httpd.server_close()
+
+
+class FakeCdn:
+    """302 的落点：模拟网盘 CDN。不接受 Authorization（收到就记下来，测试据此断言「没把 WebDAV 账号发给 CDN」），支持 Range。"""
+
+    def __init__(self, files):
+        self.files = files                  # {/dav/...: bytes}
+        self.requests = []                  # [(path, {头: 值})]
+        self.httpd = None
+        self.url = ""
+
+    def start(self):
+        outer = self
+
+        class H(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                path = urllib.parse.unquote(urlparse_(self.path).path)
+                outer.requests.append((path, {k.lower(): v for k, v in self.headers.items()}))
+                if "Authorization" in self.headers:
+                    self.send_response(403)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                data = outer.files.get(path)
+                if data is None:
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                rng = self.headers.get("Range") or ""
+                if rng.startswith("bytes="):
+                    a, _, b = rng[6:].partition("-")
+                    if a == "":
+                        s_, e = max(0, len(data) - int(b)), len(data) - 1
+                    else:
+                        s_ = int(a)
+                        e = min(int(b), len(data) - 1) if b else len(data) - 1
+                    chunk = data[s_:e + 1]
+                    self.send_response(206)
+                    self.send_header("Content-Range", "bytes %d-%d/%d" % (s_, e, len(data)))
+                    self.send_header("Content-Length", str(len(chunk)))
+                    self.send_header("Content-Type", "video/mp4")
+                    self.end_headers()
+                    self.wfile.write(chunk)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Type", "video/mp4")
+                self.end_headers()
+                self.wfile.write(data)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.url = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        return self.url
 
     def stop(self):
         if self.httpd:

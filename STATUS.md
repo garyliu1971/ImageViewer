@@ -299,3 +299,12 @@ python web_backend.py --lan           # 局域网：手机/VLC 可访问，终�
 点视频即播，同目录视频成列表，同主名字幕自动挂。字节经 `/api/remote/data` 流式中转（Range 透传、416 透传、按扩展名纠正 video/* 类型），
 Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authenticate。`/api/data` 的 `Cache-Control: max-age=60` 现在只加在视频上，图片行为不变。
 云端暂只开放视频（图 / 压缩包仍用书架）；云端视频没有续播点（续播接口只认本机路径）。
+
+**补充（云端账号表单 + AList 兼容）**
+- 后端模式下「☁ 云端」未配置时弹出账号表单（地址 / 用户名 / 密码，type=password）；⚙ 可随时改；「断开并忘记」清掉后端保存的账号。
+  连接走 `POST /api/remote/config`（后端先连一次自检，成功才保存），页面不显示、不保存密码。AList 地址形如 `http://主机:5244/dav`（要带 /dav）。
+- 中转兼容 AList：跟随 302 到网盘 CDN，但跨主机重定向时丢掉 Authorization（`remote_source._SafeRedirect`，桌面版流代理同受益），Range 照常带给 CDN；
+  上游忽略 Range（回 200）时中转按总长自行切片回 206（最多替它跳过 256MB，超了给出明确错误）；没有 Content-Length 的上游按流转发并以关连接结束，`Accept-Ranges: none`。
+- PROPFIND：目录 href 带尾斜杠、绝对 URL href、中文、`/dav` 前缀都有测试（`TestAListLikeRelay`）；字幕类文件在网页版后端列表里标为 `subtitle`。
+- 没有真实 AList 验证过；只用假 WebDAV + 假 CDN 模拟。
+

@@ -402,6 +402,125 @@ class TestVideoServing(FixtureCase):
         self.assertEqual(http_get(base)[0], 403)
 
 
+class TestAListLikeRelay(FixtureCase):
+    """AList 风格的 WebDAV：文件 GET 302 到 CDN、上游忽略 Range / 没有长度、PROPFIND 的 href 形态。"""
+
+    BLOB = bytes(range(256)) * 40
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd, cls.thread, cls.url = wb.serve(0, open_browser=False)
+        cls.base = cls.url.rstrip("/")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        super().setUp()
+        self.token = wb.Handler.token
+        wb._remote_cache.clear()
+        self._stop = []
+
+    def tearDown(self):
+        for f in self._stop:
+            f()
+        wb._remote_cache.clear()
+        super().tearDown()
+
+    def _dav(self, **kw):
+        from tests.fake_webdav import FakeWebDav
+        files = {"/dav/百度网盘/电影/大片.mp4": self.BLOB, "/dav/百度网盘/电影/大片.srt": b"1"}
+        dav = FakeWebDav(files, user="u", pw="p", **kw)
+        root = dav.start()
+        self._stop.append(dav.stop)
+        st, body = http_post(self.base + "/api/remote/config",
+                             {"base_url": root, "username": "u", "password": "p"}, token=self.token)
+        self.assertEqual(st, 200, body)
+        return dav, root
+
+    def _u(self, path="/dav/百度网盘/电影/大片.mp4"):
+        return self.base + "/api/remote/data?path=" + urllib.parse.quote(path)
+
+    def test_302_to_cdn_follows_without_leaking_auth_and_keeps_range(self):
+        from tests.fake_webdav import FakeCdn
+        cdn = FakeCdn({"/dav/百度网盘/电影/大片.mp4": self.BLOB})
+        cdn.start()
+        self._stop.append(cdn.stop)
+        dav, _ = self._dav(cdn=cdn)
+        st, hdr, body = http_get(self._u(), self.token, {"Range": "bytes=100-199"})
+        self.assertEqual((st, body), (206, self.BLOB[100:200]))
+        self.assertEqual(hdr["Content-Range"], "bytes 100-199/%d" % len(self.BLOB))
+        self.assertEqual(hdr["Content-Length"], "100")
+        self.assertEqual(hdr["Content-Type"], "video/mp4")
+        st, hdr, body = http_get(self._u(), self.token)
+        self.assertEqual((st, body), (200, self.BLOB))
+        # CDN 收到了 Range，但绝没收到 WebDAV 的 Authorization
+        self.assertTrue(cdn.requests)
+        for _path, heads in cdn.requests:
+            self.assertNotIn("authorization", heads)
+        self.assertEqual(cdn.requests[0][1].get("range"), "bytes=100-199")
+        # WebDAV 这边确实带过凭据（否则不会 302）
+        self.assertTrue(any(m == "GET" for m, _ in dav.requests))
+
+    def test_cdn_error_is_a_message_not_a_hang(self):
+        from tests.fake_webdav import FakeCdn
+        cdn = FakeCdn({})                       # CDN 上没有这个文件 -> 404
+        cdn.start()
+        self._stop.append(cdn.stop)
+        self._dav(cdn=cdn)
+        st, _, body = http_get(self._u(), self.token)
+        self.assertEqual(st, 404)
+        self.assertFalse(json.loads(body)["ok"])
+
+    def test_upstream_ignores_range_relay_slices_it(self):
+        self._dav(ignore_range=True)
+        n = len(self.BLOB)
+        st, hdr, body = http_get(self._u(), self.token, {"Range": "bytes=1000-1099"})
+        self.assertEqual((st, body), (206, self.BLOB[1000:1100]))
+        self.assertEqual(hdr["Content-Range"], "bytes 1000-1099/%d" % n)
+        self.assertEqual(hdr["Content-Length"], "100")
+        st, hdr, body = http_get(self._u(), self.token, {"Range": "bytes=-50"})
+        self.assertEqual((st, body), (206, self.BLOB[-50:]))
+        st, hdr, _ = http_get(self._u(), self.token, {"Range": "bytes=%d-" % n})
+        self.assertEqual(st, 416)
+        st, _, body = http_get(self._u(), self.token)
+        self.assertEqual((st, body), (200, self.BLOB))
+
+    def test_upstream_without_content_length_streams_and_closes(self):
+        self._dav(no_length=True)
+        st, hdr, body = http_get(self._u(), self.token)
+        self.assertEqual((st, body), (200, self.BLOB))
+        self.assertNotIn("Content-Length", hdr)
+        self.assertEqual(hdr.get("Accept-Ranges"), "none")
+        st, hdr, body = http_get(self._u(), self.token, {"Range": "bytes=10-19"})
+        self.assertEqual((st, body), (200, self.BLOB))          # 不知道总长：老实回整个，不假装 206
+
+    def test_propfind_alist_style_hrefs(self):
+        """目录 href 带尾斜杠 + 中文 + /dav 前缀；绝对 URL 的 href 也认。"""
+        for kw in ({"trailing_slash_dirs": True}, {"trailing_slash_dirs": True, "absolute_href": True}):
+            wb._remote_cache.clear()
+            dav, root = self._dav(**kw)
+            st, _, body = http_get(self.base + "/api/remote/ls?path=" + urllib.parse.quote("/dav"), self.token)
+            self.assertEqual(st, 200, kw)
+            ents = json.loads(body)["entries"]
+            self.assertEqual([(e["name"], e["kind"]) for e in ents], [("百度网盘", "dir")], kw)
+            sub = ents[0]["path"]
+            self.assertNotIn("://", sub)
+            st, _, body = http_get(self.base + "/api/remote/ls?path=" + urllib.parse.quote(sub), self.token)
+            ents = json.loads(body)["entries"]
+            self.assertEqual([(e["name"], e["kind"]) for e in ents], [("电影", "dir")], kw)
+            st, _, body = http_get(self.base + "/api/remote/ls?path=" + urllib.parse.quote(ents[0]["path"]), self.token)
+            kinds = {e["name"]: e["kind"] for e in json.loads(body)["entries"]}
+            self.assertEqual(kinds, {"大片.mp4": "video", "大片.srt": "subtitle"}, kw)
+            # 列出来的 path 直接拿去播（往返不丢字）
+            vid = [e for e in json.loads(body)["entries"] if e["kind"] == "video"][0]["path"]
+            st, _, data = http_get(self._u(vid), self.token, {"Range": "bytes=0-9"})
+            self.assertEqual((st, data), (206, self.BLOB[:10]), kw)
+            dav.stop()
+
+
 class TestHttpApi(FixtureCase):
     @classmethod
     def setUpClass(cls):

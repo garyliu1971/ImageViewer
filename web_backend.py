@@ -70,6 +70,7 @@ BROWSER_VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".ogv", ".mov"}
 SUBTITLE_EXTS = {".srt", ".vtt", ".ass", ".ssa"}
 SUBTITLE_MAX_BYTES = 4 * 1024 * 1024
 STREAM_CHUNK = 256 * 1024
+REMOTE_SKIP_MAX = 256 * 1024 * 1024     # 上游忽略 Range 时，最多替它跳过这么多字节
 
 # 浏览器选中的文件上传到后端的上限（只走 127.0.0.1，不跨机器）
 UPLOAD_MAX_BYTES = 512 * 1024 * 1024
@@ -924,32 +925,58 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = video_mime(path)          # 网盘常回 application/octet-stream，<video> 要明确类型
             elif not ctype or ctype == "application/octet-stream":
                 ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-            code = status if status in (200, 206) else 200
-            length = up.get("Content-Length") if up else None
-            data = None
-            if length is None or not str(length).isdigit():
-                data = resp.read()
-                length = str(len(data))
+            clen = up.get("Content-Length") if up else None
+            clen = int(clen) if clen is not None and str(clen).isdigit() else None
+            cr = up.get("Content-Range") if up else None
+            code, skip, out_len = (206 if status == 206 else 200), 0, clen
+            if rng and status == 200:
+                # 上游不支持 Range（AList 某些网盘 / CDN 会忽略它，回 200 整文件）：
+                # 知道总长就自己切片（跳过前面的字节）回 206，这样视频还能拖；不知道总长就老实回 200 流。
+                if clen is not None:
+                    try:
+                        r = parse_range(rng, clen)
+                    except RangeNotSatisfiable:
+                        self.send_response(416)
+                        self.send_header("Content-Range", "bytes */%d" % clen)
+                        self.send_header("Content-Length", "0")
+                        self.end_headers()
+                        return
+                    if r is not None:
+                        if r[0] > REMOTE_SKIP_MAX:
+                            return self._err("网盘不支持 Range 且文件太大，无法从中间开始播放（可从头播放）", 502)
+                        code, skip, out_len = 206, r[0], r[1] - r[0] + 1
+                        cr = "bytes %d-%d/%d" % (r[0], r[1], clen)
             self.send_response(code)
             self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(length))
-            self.send_header("Accept-Ranges", "bytes")
+            if out_len is not None:
+                self.send_header("Content-Length", str(out_len))
+            else:
+                self.close_connection = True          # 没有长度：以关连接表示结束，别让浏览器一直等
+                self.send_header("Connection", "close")
+            self.send_header("Accept-Ranges", "bytes" if (out_len is not None) else "none")
             self.send_header("Cache-Control", "private, max-age=60")
-            cr = up.get("Content-Range") if up else None
-            if cr:
+            if cr and code == 206:
                 self.send_header("Content-Range", cr)
             self.end_headers()
             if self.command == "HEAD":
                 return
-            if data is not None:
-                self.wfile.write(data)
-                return
             try:
-                while True:
-                    chunk = resp.read(STREAM_CHUNK)
+                left = skip
+                while left > 0:
+                    got = resp.read(min(STREAM_CHUNK, left))
+                    if not got:
+                        break
+                    left -= len(got)
+                remain = out_len
+                while remain is None or remain > 0:
+                    chunk = resp.read(STREAM_CHUNK if remain is None else min(STREAM_CHUNK, remain))
                     if not chunk:
                         break
                     self.wfile.write(chunk)
+                    if remain is not None:
+                        remain -= len(chunk)
+                if remain:
+                    self.close_connection = True       # 上游中途断了：长度对不上，关连接让浏览器重试
             except (ConnectionError, OSError):
                 self.close_connection = True
         finally:

@@ -234,19 +234,33 @@ class CDP {
     const cdir = path.join(vdir, 'cloud'); fs.mkdirSync(cdir);
     fs.copyFileSync(vp, path.join(cdir, 'clip.webm'));
     fs.copyFileSync(path.join(vdir, 'clip.srt'), path.join(cdir, 'clip.srt'));
-    const dav = spawn(PY, ['-u', 'tests/fake_webdav_serve.py', cdir], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
+    const dav = spawn(PY, ['-u', 'tests/fake_webdav_serve.py', cdir, '--alist'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
     let davOut = ''; dav.stdout.on('data', (d) => (davOut += d));
     for (let i = 0; i < 60 && !/ROOT=/.test(davOut); i++) await sleep(200);
     const davRoot = (/ROOT=(\S+)/.exec(davOut) || [])[1];
     check('假 WebDAV 已起', !!davRoot, davOut);
     try {
-      const cfg = await cdp.eval(`
-        const r = await fetch('/api/remote/config?t=' + window.__IV_TOKEN, { method: 'POST', headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ base_url: ${JSON.stringify(davRoot)}, username: 'u', password: 'p' }) });
-        const c = await fetch('/api/remote/config?t=' + window.__IV_TOKEN).then(r => r.json());
-        return { st: r.status, c };`);
-      check('后端接受并保存 WebDAV 配置（不回密码）', cfg.st === 200 && cfg.c.connected && cfg.c.has_password && !('password' in cfg.c), cfg);
-      await cdp.eval(`document.querySelector('#btnDisk').click(); await __wait(500); document.querySelector('#browseCloud').click(); await __wait(1500); return 1;`);
+      // 没配置时点「☁ 云端」应弹出账号表单（而不是只 toast）
+      await cdp.eval(`document.querySelector('#btnDisk').click(); await __wait(500); document.querySelector('#browseCloud').click(); await __wait(800); return 1;`);
+      const form = await cdp.eval(`
+        const m = document.querySelector('#rcloud');
+        return { open: !m.classList.contains('hidden'), pwType: document.querySelector('#rcPass').type, state: document.querySelector('#rcState').textContent };`);
+      check('未配置时点 ☁ 云端 弹出 WebDAV 账号表单（密码框 type=password）', form.open && form.pwType === 'password' && /尚未连接/.test(form.state), form);
+      const fill = (url, pw) => `
+        const set = (id, v) => { const e = document.querySelector(id); e.value = v; e.dispatchEvent(new Event('input')); };
+        set('#rcUrl', ${JSON.stringify(url)}); set('#rcUser', 'u'); set('#rcPass', ${JSON.stringify(pw)});
+        document.querySelector('#rcConnect').click(); await __wait(1800);
+        return { msg: document.querySelector('#rcMsg').textContent, open: !document.querySelector('#rcloud').classList.contains('hidden'),
+                 state: document.querySelector('#rcState').textContent };`;
+      const bad = await cdp.eval(fill(davRoot, 'wrong'));
+      const cfg0 = await cdp.eval(`return await fetch('/api/remote/config?t=' + window.__IV_TOKEN).then(r => r.json());`);
+      check('密码错：表单留着并给出原因，后端不保存', bad.open && /连接失败/.test(bad.msg) && cfg0.connected === false, [bad, cfg0]);
+      const good = await cdp.eval(fill(davRoot, 'p'));
+      const cfg = await cdp.eval(`return await fetch('/api/remote/config?t=' + window.__IV_TOKEN).then(r => r.json());`);
+      check('填对后连接成功，表单关闭，后端保存（接口不回密码）', !good.open && cfg.connected && cfg.has_password && !('password' in cfg), [good, cfg]);
+      const leak = await cdp.eval(`return { pass: document.querySelector('#rcPass').value, html: document.documentElement.outerHTML.includes('"password"') };`);
+      check('密码框已清空，页面里没有存密码', leak.pass === '' , leak);
+      await cdp.eval(`await __wait(1200); return 1;`);
       const rows = await cdp.eval(`
         return { cloudOn: document.querySelector('#browseCloud').classList.contains('on'),
                  path: document.querySelector('#browsePath').value,
@@ -273,6 +287,14 @@ class CDP {
       check('云端视频经 /api/remote/data 播放（无认证头 / URL 无凭据）', cv.shown && /^\/api\/remote\/data\?/.test(cv.src || '') && cv.rs >= 1 && !cv.err && !cv.leak, cv);
       check('云端同名字幕自动挂载', cv.cues && cv.cues[0] === '你好，字幕', cv.cues);
       await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await __wait(300); return 1;`);
+      const dis = await cdp.eval(`
+        document.querySelector('#btnDisk').click(); await __wait(400);
+        document.querySelector('#browseCloudCfg').click(); await __wait(500);
+        const st = document.querySelector('#rcState').textContent;
+        document.querySelector('#rcDisconnect').click(); await __wait(800);
+        const c = await fetch('/api/remote/config?t=' + window.__IV_TOKEN).then(r => r.json());
+        return { st, connected: c.connected };`);
+      check('⚙ 显示已连接地址，「断开并忘记」后后端清除账号', /已连接：/.test(dis.st) && dis.connected === false, dis);
     } finally {
       try { dav.kill(); } catch (e) {}
     }
