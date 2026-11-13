@@ -520,6 +520,41 @@ def video_resume_save(path=None, position_ms=0, length_ms=0, key=None):
     return out
 
 
+# ----------------------------- 媒体刮削（TMDB，见 scrape.py / docs/scrape-design.md）-----------------------------
+_scrape = {}
+SCRAPE_SCAN_MAX = 2000
+
+
+def get_scraper():
+    """惰性创建。缓存目录 = IV_SCRAPE_DIR 或 <配置文件目录>/scrape_cache（绝不写进媒体目录）。
+    令牌只在每次请求时从环境变量 TMDB_TOKEN 读，不保存、不下发。"""
+    sc = _scrape.get("s")
+    if sc is None:
+        import scrape
+        d = os.environ.get("IV_SCRAPE_DIR") or os.path.join(os.path.dirname(os.path.abspath(CONFIG_PATH)), "scrape_cache")
+        os.makedirs(d, exist_ok=True)
+        sc = _scrape["s"] = scrape.Scraper(d, scrape.TmdbClient(lambda: os.environ.get("TMDB_TOKEN", "")))
+        try:
+            sc.purge()                       # 启动时顺手清过期（TMDB 条款：缓存不超过 6 个月）
+        except Exception:
+            pass
+    return sc
+
+
+def scrape_key(src):
+    """请求里的 {path | remote} -> 与 /api/videoresume 相同方案的 key。只认视频扩展名，不读文件。"""
+    if not isinstance(src, dict):
+        raise ValueError("请求体不合法")
+    if src.get("remote"):
+        return remote_resume_key(src["remote"])
+    path = str(src.get("path") or "")
+    if not path or len(path) > REMOTE_PATH_MAX or any(ord(c) < 32 for c in path):
+        raise ValueError("缺少 path / remote")
+    if ext_of(path) not in VIDEO_EXTS:
+        raise PermissionError("不允许读取该文件")
+    return _resume_key(path)
+
+
 def capabilities():
     rar_ok = rarfile is not None and configure_rar_tool()
     return {
@@ -906,6 +941,8 @@ class Handler(BaseHTTPRequestHandler):
             scale = float((q.get("scale") or ["2.0"])[0])
             data = pdf_render(path, page, scale)
             return self._bytes(data, "image/png", extra={"Cache-Control": "private, max-age=300"})
+        if route.startswith("/api/scrape/"):
+            return self._scrape_get(route, q)
         if route == "/api/videoresume":
             remote = (q.get("remote") or [""])[0]
             if remote:                                       # 云端视频：key 由后端按已配置的 WebDAV 地址算
@@ -1047,6 +1084,59 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    # ---------------- 刮削接口 ----------------
+    def _scrape_err(self, e):
+        import scrape
+        if isinstance(e, scrape.TmdbError):
+            return self._json({"ok": False, "error": str(e), "code": e.code}, 502 if e.code != "no_token" else 503)
+        raise e
+
+    def _scrape_get(self, route, q):
+        import scrape
+        sc = get_scraper()
+        try:
+            if route == "/api/scrape/status":
+                return self._json({"ok": True, **sc.status()})
+            if route == "/api/scrape/item":
+                src = {"path": (q.get("path") or [""])[0], "remote": (q.get("remote") or [""])[0]}
+                return self._json({"ok": True, "item": sc.item(scrape_key(src))})
+            if route == "/api/scrape/job":
+                j = sc.job((q.get("id") or [""])[0])
+                return self._json({"ok": bool(j), "job": j}, 200 if j else 404)
+            if route == "/api/scrape/image":
+                size = (q.get("size") or ["w342"])[0]
+                data = sc.image((q.get("p") or [""])[0], size)
+                ctype = "image/png" if data[:4] == bytes([0x89, 0x50, 0x4E, 0x47]) else "image/jpeg"
+                return self._bytes(data, ctype, extra={"Cache-Control": "private, max-age=86400"})
+        except scrape.TmdbError as e:
+            return self._scrape_err(e)
+        return self._err("未知接口 %s" % route, 404)
+
+    def _scrape_post(self, route):
+        import scrape
+        sc = get_scraper()
+        body = self._read_json_body()
+        try:
+            if route == "/api/scrape/match":
+                return self._json({"ok": True, "item": sc.match(scrape_key(body), force=bool(body.get("force")))})
+            if route == "/api/scrape/pin":
+                tid = body.get("tmdb_id")
+                item = sc.pin(scrape_key(body), body.get("media_type"), tid, str(body.get("scope") or "auto"))
+                return self._json({"ok": True, "item": item})
+            if route == "/api/scrape/purge":
+                return self._json({"ok": True, "removed": sc.purge(bool(body.get("all")))})
+            if route == "/api/scrape/scan":
+                items = body.get("items")
+                if not isinstance(items, list) or not items or len(items) > SCRAPE_SCAN_MAX:
+                    return self._err("items 需为 1~%d 个 {path|remote}" % SCRAPE_SCAN_MAX)
+                if not sc.client.has_token():
+                    return self._json({"ok": False, "error": "未配置 TMDB_TOKEN", "code": "no_token"}, 503)
+                keys = list(dict.fromkeys(scrape_key(i) for i in items))
+                return self._json({"ok": True, "job": sc.job(sc.start_scan(keys))})
+        except scrape.TmdbError as e:
+            return self._scrape_err(e)
+        return self._err("未知接口 %s" % route, 404)
+
     # ---------------- 写接口 ----------------
     def _read_json_body(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -1068,6 +1158,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._ok_token(q):
             return self._err("缺少 token", 403)
         try:
+            if route.startswith("/api/scrape/"):
+                return self._scrape_post(route)
             if route == "/api/progress":
                 body = self._read_json_body()
                 key = str(body.get("key") or "")

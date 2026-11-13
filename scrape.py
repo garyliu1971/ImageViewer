@@ -33,6 +33,8 @@ IMAGE_SIZES = ("w92", "w154", "w185", "w342", "w500", "w780", "original")
 IMAGE_PATH_RE = re.compile(r"^/[A-Za-z0-9_-]{6,80}\.(jpg|png)$")
 MATCH_MIN_SCORE = 0.45        # 低于它视为「没匹配上」（仍给候选）
 MAX_CANDIDATES = 3
+CONFIDENT_SCORE = 0.8        # 低于它 -> needs_review
+CLOSE_MARGIN = 0.08          # 第一名与第二名差距小于它 -> needs_review
 
 
 # ============================================================ 文件名解析
@@ -377,6 +379,20 @@ def _is_private_host(host):
         return False
 
 
+def validate_base(url, what):
+    """网关 / 反代地址校验：只允许 https，或内网 / 回环的 http；不许带账号密码、query、fragment。"""
+    u = urllib.parse.urlsplit(str(url or ""))
+    if u.scheme not in ("http", "https") or not u.hostname:
+        raise ValueError("%s 必须是 http(s) 地址" % what)
+    if u.username is not None or u.password is not None or "@" in u.netloc:
+        raise ValueError("%s 不能包含账号密码" % what)
+    if u.query or u.fragment:
+        raise ValueError("%s 不能带 query / fragment" % what)
+    if u.scheme == "http" and not _is_private_host(u.hostname):
+        raise ValueError("%s 为公网地址时必须用 https（令牌会发往该地址）" % what)
+    return str(url).rstrip("/")
+
+
 _direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -392,13 +408,29 @@ class TmdbClient:
     def __init__(self, token_fn, api_base=None, image_base=None, min_interval=MIN_INTERVAL,
                  timeout=12, sleep=time.sleep):
         self._token_fn = token_fn
-        self.api_base = (api_base or os.environ.get("TMDB_API_BASE") or DEFAULT_API_BASE).rstrip("/")
-        self.image_base = (image_base or os.environ.get("TMDB_IMAGE_BASE") or DEFAULT_IMAGE_BASE).rstrip("/")
+        # 令牌只会发往 api_base（可用 TMDB_API_BASE 指向自己信任的网关 / 反代）；图片请求从不带令牌。
+        self.api_base = validate_base(api_base or os.environ.get("TMDB_API_BASE") or DEFAULT_API_BASE, "TMDB_API_BASE")
+        ib = image_base or os.environ.get("TMDB_IMAGE_BASE")
+        self._image_override = validate_base(ib, "TMDB_IMAGE_BASE") if ib else None
+        self._image_base = None
         self.min_interval = min_interval
         self.timeout = timeout
         self._sleep = sleep
         self._last = 0.0
         self._lock = threading.Lock()
+
+    @property
+    def image_base(self):
+        """优先 TMDB_IMAGE_BASE；否则取 /configuration 的 secure_base_url（失败回退官方默认）。"""
+        if self._image_override:
+            return self._image_override
+        if self._image_base is None:
+            try:
+                sb = (self.configuration().get("images") or {}).get("secure_base_url") or ""
+                self._image_base = validate_base(sb.rstrip("/"), "image base")
+            except Exception:
+                self._image_base = DEFAULT_IMAGE_BASE
+        return self._image_base
 
     def has_token(self):
         return bool((self._token_fn() or "").strip())
@@ -411,6 +443,8 @@ class TmdbClient:
             self._last = time.monotonic()
 
     def _request(self, url, accept):
+        if not url.startswith(self.api_base + "/") and url != self.api_base:
+            raise TmdbError("拒绝向非配置主机发送令牌")        # 防御：令牌只发往 api_base
         token = (self._token_fn() or "").strip()
         if not token:
             raise TmdbError("未配置 TMDB_TOKEN", code="no_token")
@@ -688,6 +722,11 @@ class Scraper:
                     break
         scored.sort(key=lambda s: -s["score"])
         best = scored[0] if scored and scored[0]["score"] >= MATCH_MIN_SCORE else None
+        if best:
+            rival = next((x for x in scored[1:] if x["tmdb_id"] != best["tmdb_id"]
+                          and x["media_type"] == best["media_type"]), None)
+            if best["score"] < CONFIDENT_SCORE or (rival and best["score"] - rival["score"] < CLOSE_MARGIN):
+                best = dict(best, needs_review=True)        # 低置信度 / 候选咬得太紧：给出暂定结果，但不自动锁定
         return best, scored[:6]
 
     # ---- 详情 ----
@@ -813,7 +852,7 @@ class Scraper:
             return self._assemble(key, parsed, group, "unmatched", "auto", None, 0, [], self.now())
         best, alts = self._pick(parsed)
         ref = {"media_type": best["media_type"], "tmdb_id": best["tmdb_id"]} if best else None
-        status = "matched" if best else "unmatched"
+        status = ("needs_review" if best.get("needs_review") else "matched") if best else "unmatched"
         score = best["score"] if best else 0
         body = {"status": status, "ref": ref, "score": score, "alternatives": alts}
         with self._lock, self._conn() as c:
@@ -868,7 +907,8 @@ class Scraper:
                 raise RuntimeError("已有刮削任务在运行")
             jid = uuid.uuid4().hex[:12]
             job = {"id": jid, "state": "running", "total": len(keys), "done": 0, "matched": 0,
-                   "unmatched": 0, "errors": 0, "last_error": "", "cancel": False}
+                   "needs_review": 0, "unmatched": 0, "failed": 0, "last_error": "", "cancel": False,
+                   "queue": [{"key": k, "state": "pending"} for k in keys[:2000]]}
             self._jobs[jid] = job
             for old in list(self._jobs)[:-10]:
                 if self._jobs[old]["state"] != "running":
@@ -878,19 +918,24 @@ class Scraper:
 
     def _run_scan(self, job, keys):
         try:
-            for k in keys:
+            for idx, k in enumerate(keys):
                 if job["cancel"]:
                     break
+                q = job["queue"][idx] if idx < len(job["queue"]) else {}
                 try:
                     it = self.match(k)
-                    job["matched" if it["status"] in ("matched", "pinned") else "unmatched"] += 1
+                    st = "matched" if it["status"] in ("matched", "pinned") else it["status"]
+                    job[st] += 1
+                    q["state"] = st                # matched | needs_review | unmatched
                 except TmdbError as e:
-                    job["errors"] += 1
+                    job["failed"] += 1
+                    q["state"] = "failed"
                     job["last_error"] = str(e)
                     if e.code in ("no_token", "bad_token"):
                         break
                 except Exception as e:
-                    job["errors"] += 1
+                    job["failed"] += 1
+                    q["state"] = "failed"
                     job["last_error"] = type(e).__name__
                 job["done"] += 1
         finally:
