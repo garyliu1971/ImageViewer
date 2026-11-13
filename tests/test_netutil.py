@@ -50,8 +50,6 @@ class TestClassify(unittest.TestCase):
         """与 IVCore.plainHttpRisk 同一批用例（前端：warn=false 即内网）。"""
         import re
         html = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "image-viewer.html"), encoding="utf-8").read()
-        if "function plainHttpRisk" not in html:
-            self.skipTest("前端 plainHttpRisk 还没合进来（在 cloud-video-polish 分支）")
         self.assertIn("a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254)", html)
         self.assertIn("host === 'localhost' || /\\.local$/.test(host) || host.indexOf('.') < 0", html)
         self.assertTrue(re.search(r"host === '::1' \|\| /\^f\[cd\]", html))

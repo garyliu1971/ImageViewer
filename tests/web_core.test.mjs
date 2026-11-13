@@ -1914,6 +1914,14 @@ test('视频格式判断：扩展名 + canPlayType', () => {
   assert.equal(C.videoSupport('a.avi', chromeLike), 'no');
   assert.equal(C.videoSupport('a.txt', chromeLike), 'no');
   assert.equal(C.videoSupport('a.mp4', () => ''), 'no');
+  // 要不要直接试：canPlayType 只是猜测。yes / maybe 一律试；mkv 即使回 '' 也试；avi 等被判 no 的才先拦住（给「仍然尝试」）
+  assert.equal(C.videoShouldTry('a.mkv', () => ''), true);
+  assert.equal(C.videoShouldTry('a.MKV', () => 'maybe'), true);
+  assert.equal(C.videoShouldTry('a.mp4', () => 'probably'), true);
+  assert.equal(C.videoShouldTry('a.avi', () => ''), false);
+  assert.equal(C.videoShouldTry('a.wmv', () => ''), false);
+  assert.equal(C.videoShouldTry('a.mp4', () => ''), false);
+  assert.equal(C.videoShouldTry('a.txt', () => 'maybe'), false);
   assert.match(C.videoErrorMessage({ code: 4 }, 'a.mp4'), /HEVC/);
   assert.match(C.videoErrorMessage({ code: 4 }, 'a.avi'), /\.avi/);
   assert.match(C.videoErrorMessage({ code: 2 }, 'a.mp4'), /网络/);
