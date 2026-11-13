@@ -311,3 +311,53 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 **补充（起始页入口）**：起始页的全屏层（z-index 50）盖住了顶部工具栏（z-index 40），所以后端模式下「🖧 磁盘路径」「☁ 云端」在没打开内容前点不到（原有问题）。
 起始页按钮行新增这两个按钮（仅后端模式显示）；「☁ 云端」未配置账号时直接弹出账号表单。e2e 用 `elementFromPoint` 断言按钮没被遮挡。
 
+**补充（云端视频打磨，feature/iv-cloud-video-polish）**
+- 云端续播：`/api/videoresume` 新增 `remote=<云端路径>`（GET / PUT），写同一个 `_video_resume_`，key = `dav:<host:port>/<解码后的路径>`
+  （host 取后端已保存的 WebDAV 地址，不含账号密码 / query；`..` 解析掉；以 `dav:` 开头，与本机 key 不会相撞）。ms / length 范围校验（0 ~ 10 天，拒绝布尔 / 非数字），
+  路径长度和控制字符校验，必须是视频扩展名；`_video_resume_` 最多 5000 条（丢最旧的）。前端保存时机与本机视频完全相同。
+- 云端 / 本机字幕：按语言后缀起人话标签（简体中文 / 繁體中文 / English / 中英双语…），默认简体 > 繁体 > 同名无后缀 > 第一条；可切换 / 关闭；
+  每个视频记住自己选的字幕（本浏览器 localStorage `iv.video.sub.v1`，不进后端）。云端字幕走中转取字节，前端 `IVCore.decodeSubtitle`（UTF-8 / UTF-16 BOM → 严格 UTF-8 → GBK）解码；
+  字幕上限 4MB（中转直接 413，本机接口同样限制），错误信息显示后端给的原因。
+- 账号表单：http:// + 非内网地址（内网 = 10.x / 172.16-31.x / 192.168.x / 169.254.x / localhost / 127.x / *.local / 单段主机名 / IPv6 本地）时显示明文传输警告，要再点一次「仍然连接」；改地址即重置（`IVCore.plainHttpRisk`）。
+- 体检脚本 `c:	mplist_check.py`（仓库外，只用标准库）：从环境变量读账号，内网地址强制直连，检查 PROPFIND / 视频 Range（不跟随与跟随重定向）/ 后缀 Range / 同名字幕。
+- 字幕偏好、续播点都只在后端模式；纯静态 /iv/ 页面仍无云端视频。
+
+
+---
+
+## 媒体刮削引擎（第 1 步，分支 `feature/iv-scrape-engine`）
+
+**基线**：已 rebase 到最新 `origin/main`（cloud-video-polish #25 与内网直连 #26 已合并，本分支不再依赖其它未合并分支）。未推送、未开 PR、未部署。
+
+- 设计文档：`docs/scrape-design.md`（流水线 / 数据模型 / 缓存与 TTL / pin / 接口 / 隐私与署名 / 第 2、3 步计划 / 待 Owner 确认的问题）。
+- 引擎：`scrape.py`（文件名解析、TMDB 客户端、sqlite 缓存、pin、needs_review、后台扫描任务）；`web_backend.py` 加了 `/api/scrape/{status,item,match,pin,image,purge,scan,job}`。
+- 令牌只读环境变量 `TMDB_TOKEN`；`TMDB_API_BASE` / `TMDB_IMAGE_BASE` 可指向自己信任的网关（校验 https / 内网 http，无账号密码）。缓存目录 `IV_SCRAPE_DIR`（缺省 `<配置目录>/scrape_cache`），缓存 150 天过期。
+- 测试：`tests/test_scrape_parser.py`（表驱动解析）、`tests/test_scrape.py`（客户端 / 缓存 / TTL / pin / 令牌不泄露 / 端点，对 `tests/fake_tmdb.py`）。
+- 体检脚本（仓库外）：`c:\tmp\tmdb_check.py`。
+- **没有对真实 TMDB 验证过**；没有 UI；署名（TMDB logo + 声明）要在第 2 步 UI 里补，发布前必须有。
+
+### 第 2 步：海报墙 UI（同分支，仅后端模式）
+- `image-viewer.html`：磁盘路径窗口里「列表 / 海报墙」切换；海报网格（w342、懒加载、占位、待确认 / 未匹配 / 📌 徽标）、排序（名称 / 年份 / 评分）、筛选、剧集合并成一张卡；详情页（中英双语标题、简介、背景图、分集列表、继续观看 / 已看）；「修正匹配」对话框（TMDB 搜索 → 锁定 / 取消锁定）；「刮削当前目录」（仅当前层，进度 + 取消）；状态行 + 清缓存；未配置令牌的中文设置说明；帮助页与海报墙脚注的 TMDB 署名 + 官方 logo。
+- 后端新增 `peek` / `search` / `cancel`；列表读取全程不联网。设计与已知解析缺口见 `docs/scrape-design.md` §12-13。
+- 测试：`tests/web_scrape_e2e.mjs`（33 项，真 Chrome + 真后端 + 假 TMDB）；`tests/test_scrape.py` 50 项。截图用 `SHOT_DIR=... node tests/web_scrape_e2e.mjs`。
+- 没有对真实 TMDB 经 UI 验证、没有真实 AList / 手机验证。
+
+### 第 2 步追加（同分支）
+- **内网直连修复（独立提交 `80cde17`，排在本分支所有提交之前，可单独 cherry-pick）**：shell 里设了 `HTTP_PROXY/HTTPS_PROXY` 而 `NO_PROXY` 没列 192.168.* 时，访问局域网 AList 会被送去代理而超时。新增 `netutil.py`：内网 / 回环 / 链路本地 / `.local` / 单段主机名一律直连，公网照旧走代理（逐请求判断，重定向后的新主机重新判断）；WebDAV、`/api/remote/*`、DLNA、TTS 转发、caption 接口都改用它。`tests/test_netutil.py` 11 项含「死代理 + 内网成功 / 对照组原生 urllib 失败 / 公网仍走代理」。TMDB 客户端改用它的是单独的后续提交（`b32c88b`）。
+- **已看状态**：新配置 key `_video_watched_`（`watched_store.py`，桌面 + 网页共用；`_video_resume_` 格式不变）。网页端有标记 / 手动开关 / 剧集「全部已看才算已看完」；桌面端写入（`image_viewer.py` 两处）但界面暂不显示，GUI 跑不了、只测了纯逻辑。
+- **播放后回到原视图**、**分季目录按 TMDB id 合并成一张剧集卡**（含「含子目录」开关）、解析器支持 `Episode 05`。
+- 测试：`tests/test_watched.py`（13）、`tests/test_netutil.py`（11）、`tests/web_scrape_e2e.mjs` 扩到 44 项。
+- **后续修正（同分支）**：「忽略（不是影视）」忽略记录（不联网、purge 不清、普通文件卡）；≤ 2 汉字标题只靠外语别名命中时不自动接受；TMDB 缺某一季时降级而不是 404 失败（1 小时负缓存）；剧集年份只做软提示；解析器：`S06E01` 跟在 `第六季` 后、站点水印、`HD1080P`、`Episode 05`；分集按钮改成明确动作（标为已看 / 取消已看）。详见 `docs/scrape-design.md` §15。
+- **视频加载 / 缓冲状态**：播放层（`#vplayer`）新增转圈：设置 src 起显示「加载中…」，3 秒后带「已等待 N 秒」，直到 `canplay` / `playing`；播放中 `waiting` / `stalled` 显示「缓冲中…」。慢不是错：只有 `error` 事件才报错；45 秒还没有元数据只给中性提示「加载较慢或格式不受浏览器支持（如 HEVC / AC3 / DTS）…」（转圈继续、不中止、给「仍然尝试播放」）。`canPlayType` 预检不再拦 mkv（回 '' 也试，`IVCore.videoShouldTry`）；avi / wmv 等仍先拦并给「仍然尝试」。本机后端文件、云端中转、blob 都走同一个 `vpSetSrc`。测试：`tests/web_video_loading_e2e.mjs`（11 项，含故意拖慢首字节的 Range 服务器）、`web_core` 的 `videoShouldTry`。没有真实 MKV（索引在文件尾）/ AList 验证。
+
+### ffmpeg 辅助：无声提示 / 编码信息 / 实时转码 / 内嵌字幕 / 用 VLC 打开（仅本地后端，可选）
+- **起因**：云盘里的 mkv 有画面没声音——几乎一定是 AC3 / E-AC3 / DTS / TrueHD 音轨，Chrome 解不了。
+- **提示**：真正在播（currentTime 在走、没静音、音量 > 0）满 3 秒后 `video.webkitAudioDecodedByteCount === 0`（Firefox 看 `mozHasAudio`）就出一条非阻塞提示，按钮「用 VLC 打开」（`POST /api/open-external`，仅 Windows、仅本机页面；云端文件交给 VLC 的是后端自己的回环 URL，不含账号密码）和「转成可播放音轨（ffmpeg）」。默片（探测到没有音轨）不提示。**没有 ffmpeg 时提示照常出现，只是没有转码按钮。**
+- **安装**：`winget install Gyan.FFmpeg`（或 `FFMPEG_PATH` 指向 ffmpeg.exe）。发现顺序：`FFMPEG_PATH` > PATH > `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Gyan.FFmpeg*\**\bin` > 常见目录。**PATH 只对新开的终端生效：装完要关掉并重启后端。** 后端标签里会显示 `ffmpeg ✓ <版本>` 或安装提示；`/api/ping` 的 `ffmpeg` 字段带 `available / version / encoders`。`IV_NO_FFMPEG=1` 可强制当作没装。
+- **探测** `GET|POST /api/media/probe {path|remote}`：ffprobe（`-probesize 16M`，40 秒超时）→ 容器 / 视频 / 音轨 / 字幕流 + 每条流的浏览器支持判断 + 推荐动作 `direct | remux | transcode_audio | transcode_video | unsupported`；结果缓存 30 分钟。播放器标题栏显示编码信息（如 `MKV · H264 1920×1080 · AC3 5.1 · 1:42:03`，浏览器解不了的标琥珀色）。
+- **转码流** `GET /api/media/stream?path|remote&audio=&start=&mode=auto|remux|audio|video&stereo=`：后端按固定模板拼 argv（无 shell，客户端只能选音轨序号 / 起点秒数 / 模式 / 是否立体声），输出 fragmented MP4 到 stdout 管道（`frag_keyframe+empty_moov+default_base_moof`），无临时文件；浏览器断开即杀进程，同时最多 2 个（`IV_FFMPEG_MAX`），超限回 503；服务关闭时统一清理；Windows 用 `taskkill /T` 杀进程树。视频浏览器解不了（HEVC / 10bit…）时用最好的 H.264 编码器（探测到并实测可用的 `h264_nvenc` / `h264_qsv` / `h264_amf`，否则 `libx264 -preset veryfast -crf 23`），并给出「较耗 CPU / 显卡」的提示。
+- **转码流里的进度条**：fMP4 流没有真实时长，播放器改用自绘控制条（总长来自探测）：拖动 / ←→ 键 = 以新的 `start` 重启转码流；续播点、已看都按原文件 key + 偏移换算记录；可切音轨、立体声混音、「退出转码」回到直接播放。
+- **云端输入**：不把凭据交给子进程。后端为每次探测 / 转码签发一次性回环 URL `http://127.0.0.1:PORT/api/media/in/<随机串>`（只对这一个文件有效、进程结束 / 到期即作废、只认回环地址），ffmpeg 通过它 Range 读取，再由后端用已保存的 WebDAV 账号去网盘取字节；argv 里没有账号密码，也没有后端 token（有测试对照）。
+- **内嵌字幕** `GET /api/media/subtitle?...&stream=&start=`：文字字幕（subrip / ass / mov_text / webvtt）用 ffmpeg 转 WebVTT，出现在原来的字幕下拉里（「内嵌 #n …」），转码流按起点偏移对时；图形字幕（PGS / DVD）列为不支持。
+- **已知限制**：云端文件首次出画面要等 ffmpeg 通过中转读索引（mkv 索引在文件尾时更慢，有 120 秒首字节超时）；拖动 = 重启转码流（几秒延迟，关键帧精度）；提取内嵌字幕要读完整个文件（云端大文件慢，首次后缓存 30 分钟）；HEVC 实时转码耗 CPU（硬件编码器可用时走硬件）；**静态 `/iv/` 页面没有后端，不支持**；「用 VLC 打开」仅 Windows。
+- **测试**：`tests/test_ffmpeg_tools.py`（32，真 ffmpeg + 纯逻辑 + argv 校验）、`tests/test_media_endpoints.py`（18，真 ffmpeg + 假 WebDAV：探测 / 转码 / 起点 / 断开杀进程 / 并发上限 / 参数注入 / 字幕 / nonce / VLC / 凭据不进 argv / 没装 ffmpeg 时 501）、`tests/web_video_ffmpeg_e2e.mjs`（15，真 Chrome）。没装 ffmpeg 时这些测试带原因跳过。

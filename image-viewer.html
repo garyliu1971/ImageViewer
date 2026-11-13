@@ -279,6 +279,31 @@
     font-size: 14px; line-height: 1.7; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center;
   }
   #vpMsg.hidden { display: none; }
+  #vpInfo { flex: 0 1 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+  #vpInfo.warn { color: #e0b060; }
+  #vpInfo.hidden { display: none; }
+  #vpNote { position: absolute; left: 12px; right: 12px; top: 10px; z-index: 3; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    background: rgba(40,34,18,.94); border: 1px solid rgba(224,176,96,.5); border-radius: 10px; padding: 8px 12px; font-size: 13px; line-height: 1.6; }
+  #vpNote.hidden { display: none; }
+  #vpNoteText { flex: 1 1 260px; }
+  #vpNote .btn { font-size: 12px; padding: 4px 10px; background: rgba(255,255,255,.12); }
+  #vpNote .btn.primary { background: var(--accent); color: #fff; }
+  #vpTc { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); flex: 0 0 auto; font-size: 12px; }
+  #vpTc.hidden { display: none; }
+  #vpTcSeek { flex: 1 1 auto; width: auto; }
+  #vpTcTime { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #vpTc .btn { font-size: 12px; padding: 3px 8px; background: rgba(255,255,255,.1); }
+
+  #vpLoad { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center;
+    gap: 8px; padding: 14px 18px; border-radius: 12px; background: rgba(0,0,0,.55); font-size: 13px; text-align: center; pointer-events: none;
+    max-width: min(460px, calc(100% - 32px)); z-index: 2; }
+  #vpLoad.hidden { display: none; }
+  #vpLoadHint { color: #e0b060; font-size: 12px; line-height: 1.7; }
+  #vpLoadHint:empty { display: none; }
+  #vpLoadTry { pointer-events: auto; font-size: 12px; padding: 4px 10px; background: rgba(255,255,255,.12); }
+  #vpLoadTry.hidden { display: none; }
+  .vp-spin { width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; animation: vpspin .9s linear infinite; }
+  @keyframes vpspin { to { transform: rotate(360deg); } }
   .vp-bar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px; flex: 0 0 auto;
     background: var(--panel); padding-bottom: max(8px, env(safe-area-inset-bottom));
@@ -379,6 +404,90 @@
   .brow-item.sel .brow-size { color: rgba(255,255,255,.8); }
   .browse-empty { padding: 16px; color: var(--muted); font-size: 13px; text-align: center; }
   #browseInfo { margin-right: auto; font-size: 12px; color: var(--muted); }
+
+  /* ---------- 海报墙（媒体刮削 / TMDB，后端模式）---------- */
+  #browse.wall-on .modal-card { max-width: 1040px; }
+  .brow-view { display: flex; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .brow-view .btn.on { background: var(--accent); color: #fff; }
+  #wallPane { display: none; }
+  #browse.wall-on #wallPane { display: block; }
+  #browse.wall-on #browseList { display: none; }
+  .wall-bar { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+  .wall-bar input[type=text] { flex: 1 1 140px; min-width: 100px; font: inherit; color: var(--text); background: #12151b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; outline: none; }
+  #wallProg { display: none; margin-bottom: 8px; padding: 8px 10px; border-radius: 8px; background: rgba(76,141,255,.14);
+    font-size: 12px; align-items: center; gap: 8px; }
+  #wallProg.on { display: flex; }
+  #wallProg .bar { flex: 1 1 auto; height: 6px; border-radius: 3px; background: rgba(255,255,255,.12); overflow: hidden; }
+  #wallProg .bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  #wallNotice { display: none; margin-bottom: 8px; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; line-height: 1.8;
+    background: rgba(255,170,60,.12); border: 1px solid rgba(255,170,60,.35); }
+  #wallNotice.on { display: block; }
+  #wallNotice code { background: rgba(255,255,255,.09); padding: 1px 5px; border-radius: 4px; font-size: 12px; user-select: all; word-break: break-all; }
+  #wallGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 12px;
+    max-height: 52vh; overflow: auto; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: #12151b; }
+  .wc { cursor: pointer; min-width: 0; }
+  .wc-poster { position: relative; aspect-ratio: 2 / 3; border-radius: 8px; overflow: hidden; background: #232733;
+    display: flex; align-items: center; justify-content: center; text-align: center; padding: 8px; font-size: 13px; color: var(--muted); }
+  .wc-poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .wc:hover .wc-poster { outline: 2px solid var(--accent); }
+  .wc-badge, .wc-cnt, .wc-mark { position: absolute; font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.72); color: #fff; }
+  .wc-badge { top: 6px; left: 6px; }
+  .wc-badge.b-review { background: #c47a00; }
+  .wc-badge.b-none { background: #8a3a3a; }
+  .wc-badge.b-pin { background: #2d6a3e; }
+  .wc-badge.b-ign { background: #555b6b; font-weight: normal; }
+  .wc-cnt { top: 6px; right: 6px; }
+  .wc-mark { bottom: 6px; left: 6px; }
+  .wc-mark.done { background: #2d6a3e; }
+  .sd-ep-w { font-size: 11px; padding: 2px 8px; background: rgba(255,255,255,.07); flex: 0 0 auto; }
+  .wc-title { margin-top: 6px; font-size: 13px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .wc-sub { font-size: 11.5px; color: var(--muted); }
+  .wall-empty { grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+  .wall-foot { margin-top: 10px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+  .wall-foot img { height: 12px; width: auto; vertical-align: middle; }
+  .wall-foot .btn { font-size: 11.5px; padding: 3px 8px; }
+  #wallStats { flex: 1 1 100%; }
+  #scrDetail, #scrFix { z-index: 72; }
+  #scrDetail .modal-card { max-width: 860px; padding: 0; }
+  .sd-hero { position: relative; padding: 18px 22px 14px; background-size: cover; background-position: center top; }
+  .sd-hero::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(26,29,36,.55), #1a1d24 96%); }
+  .sd-hero > * { position: relative; }
+  .sd-top { display: flex; gap: 16px; align-items: flex-start; }
+  .sd-poster { flex: 0 0 132px; aspect-ratio: 2 / 3; border-radius: 8px; background: #232733 center / cover; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  .sd-info { min-width: 0; flex: 1 1 auto; }
+  .sd-info h2 { margin: 0 0 2px; font-size: 22px; }
+  .sd-en { color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+  .sd-meta { font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+  .sd-over { font-size: 13.5px; line-height: 1.75; max-height: 9.5em; overflow: auto; }
+  .sd-over-en { margin-top: 6px; font-size: 12px; color: var(--muted); }
+  .sd-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .sd-body { padding: 4px 22px 18px; }
+  .sd-seasons { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .sd-seasons .btn.on { background: var(--accent); color: #fff; }
+  .sd-ep { display: flex; gap: 10px; align-items: center; padding: 6px; border-radius: 8px; cursor: pointer; }
+  .sd-ep:hover { background: rgba(255,255,255,.07); }
+  .sd-still { flex: 0 0 96px; aspect-ratio: 16 / 9; border-radius: 6px; background: #232733 center / cover; }
+  .sd-ep-t { min-width: 0; flex: 1 1 auto; font-size: 13px; }
+  .sd-ep-t small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sd-ep-m { font-size: 11.5px; color: var(--muted); white-space: nowrap; padding: 1px 8px; border: 1px solid var(--border); border-radius: 10px; }
+  .sd-ep-m.cont { color: #7fb0ff; border-color: rgba(127,176,255,.4); }
+  .sd-ep-m.done { color: #6fcf8f; border-color: rgba(111,207,143,.4); }
+  .sd-note { font-size: 12px; color: #e0a040; margin: 6px 0; }
+  .sd-note.soft { color: var(--muted); }
+  .fx-row { display: flex; gap: 10px; padding: 8px; border-radius: 8px; cursor: pointer; align-items: flex-start; }
+  .fx-row:hover { background: rgba(255,255,255,.07); }
+  .fx-row .sd-poster { flex: 0 0 46px; }
+  .fx-row small { color: var(--muted); display: block; font-size: 11.5px; line-height: 1.5; }
+  #fxList { max-height: 40vh; overflow: auto; margin-top: 8px; }
+  #fxCur { font-size: 12.5px; margin-bottom: 8px; color: var(--muted); }
+  @media (max-width: 560px) {
+    .brow-bar { flex-wrap: wrap; }
+    .sd-top { flex-direction: column; }
+    .sd-poster { flex-basis: auto; width: 110px; }
+    #wallGrid { grid-template-columns: repeat(auto-fill, minmax(98px, 1fr)); gap: 8px; }
+    .sd-still { flex-basis: 76px; }
+  }
   #btnDisk { display: none; }
   body.has-backend #btnDisk, body.has-backend #startDisk, body.has-backend #startCloud { display: inline-flex; }
   #backendTag { display: none; font-size: 11px; color: var(--muted); }
@@ -680,6 +789,12 @@
         rar / cbr 在<b>后端模式</b>下走后端（磁盘路径 / 压缩包按钮 / 拖拽都行），通过网址（http / https）打开本页时 rar·cbr·7z·cb7·tar·cbt·tgz 浏览器自己解压（libarchive.js，不支持加密包）；
         PDF 通过网址（http / https）打开本页就能直接读（📦 / 拖拽 / 云端书库），加密 PDF 除外</td></tr>
     </table>
+    <div id="helpTmdb" style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);line-height:1.8">
+      <img alt="TMDB" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMjczLjQyIDM1LjUyIj48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6dXJsKCNsaW5lYXItZ3JhZGllbnQpO308L3N0eWxlPjxsaW5lYXJHcmFkaWVudCBpZD0ibGluZWFyLWdyYWRpZW50IiB5MT0iMTcuNzYiIHgyPSIyNzMuNDIiIHkyPSIxNy43NiIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzkwY2VhMSIvPjxzdG9wIG9mZnNldD0iMC41NiIgc3RvcC1jb2xvcj0iIzNjYmVjOSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzAwYjNlNSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjx0aXRsZT5Bc3NldCAzPC90aXRsZT48ZyBpZD0iTGF5ZXJfMiIgZGF0YS1uYW1lPSJMYXllciAyIj48ZyBpZD0iTGF5ZXJfMS0yIiBkYXRhLW5hbWU9IkxheWVyIDEiPjxwYXRoIGNsYXNzPSJjbHMtMSIgZD0iTTE5MS44NSwzNS4zN2g2My45QTE3LjY3LDE3LjY3LDAsMCwwLDI3My40MiwxNy43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMjU1Ljc1LDBoLTYzLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTc0LjE4LDE3LjdoMEExNy42NywxNy42NywwLDAsMCwxOTEuODUsMzUuMzdaTTEwLjEsMzUuNDJoNy44VjYuOTJIMjhWMEgwdjYuOUgxMC4xWm0yOC4xLDBINDZWOC4yNWguMUw1NS4wNSwzNS40aDZMNzAuMyw4LjI1aC4xVjM1LjRoNy44VjBINjYuNDVsLTguMiwyMy4xaC0uMUw1MCwwSDM4LjJaTTg5LjE0LjEyaDExLjdhMzMuNTYsMzMuNTYsMCwwLDEsOC4wOCwxLDE4LjUyLDE4LjUyLDAsMCwxLDYuNjcsMy4wOCwxNS4wOSwxNS4wOSwwLDAsMSw0LjUzLDUuNTIsMTguNSwxOC41LDAsMCwxLDEuNjcsOC4yNSwxNi45MSwxNi45MSwwLDAsMS0xLjYyLDcuNTgsMTYuMywxNi4zLDAsMCwxLTQuMzgsNS41LDE5LjI0LDE5LjI0LDAsMCwxLTYuMzUsMy4zNywyNC41MywyNC41MywwLDAsMS03LjU1LDEuMTVIODkuMTRabTcuOCwyOC4yaDRhMjEuNjYsMjEuNjYsMCwwLDAsNS0uNTVBMTAuNTgsMTAuNTgsMCwwLDAsMTEwLDI2YTguNzMsOC43MywwLDAsMCwyLjY4LTMuMzUsMTEuOSwxMS45LDAsMCwwLDEtNS4wOCw5Ljg3LDkuODcsMCwwLDAtMS00LjUyLDkuMTcsOS4xNywwLDAsMC0yLjYzLTMuMThBMTEuNjEsMTEuNjEsMCwwLDAsMTA2LjIyLDhhMTcuMDYsMTcuMDYsMCwwLDAtNC42OC0uNjNoLTQuNlpNMTMzLjA5LjEyaDEzLjJhMzIuODcsMzIuODcsMCwwLDEsNC42My4zMywxMi42NiwxMi42NiwwLDAsMSw0LjE3LDEuMyw3Ljk0LDcuOTQsMCwwLDEsMywyLjcyLDguMzQsOC4zNCwwLDAsMSwxLjE1LDQuNjUsNy40OCw3LjQ4LDAsMCwxLTEuNjcsNSw5LjEzLDkuMTMsMCwwLDEtNC40MywyLjgyVjE3YTEwLjI4LDEwLjI4LDAsMCwxLDMuMTgsMSw4LjUxLDguNTEsMCwwLDEsMi40NSwxLjg1LDcuNzksNy43OSwwLDAsMSwxLjU3LDIuNjIsOS4xNiw5LjE2LDAsMCwxLC41NSwzLjIsOC41Miw4LjUyLDAsMCwxLTEuMiw0LjY4LDkuMzIsOS4zMiwwLDAsMS0zLjEsM0ExMy4zOCwxMy4zOCwwLDAsMSwxNTIuMzIsMzVhMjIuNSwyMi41LDAsMCwxLTQuNzMuNWgtMTQuNVptNy44LDE0LjE1aDUuNjVhNy42NSw3LjY1LDAsMCwwLDEuNzgtLjIsNC43OCw0Ljc4LDAsMCwwLDEuNTctLjY1LDMuNDMsMy40MywwLDAsMCwxLjEzLTEuMiwzLjYzLDMuNjMsMCwwLDAsLjQyLTEuOEEzLjMsMy4zLDAsMCwwLDE1MSw4LjZhMy40MiwzLjQyLDAsMCwwLTEuMjMtMS4xM0E2LjA3LDYuMDcsMCwwLDAsMTQ4LDYuOWE5LjksOS45LDAsMCwwLTEuODUtLjE4aC01LjNabTAsMTQuNjVoN2E4LjI3LDguMjcsMCwwLDAsMS44My0uMiw0LjY3LDQuNjcsMCwwLDAsMS42Ny0uNywzLjkzLDMuOTMsMCwwLDAsMS4yMy0xLjMsMy44LDMuOCwwLDAsMCwuNDctMS45NSwzLjE2LDMuMTYsMCwwLDAtLjYyLTIsNCw0LDAsMCwwLTEuNTgtMS4xOCw4LjIzLDguMjMsMCwwLDAtMi0uNTUsMTUuMTIsMTUuMTIsMCwwLDAtMi4wNS0uMTVoLTUuOVoiLz48L2c+PC9nPjwvc3ZnPg==" style="height:12px;width:auto;vertical-align:middle;margin-right:6px">
+      This product uses the TMDB API but is not endorsed or certified by TMDB.<br>
+      海报 / 简介等影视资料来自 <a href="https://www.themoviedb.org" target="_blank" rel="noopener" style="color:var(--accent)">TMDB</a>
+      （仅本地后端模式、需自行配置令牌；文件名会作为搜索词发给 TMDB，缓存在本机，最长保留 150 天）。
+    </div>
   </div>
 </div>
 
@@ -828,6 +943,29 @@
       <button class="btn icon" id="browseCloudCfg" title="云端账号设置（WebDAV）">⚙</button>
     </div>
     <div id="browseRecent"></div>
+    <div class="brow-view" id="browseView">
+      <button class="btn on" id="viewList" title="文件列表">☰ 列表</button>
+      <button class="btn" id="viewWall" title="海报墙：自动识别电影 / 剧集并显示海报（TMDB）">🎞 海报墙</button>
+    </div>
+    <div id="wallPane">
+      <div class="wall-bar">
+        <input type="text" id="wallFilter" placeholder="筛选标题…" autocomplete="off" spellcheck="false">
+        <select id="wallSort" title="排序">
+          <option value="name">按名称</option><option value="year">按年份（新→旧）</option><option value="rating">按评分（高→低）</option>
+        </select>
+        <label class="shelf-opt" title="把下面两层子目录里的视频也列出来；Show/Season 1、Show/Season 2 这类分季目录会合成一张剧集卡"><input type="checkbox" id="wallSub" checked> 含子目录</label>
+        <button class="btn" id="wallScan" title="只刮削当前这一层目录里的视频（不递归）">刮削当前目录</button>
+      </div>
+      <div id="wallProg"><span id="wallProgText"></span><span class="bar"><i id="wallProgBar"></i></span><button class="btn" id="wallCancel">取消</button></div>
+      <div id="wallNotice"></div>
+      <div id="wallGrid"></div>
+      <div class="wall-foot">
+        <span id="wallStats">刮削：读取中…</span>
+        <img alt="TMDB" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMjczLjQyIDM1LjUyIj48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6dXJsKCNsaW5lYXItZ3JhZGllbnQpO308L3N0eWxlPjxsaW5lYXJHcmFkaWVudCBpZD0ibGluZWFyLWdyYWRpZW50IiB5MT0iMTcuNzYiIHgyPSIyNzMuNDIiIHkyPSIxNy43NiIgZ3JhZGllbnRVbml0cz0idXNlclNwYWNlT25Vc2UiPjxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzkwY2VhMSIvPjxzdG9wIG9mZnNldD0iMC41NiIgc3RvcC1jb2xvcj0iIzNjYmVjOSIvPjxzdG9wIG9mZnNldD0iMSIgc3RvcC1jb2xvcj0iIzAwYjNlNSIvPjwvbGluZWFyR3JhZGllbnQ+PC9kZWZzPjx0aXRsZT5Bc3NldCAzPC90aXRsZT48ZyBpZD0iTGF5ZXJfMiIgZGF0YS1uYW1lPSJMYXllciAyIj48ZyBpZD0iTGF5ZXJfMS0yIiBkYXRhLW5hbWU9IkxheWVyIDEiPjxwYXRoIGNsYXNzPSJjbHMtMSIgZD0iTTE5MS44NSwzNS4zN2g2My45QTE3LjY3LDE3LjY3LDAsMCwwLDI3My40MiwxNy43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMjU1Ljc1LDBoLTYzLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTc0LjE4LDE3LjdoMEExNy42NywxNy42NywwLDAsMCwxOTEuODUsMzUuMzdaTTEwLjEsMzUuNDJoNy44VjYuOTJIMjhWMEgwdjYuOUgxMC4xWm0yOC4xLDBINDZWOC4yNWguMUw1NS4wNSwzNS40aDZMNzAuMyw4LjI1aC4xVjM1LjRoNy44VjBINjYuNDVsLTguMiwyMy4xaC0uMUw1MCwwSDM4LjJaTTg5LjE0LjEyaDExLjdhMzMuNTYsMzMuNTYsMCwwLDEsOC4wOCwxLDE4LjUyLDE4LjUyLDAsMCwxLDYuNjcsMy4wOCwxNS4wOSwxNS4wOSwwLDAsMSw0LjUzLDUuNTIsMTguNSwxOC41LDAsMCwxLDEuNjcsOC4yNSwxNi45MSwxNi45MSwwLDAsMS0xLjYyLDcuNTgsMTYuMywxNi4zLDAsMCwxLTQuMzgsNS41LDE5LjI0LDE5LjI0LDAsMCwxLTYuMzUsMy4zNywyNC41MywyNC41MywwLDAsMS03LjU1LDEuMTVIODkuMTRabTcuOCwyOC4yaDRhMjEuNjYsMjEuNjYsMCwwLDAsNS0uNTVBMTAuNTgsMTAuNTgsMCwwLDAsMTEwLDI2YTguNzMsOC43MywwLDAsMCwyLjY4LTMuMzUsMTEuOSwxMS45LDAsMCwwLDEtNS4wOCw5Ljg3LDkuODcsMCwwLDAtMS00LjUyLDkuMTcsOS4xNywwLDAsMC0yLjYzLTMuMThBMTEuNjEsMTEuNjEsMCwwLDAsMTA2LjIyLDhhMTcuMDYsMTcuMDYsMCwwLDAtNC42OC0uNjNoLTQuNlpNMTMzLjA5LjEyaDEzLjJhMzIuODcsMzIuODcsMCwwLDEsNC42My4zMywxMi42NiwxMi42NiwwLDAsMSw0LjE3LDEuMyw3Ljk0LDcuOTQsMCwwLDEsMywyLjcyLDguMzQsOC4zNCwwLDAsMSwxLjE1LDQuNjUsNy40OCw3LjQ4LDAsMCwxLTEuNjcsNSw5LjEzLDkuMTMsMCwwLDEtNC40MywyLjgyVjE3YTEwLjI4LDEwLjI4LDAsMCwxLDMuMTgsMSw4LjUxLDguNTEsMCwwLDEsMi40NSwxLjg1LDcuNzksNy43OSwwLDAsMSwxLjU3LDIuNjIsOS4xNiw5LjE2LDAsMCwxLC41NSwzLjIsOC41Miw4LjUyLDAsMCwxLTEuMiw0LjY4LDkuMzIsOS4zMiwwLDAsMS0zLjEsM0ExMy4zOCwxMy4zOCwwLDAsMSwxNTIuMzIsMzVhMjIuNSwyMi41LDAsMCwxLTQuNzMuNWgtMTQuNVptNy44LDE0LjE1aDUuNjVhNy42NSw3LjY1LDAsMCwwLDEuNzgtLjIsNC43OCw0Ljc4LDAsMCwwLDEuNTctLjY1LDMuNDMsMy40MywwLDAsMCwxLjEzLTEuMiwzLjYzLDMuNjMsMCwwLDAsLjQyLTEuOEEzLjMsMy4zLDAsMCwwLDE1MSw4LjZhMy40MiwzLjQyLDAsMCwwLTEuMjMtMS4xM0E2LjA3LDYuMDcsMCwwLDAsMTQ4LDYuOWE5LjksOS45LDAsMCwwLTEuODUtLjE4aC01LjNabTAsMTQuNjVoN2E4LjI3LDguMjcsMCwwLDAsMS44My0uMiw0LjY3LDQuNjcsMCwwLDAsMS42Ny0uNywzLjkzLDMuOTMsMCwwLDAsMS4yMy0xLjMsMy44LDMuOCwwLDAsMCwuNDctMS45NSwzLjE2LDMuMTYsMCwwLDAtLjYyLTIsNCw0LDAsMCwwLTEuNTgtMS4xOCw4LjIzLDguMjMsMCwwLDAtMi0uNTUsMTUuMTIsMTUuMTIsMCwwLDAtMi4wNS0uMTVoLTUuOVoiLz48L2c+PC9nPjwvc3ZnPg==">
+        <span class="tmdb-note">This product uses the TMDB API but is not endorsed or certified by TMDB.</span>
+        <button class="btn" id="wallPurge" title="清除本机缓存的 TMDB 数据与图片（手动锁定的匹配会保留）">清缓存</button>
+      </div>
+    </div>
     <div id="browseList"><div class="browse-empty">输入路径后点「转到」</div></div>
     <div class="modal-actions">
       <span id="browseInfo"></span>
@@ -841,15 +979,72 @@
   </div>
 </div>
 
+<div id="scrDetail" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" data-close="scrDetail">✕</button>
+    <div class="sd-hero" id="sdHero">
+      <div class="sd-top">
+        <div class="sd-poster" id="sdPoster"></div>
+        <div class="sd-info">
+          <h2 id="sdTitle"></h2>
+          <div class="sd-en" id="sdEn"></div>
+          <div class="sd-meta" id="sdMeta"></div>
+          <div class="sd-over" id="sdOver"></div>
+          <div class="sd-over-en" id="sdOverEn"></div>
+          <div class="sd-note" id="sdNote"></div>
+          <div class="sd-actions">
+            <button class="btn primary" id="sdPlay">▶ 播放</button>
+            <button class="btn" id="sdWatch">标为已看</button>
+            <button class="btn" id="sdFix">修正匹配</button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="sd-body" id="sdBody"></div>
+  </div>
+</div>
+
+<div id="scrFix" class="modal hidden">
+  <div class="modal-card">
+    <button class="modal-close" data-close="scrFix">✕</button>
+    <h2>修正匹配</h2>
+    <div id="fxCur"></div>
+    <div class="wall-bar">
+      <input type="text" id="fxQ" placeholder="搜索 TMDB（中文或英文名）" autocomplete="off" spellcheck="false">
+      <input type="text" id="fxYear" placeholder="年份" style="flex:0 0 70px;min-width:60px" inputmode="numeric" autocomplete="off">
+      <select id="fxType"><option value="movie">电影</option><option value="tv">剧集</option></select>
+      <button class="btn primary" id="fxGo">搜索</button>
+    </div>
+    <div id="fxList"></div>
+    <p id="fxNote" style="color:var(--muted);font-size:12px;margin-top:8px;line-height:1.7"></p>
+    <div class="modal-actions">
+      <button class="btn" id="fxIgnore" title="这个文件 / 目录不是影视（比如网盘的介绍视频）：以后不再向 TMDB 查询，也不会被「刮削当前目录」处理">忽略此项（不是影视）</button>
+      <button class="btn" id="fxUnpin" style="margin-right:auto">取消锁定</button>
+      <button class="btn" data-close="scrFix">关闭</button>
+    </div>
+  </div>
+</div>
+
 <div id="vplayer" class="hidden" role="dialog" aria-label="视频播放">
   <div class="vp-top">
     <button class="btn icon" id="vpClose" title="关闭（Esc）">✕</button>
     <span id="vpTitle"></span>
+    <span id="vpInfo" class="hidden"></span>
     <span id="vpPos"></span>
   </div>
   <div class="vp-stage">
     <video id="vpVideo" controls playsinline preload="metadata"></video>
     <div id="vpMsg" class="hidden"><div id="vpMsgText"></div><button class="btn primary hidden" id="vpTry">仍然尝试播放</button></div>
+    <div id="vpLoad" class="hidden" role="status" aria-live="polite"><div class="vp-spin"></div><div id="vpLoadText">加载中…</div><div id="vpLoadHint"></div><button class="btn hidden" id="vpLoadTry">仍然尝试播放</button></div>
+    <div id="vpNote" class="hidden" role="status"><span id="vpNoteText"></span><span><button class="btn hidden" id="vpNoteVlc">用 VLC 打开</button> <button class="btn primary hidden" id="vpNoteFf">转成可播放音轨（ffmpeg）</button> <button class="btn" id="vpNoteX" title="关闭提示">✕</button></span></div>
+  </div>
+  <div id="vpTc" class="hidden">
+    <button class="btn" id="vpTcPlay" title="播放 / 暂停">⏯</button>
+    <input type="range" id="vpTcSeek" min="0" max="1" step="1" value="0" aria-label="进度（转码流：拖动后重新开始转码）">
+    <span id="vpTcTime">0:00 / 0:00</span>
+    <select id="vpTcAudio" title="音轨"></select>
+    <button class="btn" id="vpTcStereo" title="把多声道混成立体声（5.1 声音太小时用）">立体声混音：关</button>
+    <button class="btn" id="vpTcOff" title="退出转码，回到直接播放">退出转码</button>
   </div>
   <div class="vp-bar">
     <button class="btn" id="vpPrev" title="上一个视频">⏮ 上一个</button>
@@ -2630,6 +2825,12 @@
     if (r === 'maybe') return VIDEO_NATIVE_EXTS.test(name) ? 'yes' : 'maybe';
     return 'no';
   }
+  /** 要不要直接试着播：canPlayType 只是个猜测（对 mkv 常常回 '' 或 'maybe'，但 Chrome 其实能播里面的 H.264），
+   *  所以 yes / maybe 一律试；mkv 这类 Chrome 常能播的容器即使回 '' 也试；其余被判 'no' 的（avi / wmv…）才先拦住并给「仍然尝试」按钮。 */
+  function videoShouldTry(name, canPlay) {
+    var s = videoSupport(name, canPlay);
+    return s !== 'no' || (!!videoMime(name) && /\.(mkv|mka)$/i.test(String(name || '')));
+  }
   /** MediaError.code -> 中文说明（code 4 = 格式 / 编码不支持，最常见） */
   function videoErrorMessage(err, name) {
     var code = err && err.code;
@@ -2726,6 +2927,81 @@
     return /\.(ass|ssa)$/i.test(String(name || '')) ? assToVtt(text) : srtToVtt(text);
   }
 
+  /* ================= 字幕文件名 -> 标签 / 默认选择；明文 HTTP 风险判断（纯函数，Node 可测）================= */
+  var SUB_LANGS = [
+    { re: /^(zh[-_]?(cn|hans|sg)?|chs|sc|gb|gbk|simplified|简体|简中|中文)$/i, label: '简体中文', rank: 0 },
+    { re: /^(cht|tc|zh[-_]?(tw|hk|hant|mo)|big5|traditional|繁体|繁體|繁中)$/i, label: '繁體中文', rank: 1 },
+    { re: /^(en|eng|english|英文|英语)$/i, label: 'English', rank: 3 },
+    { re: /^(ja|jp|jpn|japanese|日文|日语|日本語)$/i, label: '日本語', rank: 3 },
+    { re: /^(ko|kor|korean|韩文|韩语)$/i, label: '한국어', rank: 3 }
+  ];
+  /** 字幕文件名相对视频名的「后缀」：S01E01.zh.srt（视频 S01E01.mkv）-> 'zh'；同名（clip.srt）-> ''；对不上主名 -> null */
+  function subSuffix(videoName, subName) {
+    var stem = String(videoName || '').replace(/\.[^.\/\\]+$/, '').toLowerCase();
+    var sub = String(subName || '').replace(/\.[^.\/\\]+$/, '');
+    if (sub.toLowerCase() === stem) return '';
+    if (sub.toLowerCase().indexOf(stem + '.') === 0) return sub.slice(stem.length + 1);
+    return null;
+  }
+  /** 后缀 -> 命中的语言 [{label, rank}]：先整体匹配（zh-tw 是繁体，不能拆成 zh + tw），不中再按 . & + , _ - 拆开逐个匹配（chs&eng、zh-en） */
+  function subLangHits(suf) {
+    var hits = [];
+    function add(t) { SUB_LANGS.forEach(function (l) { if (l.re.test(t) && !hits.some(function (h) { return h.label === l.label; })) hits.push({ label: l.label, rank: l.rank }); }); }
+    add(suf);
+    if (!hits.length) suf.split(/[.&+,_\-]+/).filter(Boolean).forEach(add);
+    return hits;
+  }
+  /** 给字幕起个人话名字：简体中文 / 繁體中文 / English…，认不出的后缀原样显示；中英双语 -> 中英双语 */
+  function subLabel(videoName, subName) {
+    var suf = subSuffix(videoName, subName);
+    var ext = (/\.([^.\/\\]+)$/.exec(String(subName || '')) || ['', ''])[1].toLowerCase();
+    if (suf === null) return String(subName || '');
+    if (suf === '') return '字幕 (' + ext + ')';
+    var hits = subLangHits(suf);
+    var zh = hits.some(function (h) { return h.rank <= 1; });
+    if (zh && hits.length > 1) return '中英双语 (' + suf + ')';
+    if (hits.length === 1) return hits[0].label + ' (' + ext + ')';
+    return suf + ' (' + ext + ')';
+  }
+  function subRank(videoName, subName) {
+    var suf = subSuffix(videoName, subName);
+    if (suf === null) return 3;
+    if (suf === '') return 2;
+    var best = 3;
+    subLangHits(suf).forEach(function (h) { if (h.rank < best) best = h.rank; });
+    return best;
+  }
+  /** 默认选哪条：简体 > 繁体 > 没后缀的同名字幕 > 其它；同级取靠前的。返回下标，-1 = 没有 */
+  function subPick(videoName, subNames) {
+    var bi = -1, br = 99;
+    (subNames || []).forEach(function (n, i) { var r = subRank(videoName, n); if (r < br) { br = r; bi = i; } });
+    return bi;
+  }
+  var SUB_MAX_BYTES = 4 * 1024 * 1024;
+  /** 明文 HTTP 填到公网地址：密码会在互联网上裸奔。内网（10.x / 172.16-31.x / 192.168.x / 169.254.x / localhost / 127.x /
+   *  *.local / 单段主机名 / IPv6 本地）不提示；https 不提示。返回 { warn, host, scheme }。 */
+  function plainHttpRisk(url) {
+    var u = String(url == null ? '' : url).trim();
+    var m = /^([a-z][a-z0-9+.-]*):\/\//i.exec(u);
+    var scheme = m ? m[1].toLowerCase() : 'http';
+    var rest = m ? u.slice(m[0].length) : u;
+    var auth = rest.split(/[\/?#]/)[0];
+    auth = auth.slice(auth.lastIndexOf('@') + 1);
+    var host = auth.charAt(0) === '[' ? auth.slice(1, auth.indexOf(']') < 0 ? undefined : auth.indexOf(']')) : auth.replace(/:\d*$/, '');
+    host = host.toLowerCase();
+    if (scheme !== 'http' || !host) return { warn: false, host: host, scheme: scheme };
+    var v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host), priv = false;
+    if (v4) {
+      var a = +v4[1], b = +v4[2];
+      priv = a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254);
+    } else if (host.indexOf(':') >= 0) {
+      priv = host === '::1' || /^f[cd][0-9a-f]{2}:/.test(host) || /^fe[89ab][0-9a-f]:/.test(host);
+    } else {
+      priv = host === 'localhost' || /\.local$/.test(host) || host.indexOf('.') < 0;
+    }
+    return { warn: !priv, host: host, scheme: scheme };
+  }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
@@ -2740,7 +3016,8 @@
     WEB_IMAGE_EXTS: WEB_IMAGE_EXTS, DESKTOP_EXTS: DESKTOP_EXTS, MEDIA_EXTS: MEDIA_EXTS,
     ARCHIVE_EXTS: ARCHIVE_EXTS, ARCH_EXTS: ARCH_EXTS, ARCH_WARN_BYTES: ARCH_WARN_BYTES, archKind: archKind, archPickImages: archPickImages,
     archErrorMessage: archErrorMessage, fetchWhole: fetchWhole,
-    isVideoName: isVideoName, videoMime: videoMime, videoSupport: videoSupport, videoErrorMessage: videoErrorMessage,
+    subSuffix: subSuffix, subLabel: subLabel, subRank: subRank, subPick: subPick, plainHttpRisk: plainHttpRisk, SUB_MAX_BYTES: SUB_MAX_BYTES,
+    isVideoName: isVideoName, videoMime: videoMime, videoSupport: videoSupport, videoShouldTry: videoShouldTry, videoErrorMessage: videoErrorMessage,
     decodeSubtitle: decodeSubtitle, srtToVtt: srtToVtt, assToVtt: assToVtt, subtitleToVtt: subtitleToVtt, SUB_EXTS: SUB_EXTS,
     clamp: clamp, naturalCompare: naturalCompare, baseName: baseName, topDir: topDir,
     commonRoot: commonRoot, rotatedSize: rotatedSize, computeZoom: computeZoom,
@@ -2824,7 +3101,7 @@
       method: method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
     } : undefined).then(function (r) {
       return r.json().then(function (j) {
-        if (!r.ok || j.ok === false) throw new Error(j.error || ('HTTP ' + r.status));
+        if (!r.ok || j.ok === false) { var er = new Error(j.error || ('HTTP ' + r.status)); er.code = j.code; throw er; }
         return j;
       });
     });
@@ -2894,6 +3171,7 @@
     var tags = [];
     tags.push(caps.rar ? 'rar/cbr ✓' : 'rar/cbr ✗（需 rarfile + 7-Zip）');
     tags.push(caps.pdf ? 'PDF ✓' : 'PDF ✗（需 pymupdf）');
+    tags.push(caps.ffmpeg && caps.ffmpeg.available ? 'ffmpeg ✓ ' + (caps.ffmpeg.version || '') : 'ffmpeg ✗（可选：转码 / 编码信息；winget install Gyan.FFmpeg 后重启后端）');
     $('#backendTag').textContent = ' · 后端已连接 ' + tags.join(' · ');
     $('#backendTag').style.display = 'inline';
     $('#statusNote').textContent = '本地后端已连接：rar/cbr、PDF、磁盘路径、与桌面版共享进度可用';
@@ -4035,7 +4313,7 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent', 'rcloud'];
+  var MODALS = ['scrDetail', 'scrFix', 'help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent', 'rcloud'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
@@ -4831,6 +5109,7 @@
       }).join('');
       list._rows = rows;
       $('#browseInfo').textContent = (j.entries || []).length + ' 项';
+      if (W.on) wallLoad();
       return rows;
     })['catch'](function (e) {
       list.innerHTML = '<div class="browse-empty">打不开：' + esc((e && e.message) || e) + '</div>';
@@ -4848,11 +5127,13 @@
     if (r.dir) return Promise.resolve(browseTo(r.path)).then(function () { return false; });
     if (browseRemote) {                      /* 云端：目前只接了视频（经后端 /api/remote/data 中转，<video> 不需要认证头） */
       if (r.kind !== 'video') { toast('云端目前只能播放视频；图 / 压缩包请用书架'); return Promise.resolve(false); }
+      wallRemember('');
       openRemoteVideo(r.path, list._rows);
       toggleModal('browse', false);
       return Promise.resolve(true);
     }
     /* 打开成功就收窗，失败留着让用户改路径 */
+    if (C.isVideoName(r.path)) wallRemember('');
     return openServerPath(r.path).then(function (ok) {
       if (ok) toggleModal('browse', false);
       return ok;
@@ -4928,6 +5209,8 @@
     vpSaveResume(true);
     var it = VP.items[i];
     VP.i = i; VP.tryAnyway = false; VP.resumeMs = null; VP.lastSave = 0;
+    vpLoadStop(); VP.metaReady = false;
+    clearInterval(VP.silentT); VP.noteShown = false; VP.tc = null; VP.heavyShown = false; vpNoteHide(); vpTcUi();
     vpSubReset();
     vpMsg('');
     $('#vpTitle').textContent = it.name; $('#vpTitle').title = it.path || it.name;
@@ -4935,30 +5218,58 @@
     $('#vpPrev').disabled = i <= 0; $('#vpNext').disabled = i >= VP.items.length - 1;
     document.title = it.name;
     /* canPlayType 只看容器：'no' 时先提示，但允许「仍然尝试」（Chrome 对 mkv 里的 H.264 常常其实能播） */
-    var sup = C.videoSupport(it.name, v.canPlayType.bind(v));
-    if (sup === 'no') {
+    if (!C.videoShouldTry(it.name, v.canPlayType.bind(v))) {
       v.removeAttribute('src'); v.load();
       vpMsg('这个浏览器声称不支持 ' + (C.videoMime(it.name) || it.name) + ' 格式。' + C.videoErrorMessage({ code: 4 }, it.name), true);
     } else {
       vpSetSrc(it);
     }
     /* 续播点 + 旁挂字幕（后端模式才有）：各自异步，过期（切到别的视频）就丢 */
-    if (BE.on && it.path) {
-      apiJson('/api/videoresume', { path: it.path }).then(function (j) {
+    VP.subChosen = false;
+    if (BE.on && (it.path || it.remotePath)) {
+      apiJson('/api/videoresume', it.path ? { path: it.path } : { remote: it.remotePath }).then(function (j) {
         if (seq !== VP.seq || !j || !j.ms) return;
         VP.resumeMs = j.ms;
         if (v.readyState >= 1) vpApplyResume();
       })['catch'](function () { /* 没有续播点也不影响播放 */ });
+    }
+    if (BE.on && it.path) {
       apiJson('/api/subtitle', { path: it.path }).then(function (j) {
         if (seq !== VP.seq) return;
         (j.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, remote: it.path }); });
-        vpSubRefresh();
-        if (VP.subs.length && VP.subIdx < 0) vpSubSelect(0);
+        vpSubRefresh(); vpSubAuto(seq);
       })['catch'](function () { /* 列不出字幕就算了 */ });
     }
     (it.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, file: s.file, url: s.url }); });
-    vpSubRefresh();
-    if (it.subs && it.subs.length && VP.subIdx < 0) vpSubSelect(0);
+    vpSubRefresh(); vpSubAuto(seq);
+    vpProbeLoad(it, seq);
+  }
+
+  /* 每个视频记住自己选过的字幕（本浏览器 localStorage；key 和续播点同一套：本机路径 / 云端路径）。'' = 用户关掉了字幕 */
+  var LS_VSUB = 'iv.video.sub.v1';
+  function vpKeyOf(it) {
+    if (!it) return null;
+    if (it.path) return normKey(it.path).toLowerCase();
+    if (it.remotePath) { var r = it.remotePath; try { r = decodeURIComponent(r); } catch (e) { /* 保持原样 */ } return 'dav:' + r; }
+    return null;
+  }
+  function vpSubSaved() { var k = vpKeyOf(VP.items[VP.i]); var m = lsGet(LS_VSUB, {}) || {}; return k && Object.prototype.hasOwnProperty.call(m, k) ? m[k] : undefined; }
+  function vpSubRemember(name) {
+    var k = vpKeyOf(VP.items[VP.i]); if (!k) return;
+    var m = lsGet(LS_VSUB, {}) || {};
+    delete m[k]; m[k] = name || '';
+    var ks = Object.keys(m); if (ks.length > 300) ks.slice(0, ks.length - 300).forEach(function (x) { delete m[x]; });
+    lsSet(LS_VSUB, m);
+  }
+  /** 字幕列表有新内容时：没被用户动过 -> 记住的选择优先，其次简体 > 繁体 > 同名 > 第一条 */
+  function vpSubAuto(seq) {
+    if (seq !== VP.seq || VP.subChosen || VP.subIdx >= 0 || !VP.subs.length) return;
+    var it = VP.items[VP.i], saved = vpSubSaved();
+    if (saved === '') { VP.subChosen = true; return; }                 /* 上次明确关掉了 */
+    var idx = -1;
+    if (saved) idx = VP.subs.findIndex(function (x) { return x.name === saved; });
+    if (idx < 0) idx = C.subPick(it.name, VP.subs.map(function (x) { return x.name; }));
+    if (idx >= 0) vpSubSelect(idx, true);
   }
 
   function vpSetSrc(it) {
@@ -4966,28 +5277,55 @@
     v.src = it.url;
     v.playbackRate = vpPrefs.rate || 1;
     v.defaultPlaybackRate = vpPrefs.rate || 1;
+    VP.metaReady = false;
+    vpLoadStart('load');
     var p = v.play();
     if (p && p['catch']) p['catch'](function () { /* 自动播放被拦：用户点播放即可 */ });
   }
+  /* ---- 加载 / 缓冲状态：从设置 src 起到 canplay / playing 一直显示「加载中…」，3 秒后带上已等待秒数；
+     播放中 waiting / stalled 显示「缓冲中…」。加载慢（mkv 的索引在文件尾、云端要多次 Range 读）不是错误：
+     只有 error 事件才报错；超过 hintMs 还没拿到元数据只给一条中性提示，不中止加载。---- */
+  var VP_LOAD = { showMs: 3000, hintMs: 45000, silentSecs: 3 };          /* 测试可调：window.__IV.videoLoadTuning */
+  var VP_HINT_SLOW = '加载较慢或格式不受浏览器支持（如 HEVC / AC3 / DTS）。可继续等待，或点「仍然尝试播放」。';
+  function vpLoadTick() {
+    var L = VP.load; if (!L) return;
+    var el = Math.floor((Date.now() - L.t0) / 1000), showAfter = Math.floor(VP_LOAD.showMs / 1000);
+    $('#vpLoadText').textContent = (L.kind === 'buffer' ? '缓冲中…' : '加载中…') + (Date.now() - L.t0 >= VP_LOAD.showMs ? ' 已等待 ' + el + ' 秒' : '');
+    void showAfter;
+    var slow = L.kind === 'load' && !VP.metaReady && Date.now() - L.t0 >= VP_LOAD.hintMs;
+    $('#vpLoadHint').textContent = slow ? VP_HINT_SLOW : '';
+    $('#vpLoadTry').classList.toggle('hidden', !slow);
+  }
+  function vpLoadStart(kind) {
+    if (VP.load) { if (kind === 'buffer' && VP.load.kind === 'load' && VP.metaReady) { VP.load.kind = 'buffer'; VP.load.t0 = Date.now(); vpLoadTick(); } return; }
+    VP.load = { kind: kind, t0: Date.now(), timer: setInterval(vpLoadTick, 500) };
+    $('#vpLoad').classList.remove('hidden');
+    vpLoadTick();
+  }
+  function vpLoadStop() {
+    if (VP.load) { clearInterval(VP.load.timer); VP.load = null; }
+    $('#vpLoad').classList.add('hidden'); $('#vpLoadHint').textContent = '';
+  }
   function vpApplyResume() {
     var v = vpV();
-    if (!VP.resumeMs) return;
+    if (!VP.resumeMs || VP.tc) return;
     var t = VP.resumeMs / 1000; VP.resumeMs = null;
     if (isFinite(v.duration) && t < v.duration - 3) {
       try { v.currentTime = t; toast('已接上上次进度 ' + vpFmtTime(t)); } catch (e) { /* 不可 seek 的流 */ }
     }
   }
   function vpSaveResume(force) {
-    var v = vpV(), it = VP.items[VP.i];
-    if (!BE.on || !it || !it.path || !v.src || !isFinite(v.duration) || v.duration <= 0) return;
+    var v = vpV(), it = VP.items[VP.i], dur = vpDur();
+    if (!BE.on || !it || !(it.path || it.remotePath) || !v.src || !isFinite(dur) || dur <= 0) return;
     var now = Date.now();
     if (!force && now - VP.lastSave < 5000) return;
     VP.lastSave = now;
-    var ms = v.ended ? Math.floor(v.duration * 1000) : Math.floor(v.currentTime * 1000);
+    var ms = v.ended ? Math.floor(dur * 1000) : Math.floor(vpPos() * 1000);
     try {
-      fetch(apiPath('/api/videoresume', { path: it.path }), {
+      var who = it.path ? { path: it.path } : { remote: it.remotePath };
+      fetch(apiPath('/api/videoresume', who), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-        body: JSON.stringify({ path: it.path, ms: ms, length: Math.floor(v.duration * 1000) })
+        body: JSON.stringify(Object.assign({ ms: ms, length: Math.floor(dur * 1000) }, who))
       })['catch'](function () { /* 后端没了就算了，下次再记 */ });
     } catch (e) { /* ignore */ }
   }
@@ -5003,7 +5341,8 @@
   function vpSubRefresh() {
     var sel = $('#vpSubSel');
     sel.innerHTML = '<option value="-1">无字幕</option>' + VP.subs.map(function (s, i) {
-      return '<option value="' + i + '">' + esc(s.name) + '</option>';
+      var it = VP.items[VP.i];
+      return '<option value="' + i + '" title="' + esc(s.name) + '">' + esc(it && s.emb == null ? C.subLabel(it.name, s.name) : s.name) + '</option>';
     }).join('');
     sel.value = String(VP.subIdx);
   }
@@ -5020,25 +5359,44 @@
     tr.addEventListener('load', function () { try { tr.track.mode = 'showing'; } catch (e) { /* ignore */ } });
     try { tr.track.mode = 'showing'; } catch (e2) { /* ignore */ }
   }
-  function vpSubSelect(i) {
+  function vpFetchSub(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) {
+        return r.text().then(function (t) { var m = ''; try { m = JSON.parse(t).error || ''; } catch (e) { m = ''; } throw new Error(m || ('HTTP ' + r.status)); });
+      }
+      var n = parseInt(r.headers.get('Content-Length') || '0', 10);
+      if (n > C.SUB_MAX_BYTES) throw new Error('字幕文件太大（' + Math.round(n / 1024) + ' KB，上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）');
+      return r.arrayBuffer().then(function (b) {
+        if (b.byteLength > C.SUB_MAX_BYTES) throw new Error('字幕文件太大（上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）');
+        return b;
+      });
+    });
+  }
+  function vpSubSelect(i, auto) {
     var s = VP.subs[i], seq = VP.seq;
     VP.subIdx = s ? i : -1;
+    if (!auto) { VP.subChosen = true; vpSubRemember(s ? s.name : ''); }
     $('#vpSubSel').value = String(VP.subIdx);
     if (!s) { vpSubAttach(null); return Promise.resolve(); }
+    function fail(e) { if (seq === VP.seq) { toast('读取字幕「' + s.name + '」失败：' + ((e && e.message) || e)); } }
     function use(bytesOrText) {
       if (seq !== VP.seq) return;
       var text = typeof bytesOrText === 'string' ? bytesOrText : C.decodeSubtitle(new Uint8Array(bytesOrText));
-      var vtt = C.subtitleToVtt(text, s.name);
+      var vtt = C.subtitleToVtt(text, s.emb != null ? 'emb.vtt' : s.name);
       if (!/-->/.test(vtt)) { toast('字幕「' + s.name + '」里没有读到时间轴（不是有效的 srt / vtt / ass？）'); vpSubAttach(null); return; }
       vpSubAttach(vtt, s.name);
     }
     if (s.text != null) { use(s.text); return Promise.resolve(); }
-    if (s.url) return fetch(s.url).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
-    if (s.file) return s.file.arrayBuffer().then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
-    return fetch(apiPath('/api/subtitle', { path: s.remote, name: s.name })).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.arrayBuffer();
-    }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
+    if (s.emb != null) {                                   /* 内嵌文字字幕：后端用 ffmpeg 转成 WebVTT（转码流按起点偏移对时） */
+      var cur = VP.items[VP.i];
+      return vpFetchSub(apiPath('/api/media/subtitle', Object.assign(vpWho(cur), { stream: s.emb, start: VP.tc ? VP.tc.offset : 0 }))).then(use, fail);
+    }
+    if (s.url) return vpFetchSub(s.url).then(use, fail);
+    if (s.file) {
+      if (s.file.size > C.SUB_MAX_BYTES) { fail(new Error('字幕文件太大（上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）')); return Promise.resolve(); }
+      return s.file.arrayBuffer().then(use, fail);
+    }
+    return vpFetchSub(apiPath('/api/subtitle', { path: s.remote, name: s.name })).then(use, fail);
   }
   function vpSubAddFiles(files) {
     var added = -1;
@@ -5052,8 +5410,11 @@
 
   function vpClose() {
     var v = vpV();
+    vpLoadStop();
+    clearInterval(VP.silentT); clearTimeout(VP.seekT); vpNoteHide(); $('#vpInfo').classList.add('hidden');
     vpSaveResume(true);
     VP.seq++;
+    VP.tc = null; vpTcUi();
     try { v.pause(); } catch (e) { /* ignore */ }
     if (document.pictureInPictureElement) { try { document.exitPictureInPicture(); } catch (e2) { /* ignore */ } }
     v.removeAttribute('src'); v.load();
@@ -5063,6 +5424,8 @@
     document.title = '图片 / 漫画浏览器';
     VP.items = []; VP.i = -1;
     if (!pages.length) $('#start').classList.remove('hidden');
+    var ret = W.ret; W.ret = null;
+    if (ret && BE.on) wallRestore(ret);        /* 从海报墙 / 列表播放的：回到原来的目录视图 */
   }
   function vpStep(d) {
     var n = VP.i + d;
@@ -5075,8 +5438,8 @@
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'VIDEO') return;    /* 焦点在原生控件上：交给浏览器 */
     var v = vpV();
     if (e.key === ' ') { e.preventDefault(); if (v.paused) v.play(); else v.pause(); }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 5); }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 5); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); vpSeekTo((VP.seekPending != null && VP.tc ? VP.seekPending : vpPos()) - 5); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); vpSeekTo((VP.seekPending != null && VP.tc ? VP.seekPending : vpPos()) + 5); }
     else if (e.key === 'PageUp') { e.preventDefault(); vpStep(-1); }
     else if (e.key === 'PageDown') { e.preventDefault(); vpStep(1); }
   }
@@ -5132,6 +5495,164 @@
     });
   }
 
+
+  /* ================= ffmpeg 辅助：音轨无声提示 / 编码信息 / 实时转码播放 / 内嵌字幕 / 用 VLC 打开（可选，没装 ffmpeg 就不出现）=================
+     转码流是 fragmented MP4，没有真实时长也不能随便拖：这里自己画进度条，拖动 = 以新的起点重启转码流（-ss）；
+     续播点 / 已看都按「原文件时间 = 起点偏移 + currentTime」记在原文件的 key 下。 */
+  function vpFfOk() { return !!(BE.on && BE.caps && BE.caps.ffmpeg && BE.caps.ffmpeg.available); }
+  function vpWho(it) { return it.path ? { path: it.path } : { remote: it.remotePath }; }
+  function vpPos() { var v = vpV(); return (VP.tc ? VP.tc.offset : 0) + (v.currentTime || 0); }
+  function vpDur() { var v = vpV(); return VP.tc ? (VP.tc.duration || 0) : v.duration; }
+  function vpAudioDesc(a) { return String(a.codec || '?').toUpperCase() + (a.channels ? ' ' + (a.channels === 6 ? '5.1' : a.channels === 8 ? '7.1' : a.channels === 2 ? '2.0' : a.channels + 'ch') : ''); }
+  function vpInfoText(p) {
+    var bits = [];
+    if (p.container) bits.push(({ matroska: 'MKV', mov: 'MP4', mpegts: 'TS', mpeg: 'MPEG', asf: 'WMV', flv: 'FLV', avi: 'AVI', ogg: 'OGG' })[p.container] || p.container.toUpperCase());
+    if (p.video) bits.push(String(p.video.codec || '?').toUpperCase() + (p.video.bits > 8 ? ' ' + p.video.bits + 'bit' : '') + (p.video.width ? ' ' + p.video.width + '×' + p.video.height : ''));
+    if (p.audio.length) bits.push(p.audio.map(vpAudioDesc).slice(0, 3).join(' / '));
+    if (p.duration) bits.push(vpFmtTime(p.duration));
+    return bits.join(' · ');
+  }
+  function vpProbeLoad(it, seq) {
+    VP.probe = null; $('#vpInfo').classList.add('hidden');
+    if (!vpFfOk() || !(it.path || it.remotePath)) return;
+    apiJson('/api/media/probe', vpWho(it)).then(function (j) {
+      if (seq !== VP.seq) return;
+      VP.probe = j.probe;
+      var el = $('#vpInfo'), p = j.probe;
+      el.textContent = vpInfoText(p); el.title = p.reason + '（' + (p.action === 'direct' ? '可直接播放' : p.action) + '）';
+      el.classList.toggle('warn', p.action !== 'direct'); el.classList.remove('hidden');
+      vpEmbSubs(it, p);
+    })['catch'](function () { /* 探测失败不影响播放 */ });
+  }
+  function vpEmbSubs(it, p) {
+    var added = false;
+    (p.subtitles || []).forEach(function (s) {
+      if (!s.extractable) return;
+      if (VP.subs.some(function (x) { return x.emb === s.index; })) return;
+      VP.subs.push({ name: '内嵌 #' + (s.index + 1) + (s.language ? ' ' + s.language : '') + (s.title ? ' ' + s.title : '') + ' (' + s.codec + ')', emb: s.index });
+      added = true;
+    });
+    if (added) { vpSubRefresh(); vpSubAuto(VP.seq); }
+  }
+  function vpNoteHide() { $('#vpNote').classList.add('hidden'); }
+  function vpNoteShow(text, vlc, ff) {
+    $('#vpNoteText').textContent = text;
+    $('#vpNoteVlc').classList.toggle('hidden', !vlc);
+    $('#vpNoteFf').classList.toggle('hidden', !ff);
+    $('#vpNote').classList.remove('hidden');
+  }
+  /* 「有画面没声音」：真正在播（currentTime 在走、没静音、音量 > 0）满 silentSecs 秒后，Chrome 的已解码音频字节数仍是 0 */
+  function vpAudioSilent(v) {
+    if (typeof v.webkitAudioDecodedByteCount === 'number') return v.webkitAudioDecodedByteCount === 0;
+    if (v.mozHasAudio === false) return true;
+    return !!(v.audioTracks && v.audioTracks.length === 0);
+  }
+  function vpSilentWatch() {
+    clearInterval(VP.silentT); VP.silentN = 0; VP.silentLast = -1;
+    VP.silentT = setInterval(function () {
+      var v = vpV();
+      if (VP.tc || !v.getAttribute('src') || v.paused || v.ended || v.muted || v.volume === 0 || VP.noteShown) { VP.silentN = 0; VP.silentLast = v.currentTime; return; }
+      if (v.currentTime <= VP.silentLast) { VP.silentLast = v.currentTime; return; }      /* 没在走（缓冲 / seek）不算 */
+      VP.silentLast = v.currentTime; VP.silentN++;
+      if (VP.silentN < VP_LOAD.silentSecs) return;
+      clearInterval(VP.silentT);
+      if (!vpAudioSilent(v)) return;
+      var p = VP.probe;
+      if (p && !p.audio.length) return;                       /* 本来就没有音轨（默片）：不是问题 */
+      var codec = p && p.audio.length ? p.audio.filter(function (a) { return !a.browser_ok; })[0] : null;
+      VP.noteShown = true;
+      vpNoteShow(codec ? '这个视频的音轨（' + vpAudioDesc(codec) + '）浏览器无法解码，所以没有声音。'
+                       : '这个视频的音轨（可能是 AC3 / E-AC3 / DTS / TrueHD）浏览器无法解码，所以没有声音',
+                 !!(BE.on && BE.caps.vlc), vpFfOk());
+    }, 1000);
+  }
+  function vpTcUi() {
+    var tc = VP.tc, v = vpV();
+    $('#vpTc').classList.toggle('hidden', !tc);
+    v.controls = !tc;
+    if (!tc) return;
+    var sk = $('#vpTcSeek');
+    sk.max = String(Math.max(1, Math.floor(tc.duration || 1)));
+    $('#vpTcStereo').textContent = '立体声混音：' + (tc.stereo ? '开' : '关');
+    var sel = $('#vpTcAudio'), p = VP.probe;
+    sel.innerHTML = (p ? p.audio : []).map(function (a) { return '<option value="' + a.index + '">' + esc(vpAudioDesc(a) + (a.language ? ' · ' + a.language : '') + (a.title ? ' · ' + a.title : '')) + '</option>'; }).join('');
+    sel.value = String(tc.audio);
+    vpTcTick();
+  }
+  function vpTcTick() {
+    var tc = VP.tc; if (!tc) return;
+    var pos = vpPos();
+    if (!VP.tcDrag) $('#vpTcSeek').value = String(Math.floor(pos));
+    $('#vpTcTime').textContent = vpFmtTime(pos) + ' / ' + vpFmtTime(tc.duration || 0);
+  }
+  /** 开始 / 重启转码流：startSec = 原文件时间轴上的起点；mode 由后端按探测结果决定（auto） */
+  function vpTcStart(startSec, audioIdx, keepNote) {
+    var it = VP.items[VP.i], v = vpV();
+    if (!vpFfOk() || !it || !(it.path || it.remotePath)) return Promise.resolve();
+    var seq = VP.seq;
+    var go = function (p) {
+      if (seq !== VP.seq) return;
+      var st = Math.max(0, Math.min(startSec || 0, Math.max(0, (p.duration || 0) - 1)));
+      var audio = audioIdx != null ? audioIdx : (VP.tc ? VP.tc.audio : p.audio_index);
+      var stereo = VP.tc ? VP.tc.stereo : !!VP.tcStereo;
+      VP.tc = { offset: st, audio: audio, duration: p.duration, stereo: stereo };
+      if (!keepNote) vpNoteHide();
+      vpTcUi();
+      v.src = apiPath('/api/media/stream', Object.assign(vpWho(it), { mode: 'auto', audio: audio, start: st, stereo: stereo ? 1 : 0 }));
+      v.playbackRate = vpPrefs.rate || 1;
+      VP.metaReady = false; vpLoadStop(); vpLoadStart('load');
+      var pr = v.play(); if (pr && pr['catch']) pr['catch'](function () {});
+      var sub = VP.subs[VP.subIdx];
+      if (sub && sub.emb != null) vpSubSelect(VP.subIdx, true);                /* 内嵌字幕按新起点重新对时 */
+      if (p.action === 'transcode_video' && !VP.heavyShown) { VP.heavyShown = true; toast('这个视频的画面编码（' + String(p.video.codec).toUpperCase() + '）浏览器解不了，正在实时转成 H.264：比较耗 CPU / 显卡，请耐心等待'); }
+    };
+    if (VP.probe) { go(VP.probe); return Promise.resolve(); }
+    return apiJson('/api/media/probe', vpWho(it)).then(function (j) { VP.probe = j.probe; go(j.probe); },
+      function (e) { toast('ffmpeg 探测失败：' + ((e && e.message) || e)); });
+  }
+  function vpTcStop() {
+    var it = VP.items[VP.i], v = vpV(); if (!VP.tc || !it) return;
+    var pos = vpPos();
+    VP.tc = null; vpTcUi();
+    v.src = it.url; VP.resumeMs = Math.floor(pos * 1000);
+    VP.metaReady = false; vpLoadStop(); vpLoadStart('load');
+    var pr = v.play(); if (pr && pr['catch']) pr['catch'](function () {});
+  }
+  function vpSeekTo(sec) {
+    if (VP.tc) {                                          /* 转码流：去抖后以新起点重启 */
+      clearTimeout(VP.seekT);
+      VP.seekPending = Math.max(0, Math.min(sec, (VP.tc.duration || 1e9) - 1));
+      $('#vpTcTime').textContent = vpFmtTime(VP.seekPending) + ' / ' + vpFmtTime(VP.tc.duration || 0);
+      VP.seekT = setTimeout(function () { vpTcStart(VP.seekPending); }, 300);
+    } else { var v = vpV(); v.currentTime = Math.max(0, Math.min(v.duration || 1e9, sec)); }
+  }
+  function vpOpenVlc() {
+    var it = VP.items[VP.i]; if (!it || !(it.path || it.remotePath)) return;
+    apiJson('/api/open-external', null, 'POST', vpWho(it)).then(function () { toast('已交给 VLC 打开（这里的播放可以关了）'); },
+      function (e) { toast('用 VLC 打开失败：' + ((e && e.message) || e)); });
+  }
+  (function wireFf() {
+    var v = vpV();
+    $('#vpNoteX').addEventListener('click', vpNoteHide);
+    $('#vpNoteVlc').addEventListener('click', vpOpenVlc);
+    $('#vpNoteFf').addEventListener('click', function () { vpTcStart(vpPos(), null); });
+    $('#vpTcPlay').addEventListener('click', function () { if (v.paused) v.play(); else v.pause(); });
+    var sk = $('#vpTcSeek');
+    sk.addEventListener('input', function () { VP.tcDrag = true; $('#vpTcTime').textContent = vpFmtTime(+sk.value) + ' / ' + vpFmtTime(VP.tc ? VP.tc.duration : 0); });
+    sk.addEventListener('change', function () { VP.tcDrag = false; vpSeekTo(+sk.value); });
+    $('#vpTcAudio').addEventListener('change', function () { vpTcStart(vpPos(), +this.value); });
+    $('#vpTcStereo').addEventListener('click', function () { if (VP.tc) { VP.tc.stereo = !VP.tc.stereo; VP.tcStereo = VP.tc.stereo; vpTcStart(vpPos(), VP.tc.audio, true); } });
+    $('#vpTcOff').addEventListener('click', vpTcStop);
+    v.addEventListener('timeupdate', vpTcTick);
+    v.addEventListener('playing', vpSilentWatch);
+    v.addEventListener('error', function () {
+      if (!VP.tc) return;
+      vpLoadStop();
+      vpMsg('转码流没能播放：可能是 ffmpeg 打不开这个文件、同时转码的任务太多（上限 ' + 2 + ' 个），或后端已重启。可点「退出转码」回到直接播放，或用 VLC 打开。', false);
+      $('#vpMsg').classList.remove('hidden');
+    });
+  })();
+
   (function wireVideo() {
     var v = vpV();
     $('#vpClose').addEventListener('click', vpClose);
@@ -5155,8 +5676,12 @@
       var it = VP.items[VP.i]; if (!it) return;
       VP.tryAnyway = true; vpMsg(''); vpSetSrc(it);
     });
-    v.addEventListener('loadedmetadata', function () { vpMsg(''); vpApplyResume(); });
-    v.addEventListener('playing', function () { vpMsg(''); });
+    v.addEventListener('loadedmetadata', function () { VP.metaReady = true; $('#vpLoadHint').textContent = ''; vpMsg(''); vpApplyResume(); });
+    $('#vpLoadTry').addEventListener('click', function () { var pr = v.play(); if (pr && pr['catch']) pr['catch'](function () {}); });   /* 不重新加载，只是催一下播放 */
+    v.addEventListener('canplay', function () { vpLoadStop(); });
+    v.addEventListener('playing', function () { vpMsg(''); vpLoadStop(); });
+    v.addEventListener('waiting', function () { if (v.getAttribute('src') && !v.error) vpLoadStart('buffer'); });
+    v.addEventListener('stalled', function () { if (v.getAttribute('src') && !v.error && v.readyState < 3) vpLoadStart('buffer'); });
     v.addEventListener('timeupdate', function () { vpSaveResume(false); });
     v.addEventListener('pause', function () { vpSaveResume(true); });
     v.addEventListener('ended', function () {
@@ -5166,6 +5691,8 @@
     v.addEventListener('error', function () {
       var it = VP.items[VP.i];
       if (!it || !v.getAttribute('src')) return;
+      vpLoadStop();
+      if (VP.tc) return;                                   /* 转码流的错误由 wireFf 的处理器给提示 */                                        /* 真正的 error 事件才算失败 */
       vpMsg(C.videoErrorMessage(v.error, it.name), false);
     });
     document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden' && vpOpen()) vpSaveResume(true); });
@@ -5911,6 +6438,14 @@
     var url = $('#rcUrl').value.trim(), btn = this;
     if (!url) { $('#rcMsg').textContent = '请填 WebDAV 地址'; return; }
     if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    var risk = C.plainHttpRisk(url);
+    if (risk.warn && rcArmed !== url) {                  /* 明文 HTTP + 公网地址：要二次确认 */
+      rcArmed = url;
+      $('#rcMsg').textContent = '⚠ 「' + risk.host + '」看起来是公网地址，而你填的是 http://（不加密）：用户名和密码会在互联网上明文传输，可能被截获。' +
+        '请确认地址没填错（内网地址形如 192.168.x.x）；确实要连请再点一次「仍然连接」，或改用 https://。';
+      btn.textContent = '仍然连接';
+      return;
+    }
     btn.disabled = true; $('#rcMsg').textContent = '正在连接…';
     apiJson('/api/remote/config', null, 'POST', { base_url: url, username: $('#rcUser').value.trim(), password: $('#rcPass').value }).then(function () {
       $('#rcPass').value = '';
@@ -5922,8 +6457,10 @@
       var hint = /404|Not Found/i.test(m) ? '（地址对吗？AList 要带 /dav，例如 http://主机:5244/dav）'
         : /401|Unauthorized/i.test(m) ? '（用户名或密码不对？AList 需要在「用户」里开启 WebDAV 读取权限）' : '';
       $('#rcMsg').textContent = '连接失败：' + m + hint;
-    }).then(function () { btn.disabled = false; });
+    }).then(function () { btn.disabled = false; rcArmed = ''; btn.textContent = '连接'; });
   });
+  var rcArmed = '';
+  $('#rcUrl').addEventListener('input', function () { rcArmed = ''; $('#rcConnect').textContent = '连接'; });
   $('#rcPass').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#rcConnect').click(); } });
   $('#rcDisconnect').addEventListener('click', function () {
     apiJson('/api/remote/disconnect', null, 'POST', {}).then(function () {
@@ -5945,6 +6482,623 @@
     if (r && (r.dir || r.kind === 'up')) { browseTo(r.path); return; }
     browseOpenSel();
   });
+
+  /* ================= 海报墙 / 媒体刮削（TMDB，仅后端模式）=================
+     令牌只在后端读环境变量 TMDB_TOKEN；本页从不输入、不保存、不显示令牌，只看 /api/scrape/status 的 true/false。
+     列表页只调 /api/scrape/peek（解析文件名 + 读缓存，不联网）；可见的卡片再逐个 /api/scrape/match（后端节流）。 */
+  var LS_WALL = 'iv.wall.v1', LS_PLAYED = 'iv.scrape.played.v1';   /* LS_PLAYED 只用于一次性迁移 */
+  var W = { on: false, rows: [], all: [], dirRows: {}, sub: true, ret: null, remote: false, cards: [], byId: {}, seq: 0, q: [], running: 0, fails: 0,
+            tokenState: 'unknown', noticeKind: '', stop: '', jobId: '', jobTimer: 0, io: null, purgeArm: 0 };
+  var wallPrefs = lsGet(LS_WALL, null) || {};
+  function wallReq(r) { return W.remote ? { remote: r.path } : { path: r.path }; }
+  function isWatched(f) { return !!f.peek.watched; }
+  function wallDirOf(p) { return String(p).replace(/[\\/][^\\/]*$/, ''); }
+  /* 一次性迁移：旧版本把「已看」记在浏览器 localStorage（只含本机路径），现在统一进后端 _video_watched_ */
+  function wallMigratePlayed() {
+    var m = lsGet(LS_PLAYED, null);
+    if (!m || !BE.on) return;
+    try { localStorage.removeItem(LS_PLAYED); } catch (e) { /* ignore */ }
+    Object.keys(m).filter(function (k) { return k.indexOf('l:') === 0; }).slice(0, 300).forEach(function (k) {
+      apiJson('/api/videoresume', null, 'PUT', { path: k.slice(2), watched: true })['catch'](function () {});
+    });
+  }
+  function wallSetWatched(files, flag) {
+    return Promise.all(files.map(function (f) {
+      return apiJson('/api/videoresume', null, 'PUT', Object.assign(wallReq(f.row), { watched: flag })).then(function (j) {
+        f.peek.watched = !!j.watched;
+      });
+    }));
+  }
+  function wallFmt(ms) { return vpFmtTime(ms / 1000); }
+  function wallImg(p, size) { return p ? apiPath('/api/scrape/image', { p: p, size: size || 'w342' }) : ''; }
+
+  function wallSetView(on) {
+    W.on = !!on;
+    $('#browse').classList.toggle('wall-on', W.on);
+    $('#viewWall').classList.toggle('on', W.on);
+    $('#viewList').classList.toggle('on', !W.on);
+    wallPrefs.view = W.on ? 'wall' : 'list'; lsSet(LS_WALL, wallPrefs);
+    if (W.on) wallLoad(); else wallStopAll();
+  }
+  /* 从海报墙 / 详情页 / 列表播放视频前记下视图；播放器关闭时（vpClose）回到同一个目录、模式、排序、筛选、滚动位置 */
+  function wallRemember(detailId) {
+    var list = $('#browseList'), sel = list.querySelector('.brow-item.sel');
+    W.ret = { path: browsePath, remote: browseRemote, wall: W.on, filter: $('#wallFilter').value, sort: $('#wallSort').value,
+              scroll: $('#wallGrid').scrollTop, listScroll: list.scrollTop, sel: sel ? +sel.dataset.i : -1,
+              detail: detailId || '', season: D.season, sub: W.sub };
+  }
+  function wallRestore(ret) {
+    browseRemote = !!ret.remote;
+    $('#browseCloud').classList.toggle('on', browseRemote);
+    W.sub = ret.sub !== false;
+    W.on = !!ret.wall;
+    $('#browse').classList.toggle('wall-on', W.on);
+    $('#viewWall').classList.toggle('on', W.on);
+    $('#viewList').classList.toggle('on', !W.on);
+    $('#wallFilter').value = ret.filter || '';
+    $('#wallSort').value = ret.sort || 'name';
+    W.pending = ret;
+    toggleModal('browse', true);
+    browseTo(ret.path).then(function () {
+      if (W.on) return;                                     // 海报墙：wallLoad 渲染完会走 wallAfterRender
+      var list = $('#browseList');
+      list.scrollTop = ret.listScroll || 0;
+      var it = ret.sel >= 0 ? list.querySelector('.brow-item[data-i="' + ret.sel + '"]') : null;
+      if (it) it.classList.add('sel');
+      W.pending = null;
+    });
+  }
+  function wallAfterRender() {
+    var ret = W.pending; if (!ret) return;
+    W.pending = null;
+    $('#wallGrid').scrollTop = ret.scroll || 0;
+    if (ret.detail && W.byId[ret.detail]) {
+      wallOpenDetail(W.byId[ret.detail]);
+      if (ret.season !== undefined && D.seasons.indexOf(ret.season) >= 0) { D.season = ret.season; D.seq++; wallDetailLoad(); }
+    }
+  }
+  function wallStopAll() { W.seq++; W.q = []; if (W.io) { W.io.disconnect(); W.io = null; } }
+
+  function wallNotice(html, kind) {
+    var n = $('#wallNotice');
+    n.innerHTML = html || '';
+    n.classList.toggle('on', !!html);
+    W.noticeKind = html ? (kind || '') : '';
+  }
+  /* 令牌状态只有三个来源：成功的 /api/scrape/status（token_configured 严格 === true / false）、
+     后端对某次 match 明确回的 no_token / bad_token。加载中、状态读取失败、TMDB 暂时 5xx / 超时 一律是 unknown / 不改状态，
+     绝不显示「未配置令牌」。 */
+  function wallSetToken(state, extra) {
+    W.tokenState = state;
+    if (state === 'missing') wallNotice(NOTICE_NO_TOKEN + (extra || ''), 'token');
+    else if (state === 'invalid') wallNotice(NOTICE_BAD_TOKEN, 'token');
+    else if (W.noticeKind === 'token') wallNotice('');
+  }
+  var NOTICE_NO_TOKEN =
+    '<b>还没有配置 TMDB 令牌</b>，现在只能按文件名显示标题，没有海报和简介。<br>' +
+    '配置方法（令牌只放环境变量，本页不会也不应该输入令牌；用 TMDB 的 “API Read Access Token”）：<br>' +
+    '① 在 PowerShell 里执行（写成用户级环境变量，一次即可）：<br>' +
+    '<code>[Environment]::SetEnvironmentVariable(\'TMDB_TOKEN\',\'你的令牌\',\'User\')</code><br>' +
+    '② 关闭并重新启动后端（启动网页版.bat / python web_backend.py），再回到这里点「海报墙」。<br>' +
+    '只想临时试用：<code>$env:TMDB_TOKEN=\'你的令牌\'; python web_backend.py</code>';
+
+  var NOTICE_CACHE_HINT = '<br><b>注意</b>：下面能看到的海报 / 标题来自<b>本机缓存</b>（以前刮削过的），后端这次没读到令牌，所以新文件不会再刮削。';
+  var NOTICE_BAD_TOKEN = '<b>TMDB 令牌无效（401）</b>：后端读到了 TMDB_TOKEN，但 TMDB 不认。请确认它是 “API Read Access Token”（不是 API Key），改好后重启后端。';
+
+  var WALL_MAX_DIRS = 60, WALL_MAX_VIDEOS = 500;
+  /* 当前目录的视频 +（可选）往下最多两层子目录里的视频：Show/Season 1、Show S02、第二季 这类分季目录合到同一张剧集卡 */
+  function wallCollect(direct, entries, seq) {
+    W.dirRows = {}; W.dirRows[browsePath] = entries;
+    if (!W.sub) return Promise.resolve(direct);
+    var out = direct.slice(), calls = 0, truncated = false;
+    var isDir = function (r) { return r.dir || r.kind === 'dir'; };
+    var level1 = entries.filter(isDir);
+    var listDir = function (d) {
+      calls++;
+      var req = W.remote ? apiJson('/api/remote/ls', { path: d.path }) : apiJson('/api/ls', { path: d.path, recursive: '0' });
+      return req.then(function (j) {
+        var es = (j.entries || []).map(function (e) { return { rel: e.rel, name: e.name, kind: e.kind, path: e.path, size: e.size, dir: e.kind === 'dir' }; });
+        W.dirRows[d.path] = es;
+        return es;
+      }, function () { return []; });
+    };
+    var pool = function (dirs, depth) {
+      var next = [], idx = 0;
+      var worker = function () {
+        if (seq !== W.seq || idx >= dirs.length) return Promise.resolve();
+        if (calls >= WALL_MAX_DIRS) { truncated = true; return Promise.resolve(); }
+        var d = dirs[idx++];
+        return listDir(d).then(function (es) {
+          es.forEach(function (e) {
+            if (e.kind === 'video' && out.length < WALL_MAX_VIDEOS) out.push(e);
+            else if (isDir(e) && depth < 2) next.push(e);
+          });
+          return worker();
+        });
+      };
+      return Promise.all([worker(), worker(), worker(), worker()]).then(function () {
+        return next.length && depth < 2 && seq === W.seq ? pool(next, depth + 1) : null;
+      });
+    };
+    return pool(level1, 1).then(function () { W.truncated = truncated; return out; });
+  }
+
+  function wallLoad() {
+    var list = $('#browseList');
+    var entries = list._rows || [];
+    var rows = entries.filter(function (r) { return r.kind === 'video'; });
+    var seq = ++W.seq;
+    W.rows = rows; W.remote = browseRemote; W.q = []; W.running = 0; W.fails = 0; W.stop = ''; W.truncated = false;
+    W.tokenState = 'unknown'; wallNotice('');                 /* 状态读回来之前什么都不报 */
+    $('#wallStats').textContent = '刮削：检查中…';
+    wallStats();
+    if (W.io) { W.io.disconnect(); W.io = null; }
+    var grid = $('#wallGrid');
+    $('#wallSub').checked = W.sub;
+    grid.innerHTML = '<div class="wall-empty">读取中…</div>';
+    wallCollect(rows, entries, seq).then(function (all) {
+      if (seq !== W.seq) return null;
+      W.all = all;
+      if (!all.length) { grid.innerHTML = '<div class="wall-empty">这个目录里没有视频' + (W.sub ? '（含两层子目录）' : '') + '。换到有视频的目录，或切回「列表」。</div>'; return null; }
+      return apiJson('/api/scrape/peek', null, 'POST', { items: all.slice(0, WALL_MAX_VIDEOS).map(wallReq) });
+    }).then(function (j) {
+      if (!j || seq !== W.seq) return;
+      wallBuild(j.items || []);
+      wallRender();
+      if (W.truncated) $('#wallStats').textContent += ' · 子目录太多，只扫描了前 ' + WALL_MAX_DIRS + ' 个';
+      wallAfterRender();
+      wallMigratePlayed();
+    })['catch'](function (e) {
+      if (seq !== W.seq) return;
+      grid.innerHTML = '<div class="wall-empty">读取失败：' + esc((e && e.message) || e) + '</div>';
+    });
+  }
+
+  function wallBuild(items) {
+    var map = {}, cards = [];
+    W.all.slice(0, WALL_MAX_VIDEOS).forEach(function (r, i) {
+      var p = items[i];
+      if (!p || p.error) return;
+      var c0 = (p.parsed.title_candidates || [])[0] || r.name.replace(/\.[^.]+$/, '');
+      var ep = p.parsed.kind === 'episode';
+      var ign = !!(p.item && p.item.status === 'ignored');          /* 用户标记「不是影视」：当普通文件卡显示，不再刮削 */
+      if (ign) { ep = false; c0 = r.name; }
+      var id = ign ? 'i:' + r.path : ep ? 's:' + (p.group_key || ('t:' + c0.toLowerCase())) : 'm:' + r.path;
+      var c = map[id];
+      if (!c) { c = map[id] = { id: id, type: ep ? 'series' : 'movie', files: [], title: c0, year: ign ? null : p.parsed.year, item: null, ignored: ign }; cards.push(c); }
+      c.files.push({ row: r, peek: p });
+      if (p.item && (!c.item || p.item.status === 'pinned')) c.item = p.item;
+    });
+    cards = wallMergeByTmdb(cards);
+    cards.forEach(function (c) {
+      c.files.sort(function (a, b) {
+        var sa = a.peek.parsed.season == null ? 0 : a.peek.parsed.season, sb = b.peek.parsed.season == null ? 0 : b.peek.parsed.season;
+        if (sa !== sb) return sa - sb;
+        var ea = a.peek.parsed.episode == null ? 1e9 : a.peek.parsed.episode, eb = b.peek.parsed.episode == null ? 1e9 : b.peek.parsed.episode;
+        return ea - eb || (a.row.name < b.row.name ? -1 : 1);
+      });
+    });
+    W.cards = cards; W.byId = {};
+    cards.forEach(function (c) { W.byId[c.id] = c; (c.mergedFrom || []).forEach(function (x) { W.byId[x] = c; }); });
+  }
+
+  /* 同一部剧分散在多个目录（Show/Season 1、Show S02、第二季…）：按 TMDB id 合成一张卡（含缓存 / 锁定的结果） */
+  function mergeKeyOf(c) {
+    var m = c.item && c.item.media;
+    return m && m.media_type === 'tv' && m.tmdb_id ? 'tv:' + m.tmdb_id : '';
+  }
+  function wallMergeByTmdb(cards) {
+    var by = {}, out = [];
+    cards.forEach(function (c) {
+      var k = c.type === 'series' ? mergeKeyOf(c) : '';
+      if (!k) { out.push(c); return; }
+      var base = by[k];
+      if (!base) { by[k] = c; out.push(c); return; }
+      base.files = base.files.concat(c.files);
+      base.mergedFrom = (base.mergedFrom || [base.id]).concat([c.id]);
+      if (c.item && c.item.status === 'pinned') base.item = c.item;
+    });
+    return out;
+  }
+  function wallRemerge() {
+    var before = W.cards.length;
+    W.cards = wallMergeByTmdb(W.cards);
+    if (W.cards.length === before) return false;
+    W.byId = {};
+    W.cards.forEach(function (c) { W.byId[c.id] = c; (c.mergedFrom || []).forEach(function (x) { W.byId[x] = c; }); });
+    W.cards.forEach(function (c) {
+      c.files.sort(function (a, b) {
+        var sa = a.peek.parsed.season == null ? 0 : a.peek.parsed.season, sb = b.peek.parsed.season == null ? 0 : b.peek.parsed.season;
+        if (sa !== sb) return sa - sb;
+        var ea = a.peek.parsed.episode == null ? 1e9 : a.peek.parsed.episode, eb = b.peek.parsed.episode == null ? 1e9 : b.peek.parsed.episode;
+        return ea - eb || (a.row.name < b.row.name ? -1 : 1);
+      });
+    });
+    return true;
+  }
+
+  function cardInfo(c) {
+    var m = c.item && c.item.media;
+    return { title: (m && m.title) || c.title, en: m && m.title_en && m.title_en !== m.title ? m.title_en : '',
+             year: (m && m.year) || (c.year ? String(c.year) : ''), rating: m ? +m.vote_average || 0 : 0,
+             poster: m ? m.poster_path : '' };
+  }
+  function wallMark(c) {
+    var played = 0, resume = 0;
+    c.files.forEach(function (f) {
+      if (isWatched(f)) played++;
+      if (f.peek.resume_ms > 0) resume = resume || f.peek.resume_ms;
+    });
+    /* 剧集：只有所有可见的集都已看才算「已看」；否则显示 n/N */
+    if (c.type === 'movie') return resume ? '<span class="wc-mark">▶ ' + wallFmt(resume) + '</span>' : (played ? '<span class="wc-mark done">✓ 已看</span>' : '');
+    if (played === c.files.length) return '<span class="wc-mark done">✓ 已看完</span>';
+    if (resume) return '<span class="wc-mark">▶ 继续</span>';
+    return played ? '<span class="wc-mark">✓ ' + played + '/' + c.files.length + '</span>' : '';
+  }
+  function wallCardHtml(c) {
+    var f = cardInfo(c);
+    var st = c.item ? c.item.status : '';
+    var badge = c.ignored ? '<span class="wc-badge b-ign">已忽略</span>' : st === 'needs_review' ? '<span class="wc-badge b-review">待确认</span>' :
+      st === 'unmatched' ? '<span class="wc-badge b-none">未匹配</span>' :
+      st === 'pinned' ? '<span class="wc-badge b-pin">📌</span>' : '';
+    var poster = f.poster && !c.ignored ? '<img alt="" data-src="' + esc(wallImg(f.poster)) + '">' : '';
+    var ph = f.poster ? '' : esc(f.title);
+    return '<div class="wc" data-id="' + esc(c.id) + '" title="' + esc(f.title + (f.en ? ' / ' + f.en : '')) + '">' +
+      '<div class="wc-poster">' + ph + poster + badge +
+      (c.type === 'series' ? '<span class="wc-cnt">' + c.files.length + ' 集</span>' : '') + wallMark(c) + '</div>' +
+      '<div class="wc-title">' + esc(f.title) + '</div>' +
+      '<div class="wc-sub">' + esc([f.year, f.rating ? '★' + f.rating.toFixed(1) : '', c.type === 'series' ? '剧集' : ''].filter(Boolean).join(' · ')) + '</div></div>';
+  }
+  function wallRender() {
+    var grid = $('#wallGrid');
+    var q = ($('#wallFilter').value || '').trim().toLowerCase();
+    var sort = $('#wallSort').value;
+    var cards = W.cards.filter(function (c) {
+      if (!q) return true;
+      var f = cardInfo(c);
+      return (f.title + ' ' + f.en + ' ' + c.title + ' ' + c.files.map(function (x) { return x.row.name; }).join(' ')).toLowerCase().indexOf(q) >= 0;
+    });
+    cards.sort(function (a, b) {
+      var fa = cardInfo(a), fb = cardInfo(b);
+      if (sort === 'year') return (+fb.year || 0) - (+fa.year || 0) || (fa.title < fb.title ? -1 : 1);
+      if (sort === 'rating') return fb.rating - fa.rating || (fa.title < fb.title ? -1 : 1);
+      return fa.title.localeCompare(fb.title, 'zh-Hans-CN', { numeric: true });
+    });
+    if (W.io) { W.io.disconnect(); W.io = null; }
+    grid.innerHTML = cards.length ? cards.map(wallCardHtml).join('') : '<div class="wall-empty">没有符合的条目</div>';
+    wallObserve();
+  }
+  function wallObserve() {
+    var els = Array.prototype.slice.call($('#wallGrid').querySelectorAll('.wc'));
+    var seq = W.seq;
+    var visit = function (el) {
+      var c = W.byId[el.dataset.id]; if (!c) return;
+      var img = el.querySelector('img[data-src]');
+      if (img) { img.src = img.dataset.src; img.removeAttribute('data-src'); }
+      if (!c.item) wallQueue(c);
+    };
+    if (typeof IntersectionObserver === 'undefined') { els.forEach(visit); return; }
+    W.io = new IntersectionObserver(function (ents) {
+      if (seq !== W.seq) return;
+      ents.forEach(function (en) { if (en.isIntersecting) { W.io.unobserve(en.target); visit(en.target); } });
+    }, { root: $('#wallGrid'), rootMargin: '120px' });
+    els.forEach(function (el) { W.io.observe(el); });
+  }
+  function wallQueue(c) {
+    if (c.queued || c.item || W.tokenState === 'missing' || W.tokenState === 'invalid' || W.stop) return;
+    c.queued = true; W.q.push(c); wallPump();
+  }
+  function wallPump() {
+    var seq = W.seq;
+    while (W.running < 2 && W.q.length && !W.stop) {
+      (function (c) {
+        W.running++;
+        apiJson('/api/scrape/match', null, 'POST', wallReq(c.files[0].row)).then(function (j) {
+          if (seq !== W.seq) return;
+          W.fails = 0; c.item = j.item; c.full = j.item;
+          if (wallRemerge()) { var sc = $('#wallGrid').scrollTop; wallRender(); $('#wallGrid').scrollTop = sc; }
+          else wallRefreshCard(c);
+        }, function (e) {
+          if (seq !== W.seq) return;
+          c.queued = false;
+          var msg = (e && e.message) || String(e);
+          if (e && e.code === 'bad_token') { W.stop = 'bad_token'; wallSetToken('invalid'); }
+          else if (e && e.code === 'no_token') { W.stop = 'no_token'; wallSetToken('missing'); }
+          else if (++W.fails >= 3) { W.stop = 'net'; wallNotice('<b>TMDB 暂时不可用</b>（' + esc(msg) + '）。这不是令牌问题；网络 / 代理恢复后点「刮削当前目录」重试，已有的资料不受影响。', 'net'); }
+        }).then(function () { if (seq === W.seq) { W.running--; wallPump(); } });
+      })(W.q.shift());
+    }
+  }
+  function wallRefreshCard(c) {
+    var el = $('#wallGrid').querySelector('.wc[data-id="' + (window.CSS && CSS.escape ? CSS.escape(c.id) : c.id) + '"]');
+    if (!el) return;
+    var tmp = document.createElement('div');
+    tmp.innerHTML = wallCardHtml(c);
+    var neu = tmp.firstChild;
+    el.parentNode.replaceChild(neu, el);
+    var img = neu.querySelector('img[data-src]');
+    if (img) { img.src = img.dataset.src; img.removeAttribute('data-src'); }
+  }
+
+  /* ---- 状态行 / 清缓存 ---- */
+  function wallStats() {
+    apiJson('/api/scrape/status').then(function (s) {
+      var mb = (s.image_bytes / 1048576).toFixed(1);
+      var tk = s.token_configured === true ? '已配置令牌' : s.token_configured === false ? '未配置令牌' : '令牌状态未知';
+      if (s.token_configured === true) { if (W.tokenState !== 'invalid') wallSetToken('ok'); }
+      else if (s.token_configured === false) wallSetToken('missing', (s.cached_responses || s.matches || s.images) ? NOTICE_CACHE_HINT : '');
+      $('#wallStats').textContent = '刮削：' + tk + ' · 缓存 ' + s.cached_responses +
+        ' 条响应 / ' + s.images + ' 张图（' + mb + ' MB）· 手动锁定 ' + s.pins + ' · 缓存保留 ' + s.ttl_days + ' 天';
+    }, function (e) { $('#wallStats').textContent = '刮削：状态暂时读不到（' + ((e && e.message) || e) + '），不影响浏览'; });
+  }
+  function wallPurge() {
+    var b = $('#wallPurge');
+    if (!W.purgeArm) {
+      W.purgeArm = setTimeout(function () { W.purgeArm = 0; b.textContent = '清缓存'; }, 4000);
+      b.textContent = '再点一次确认清除';
+      return;
+    }
+    clearTimeout(W.purgeArm); W.purgeArm = 0; b.textContent = '清缓存';
+    apiJson('/api/scrape/purge', null, 'POST', { all: true }).then(function (j) {
+      toast('已清除缓存：' + j.removed.responses + ' 条响应、' + j.removed.images + ' 张图');
+      if (W.on) wallLoad();
+    }, function (e) { toast('清除失败：' + ((e && e.message) || e)); });
+  }
+
+  /* ---- 刮削当前目录（只这一层，不递归）---- */
+  function wallScan() {
+    if (W.tokenState === 'missing') { wallSetToken('missing'); return; }
+    if (W.tokenState === 'invalid') { wallSetToken('invalid'); return; }
+    if (W.jobId) return;
+    var items = W.rows.slice(0, 2000).map(wallReq);      /* 只刮当前这一层（W.rows = 当前目录自己的视频，不含子目录） */
+    if (!items.length) { toast('当前目录没有视频'); return; }
+    apiJson('/api/scrape/scan', null, 'POST', { items: items }).then(function (j) {
+      W.jobId = j.job.id; $('#wallProg').classList.add('on'); $('#wallScan').disabled = true;
+      wallPoll();
+    }, function (e) {
+      if (e && e.code === 'no_token') wallSetToken('missing'); else toast('无法开始刮削：' + ((e && e.message) || e));
+    });
+  }
+  function wallPoll() {
+    var id = W.jobId; if (!id) return;
+    apiJson('/api/scrape/job', { id: id }).then(function (j) {
+      var job = j.job;
+      var pct = job.total ? Math.round(job.done * 100 / job.total) : 0;
+      $('#wallProgText').textContent = (job.state === 'running' ? '刮削中 ' : '已结束 ') + job.done + '/' + job.total + ' · 已匹配 ' + job.matched +
+        ' · 待确认 ' + job.needs_review + ' · 未匹配 ' + job.unmatched + (job.ignored ? ' · 已忽略 ' + job.ignored : '') + ' · 失败 ' + job.failed;
+      $('#wallProgBar').style.width = pct + '%';
+      if (job.state === 'running') { W.jobTimer = setTimeout(wallPoll, 700); return; }
+      W.jobId = ''; $('#wallScan').disabled = false;
+      if (job.last_error && job.failed) wallNotice('<b>部分条目刮削失败</b>：' + esc(job.last_error));
+      setTimeout(function () { $('#wallProg').classList.remove('on'); }, 2500);
+      if (W.on) { var keepNotice = job.failed ? $('#wallNotice').innerHTML : ''; wallLoad(); if (keepNotice) setTimeout(function () { wallNotice(keepNotice); }, 300); }
+    }, function (e) { W.jobId = ''; $('#wallScan').disabled = false; $('#wallProgText').textContent = '进度读取失败：' + ((e && e.message) || e); });
+  }
+  function wallCancel() {
+    if (!W.jobId) return;
+    apiJson('/api/scrape/cancel', null, 'POST', { id: W.jobId })['catch'](function () {});
+  }
+
+  /* ---- 详情页 ---- */
+  var D = { card: null, season: null, files: [], seq: 0, full: null };
+  function seasonOf(f) { return f.peek.parsed.season; }
+  function wallOpenDetail(c) {
+    D.card = c; D.seq++;
+    var seasons = [];
+    c.files.forEach(function (f) { var s = seasonOf(f); if (seasons.indexOf(s) < 0) seasons.push(s); });
+    seasons.sort(function (a, b) { return (a == null ? 99 : a) - (b == null ? 99 : b); });
+    D.seasons = seasons;
+    D.season = seasons.length ? seasons[0] : null;
+    toggleModal('scrDetail', true);
+    wallDetailLoad();
+  }
+  function seasonFiles() {
+    return D.card.files.filter(function (f) { return D.card.type !== 'series' || seasonOf(f) === D.season; });
+  }
+  function wallDetailLoad() {
+    var c = D.card, seq = D.seq, files = seasonFiles();
+    wallDetailRender(null);
+    if (!files.length || c.ignored) return;
+    apiJson('/api/scrape/match', null, 'POST', wallReq(files[0].row)).then(function (j) {
+      if (seq !== D.seq) return;
+      c.item = j.item;
+      wallDetailRender(j.item);
+    }, function (e) {
+      if (seq !== D.seq) return;
+      var m = $('#sdNote');
+      m.textContent = (e && e.code === 'no_token') ? '未配置 TMDB 令牌（见海报墙顶部说明）' : (e && e.code === 'bad_token') ? 'TMDB 令牌无效（401）' : '刮削失败：' + ((e && e.message) || e);
+    });
+  }
+  function wallDetailRender(item) {
+    D.lastItem = item;
+    var c = D.card, f = cardInfo(c), m = (item && item.media) || null;
+    $('#sdTitle').textContent = f.title;
+    $('#sdEn').textContent = f.en;
+    if (c.ignored) {
+      $('#sdMeta').textContent = ''; $('#sdOver').textContent = ''; $('#sdOverEn').textContent = '';
+      $('#sdPoster').style.backgroundImage = ''; $('#sdHero').style.backgroundImage = '';
+      $('#sdNote').textContent = '已忽略：这不是影视条目，不会再向 TMDB 查询。要恢复，点「修正匹配」里的「取消忽略」。';
+      $('#sdPlay').textContent = '▶ 播放'; $('#sdPlay')._file = c.files[0];
+      $('#sdWatch').textContent = c.files[0].peek.watched ? '取消已看' : '标为已看'; $('#sdWatch')._flag = !c.files[0].peek.watched;
+      $('#sdBody').innerHTML = '';
+      return;
+    }
+    var bits = [];
+    if (f.year) bits.push(f.year);
+    if (m && m.vote_average) bits.push('★ ' + (+m.vote_average).toFixed(1));
+    if (m && c.type === 'movie' && m.runtime) bits.push(m.runtime + ' 分钟');
+    if (m && c.type === 'series' && m.number_of_seasons) bits.push(m.number_of_seasons + ' 季');
+    if (m && (m.genres_zh || []).length) bits.push(m.genres_zh.join(' / '));
+    $('#sdMeta').textContent = bits.join(' · ');
+    $('#sdOver').textContent = m ? (m.overview_zh || m.overview_en || '（TMDB 暂无简介）') : (item === null ? '读取中…' : '');
+    $('#sdOverEn').textContent = m && m.overview_zh && m.overview_en ? m.overview_en : '';
+    $('#sdPoster').style.backgroundImage = m && m.poster_path ? 'url("' + wallImg(m.poster_path, 'w342') + '")' : '';
+    $('#sdHero').style.backgroundImage = m && m.backdrop_path ? 'url("' + wallImg(m.backdrop_path, 'w780') + '")' : '';
+    var st = item ? item.status : (c.item && c.item.status);
+    var softNote = item && item.season_missing != null ? '第 ' + item.season_missing + ' 季 TMDB 暂时还没有分集资料（新一季常见），下面只列出本地文件，照常可以播放；剧集的海报、简介、评分仍来自 TMDB。' :
+      item && item.tmdb_missing ? '已锁定的条目在 TMDB 上找不到了（可能被删除或合并），请点「修正匹配」重新选择。' : '';
+    $('#sdNote').classList.toggle('soft', !!softNote && st !== 'needs_review' && st !== 'unmatched');
+    $('#sdNote').textContent = softNote && st !== 'needs_review' && st !== 'unmatched' ? softNote : st === 'needs_review' ? '这是暂定匹配（把握不大）。如果不对，点「修正匹配」。' :
+      st === 'unmatched' ? '没有找到匹配。点「修正匹配」手动搜索。' : st === 'pinned' ? '📌 已手动锁定' + (item && item.pin_scope === 'group' ? '（整部剧）' : '') : '';
+    // 播放按钮：电影显示续播
+    var files = c.files, first = files[0];
+    var resume = 0;
+    files.forEach(function (x) { if (!resume && x.peek.resume_ms > 0) { resume = x.peek.resume_ms; first = x; } });
+    $('#sdPlay').textContent = resume ? '▶ 继续观看 ' + wallFmt(resume) : '▶ 播放';
+    $('#sdPlay')._file = first;
+    var allW = files.length && files.every(isWatched);
+    $('#sdWatch').textContent = c.type === 'series' ? (allW ? '全部取消已看' : '全部标为已看') : (allW ? '取消已看' : '标为已看');
+    $('#sdWatch')._flag = !allW;
+    // 剧集：季 + 分集
+    var body = $('#sdBody');
+    if (c.type !== 'series') { body.innerHTML = ''; return; }
+    var eps = (item && item.season && item.season.episodes) || [];
+    var byNum = {}; eps.forEach(function (e) { byNum[e.number] = e; });
+    var h = '<div class="sd-seasons">' + D.seasons.map(function (s) {
+      return '<button class="btn' + (s === D.season ? ' on' : '') + '" data-season="' + (s == null ? '' : s) + '">' + (s == null ? '未分季' : s === 0 ? '特别篇' : '第 ' + s + ' 季') + '</button>';
+    }).join('') + '</div>';
+    h += seasonFiles().map(function (x, i) {
+      var n = x.peek.parsed.episode, e = n != null ? byNum[n] : null;
+      var nm = e ? (e.name_zh || e.name_en) : '';
+      var sub = e && e.name_zh && e.name_en && e.name_en !== e.name_zh ? e.name_en + ' · ' : '';
+      var mark = x.peek.resume_ms > 0 ? '<span class="sd-ep-m cont">▶ ' + wallFmt(x.peek.resume_ms) + '</span>' :
+        isWatched(x) ? '<span class="sd-ep-m done">状态：已看</span>' : '<span class="sd-ep-m">状态：未看</span>';
+      return '<div class="sd-ep" data-fi="' + i + '"><div class="sd-still" style="' + (e && e.still_path ? 'background-image:url(\'' + wallImg(e.still_path, 'w185') + '\')' : '') + '"></div>' +
+        '<div class="sd-ep-t">' + (n != null ? 'E' + (n < 10 ? '0' : '') + n + ' · ' : '') + esc(nm || (n != null ? '第 ' + n + ' 集' : x.row.name)) + '<small>' + esc(sub + x.row.name) + '</small></div>' + mark +
+        '<button class="btn sd-ep-w" data-w="' + i + '" title="' + (isWatched(x) ? '把这一集改回未看' : '把这一集标成已看') + '">' + (isWatched(x) ? '取消已看' : '标为已看') + '</button></div>';
+    }).join('');
+    body.innerHTML = h;
+  }
+  function wallPlay(file) {
+    if (!file) return;
+    wallRemember(D.card ? D.card.id : '');
+    if (W.remote) openRemoteVideo(file.row.path, W.dirRows[wallDirOf(file.row.path)] || W.rows); else openServerVideo(file.row.path);
+  }
+
+  /* ---- 修正匹配 ---- */
+  var FX = { card: null, seq: 0 };
+  function wallOpenFix() {
+    var c = D.card; if (!c) return;
+    FX.card = c;
+    var cand = (c.files[0].peek.parsed.title_candidates || [])[0] || c.title;
+    $('#fxQ').value = cand;
+    $('#fxYear').value = c.year || '';
+    $('#fxType').value = c.type === 'series' ? 'tv' : 'movie';
+    $('#fxList').innerHTML = '';
+    var it = c.item;
+    $('#fxCur').textContent = it && it.status === 'pinned' ? '当前：已锁定 → ' + (it.media ? it.media.title + (it.media.year ? '（' + it.media.year + '）' : '') : '') + (it.pin_scope === 'group' ? '（整部剧）' : '') :
+      it && it.media ? '当前：自动匹配 → ' + it.media.title + (it.media.year ? '（' + it.media.year + '）' : '') + (it.status === 'needs_review' ? '，待确认' : '') : '当前：没有匹配';
+    $('#fxUnpin').style.display = it && it.status === 'pinned' ? '' : 'none';
+    $('#fxIgnore').textContent = c.ignored ? '取消忽略' : '忽略此项（不是影视）';
+    if (c.ignored) $('#fxCur').textContent = '当前：已忽略（不当作影视，不会向 TMDB 查询）';
+    $('#fxNote').textContent = c.type === 'series' ? '选定后会锁定整部剧（「' + c.title + '」目录下所有季、所有集），之后重新刮削 / 缓存过期都不会改。' : '选定后只锁定这一个视频，之后不会被重新刮削改掉。';
+    toggleModal('scrFix', true);
+    wallFixSearch();
+  }
+  function wallFixSearch() {
+    var seq = ++FX.seq, list = $('#fxList');
+    var q = $('#fxQ').value.trim();
+    if (!q) { list.innerHTML = '<div class="browse-empty">请输入搜索词</div>'; return; }
+    list.innerHTML = '<div class="browse-empty">搜索中…</div>';
+    apiJson('/api/scrape/search', { q: q, year: $('#fxYear').value.trim(), type: $('#fxType').value }).then(function (j) {
+      if (seq !== FX.seq) return;
+      var rs = j.results || [];
+      list.innerHTML = rs.length ? rs.map(function (r, i) {
+        return '<div class="fx-row" data-i="' + i + '"><div class="sd-poster" style="' + (r.poster_path ? 'background-image:url(\'' + wallImg(r.poster_path, 'w92') + '\')' : '') + '"></div><div>' +
+          '<b>' + esc(r.title) + '</b>' + (r.year ? '（' + esc(r.year) + '）' : '') +
+          '<small>' + esc(r.original_title && r.original_title !== r.title ? r.original_title : '') + '</small><small>' + esc(r.overview) + '</small></div></div>';
+      }).join('') : '<div class="browse-empty">TMDB 没有搜到结果，换个关键词 / 去掉年份试试</div>';
+      list._res = rs;
+    }, function (e) {
+      if (seq !== FX.seq) return;
+      list.innerHTML = '<div class="browse-empty">搜索失败：' + esc((e && e.code === 'no_token') ? '未配置 TMDB 令牌' : (e && e.code === 'bad_token') ? 'TMDB 令牌无效（401）' : ((e && e.message) || e)) + '</div>';
+    });
+  }
+  function wallPin(r) {
+    var c = FX.card;
+    var seenG = {}, reps = c.files.filter(function (f) {
+      var g = f.peek.group_key || f.row.path;
+      if (seenG[g] || (c.type === 'movie' && f !== c.files[0])) return false;
+      return (seenG[g] = true);
+    });
+    var pinOne = function (f) {
+      var body = wallReq(f.row);
+      body.media_type = r ? r.media_type : 'movie'; body.tmdb_id = r ? r.tmdb_id : null;
+      return apiJson('/api/scrape/pin', null, 'POST', body);
+    };
+    Promise.all(reps.map(pinOne)).then(function (js) {
+      var j = js[0];
+      toggleModal('scrFix', false); toggleModal('scrDetail', false);
+      toast(r ? '已锁定：' + j.item.media.title : '已取消锁定');
+      var id = c.id;
+      var after = function () { wallLoad(); };
+      if (!r) Promise.all(reps.map(function (f) { return apiJson('/api/scrape/match', null, 'POST', Object.assign(wallReq(f.row), { force: true }))['catch'](function () {}); })).then(after); else after();
+    }, function (e) { toast('锁定失败：' + ((e && e.message) || e)); });
+  }
+
+  function wallIgnore(flag) {
+    var c = FX.card;
+    var seenG = {}, reps = c.files.filter(function (f) {
+      var g = f.peek.group_key || f.row.path;
+      if (seenG[g]) return false;
+      return (seenG[g] = true);
+    });
+    Promise.all(reps.map(function (f) {
+      return apiJson('/api/scrape/pin', null, 'POST', Object.assign(wallReq(f.row), { ignore: flag }));
+    })).then(function () {
+      toggleModal('scrFix', false); toggleModal('scrDetail', false);
+      toast(flag ? '已忽略：不再向 TMDB 查询' : '已取消忽略');
+      wallLoad();
+    }, function (e) { toast('操作失败：' + ((e && e.message) || e)); });
+  }
+
+  (function wireWall() {
+    $('#viewList').addEventListener('click', function () { wallSetView(false); });
+    $('#viewWall').addEventListener('click', function () { wallSetView(true); });
+    $('#wallFilter').addEventListener('input', function () { wallRender(); });
+    $('#wallSort').value = wallPrefs.sort || 'name';
+    $('#wallSort').addEventListener('change', function () { wallPrefs.sort = this.value; lsSet(LS_WALL, wallPrefs); wallRender(); });
+    $('#wallScan').addEventListener('click', wallScan);
+    $('#wallCancel').addEventListener('click', wallCancel);
+    $('#wallPurge').addEventListener('click', wallPurge);
+    $('#wallGrid').addEventListener('click', function (e) {
+      var el = e.target.closest ? e.target.closest('.wc') : null;
+      if (!el || !W.byId[el.dataset.id]) return;
+      wallOpenDetail(W.byId[el.dataset.id]);
+    });
+    $('#sdPlay').addEventListener('click', function () { wallPlay(this._file); });
+    $('#sdFix').addEventListener('click', wallOpenFix);
+    $('#sdWatch').addEventListener('click', function () {
+      var flag = this._flag, c = D.card;
+      if (!c) return;
+      wallSetWatched(c.files, flag).then(function () { wallDetailRender(D.lastItem || null); wallRender(); },
+        function (er) { toast('标记失败：' + ((er && er.message) || er)); });
+    });
+    $('#wallSub').addEventListener('change', function () { W.sub = this.checked; wallPrefs.sub = W.sub; lsSet(LS_WALL, wallPrefs); if (W.on) wallLoad(); });
+    $('#sdBody').addEventListener('click', function (e) {
+      var b = e.target.closest ? e.target.closest('[data-season]') : null;
+      if (b) { D.season = b.dataset.season === '' ? null : +b.dataset.season; D.seq++; wallDetailLoad(); return; }
+      var wb = e.target.closest ? e.target.closest('.sd-ep-w') : null;
+      if (wb) {
+        e.stopPropagation();
+        var f1 = seasonFiles()[+wb.dataset.w];
+        wallSetWatched([f1], !isWatched(f1)).then(function () { wallDetailRender(D.lastItem); wallRender(); }, function (er) { toast('标记失败：' + ((er && er.message) || er)); });
+        return;
+      }
+      var ep = e.target.closest ? e.target.closest('.sd-ep') : null;
+      if (ep) wallPlay(seasonFiles()[+ep.dataset.fi]);
+    });
+    $('#fxGo').addEventListener('click', wallFixSearch);
+    $('#fxQ').addEventListener('keydown', function (e) { if (e.key === 'Enter') wallFixSearch(); });
+    $('#fxList').addEventListener('click', function (e) {
+      var row = e.target.closest ? e.target.closest('.fx-row') : null;
+      if (row && this._res) wallPin(this._res[+row.dataset.i]);
+    });
+    $('#fxUnpin').addEventListener('click', function () { wallPin(null); });
+    $('#fxIgnore').addEventListener('click', function () { wallIgnore(!(FX.card && FX.card.ignored)); });
+    W.sub = wallPrefs.sub !== false;
+    if (wallPrefs.view === 'wall') { $('#browse').classList.add('wall-on'); W.on = true; $('#viewWall').classList.add('on'); $('#viewList').classList.remove('on'); }
+  })();
 
   /* ================= 云端书库（/iv/ 与 WebDAV 同源，没有 CORS）=================
      账号（建议只读账号）只存在本站自己的 IndexedDB（库名 iv-settings）。不去读同源 /reader/ 的库
@@ -6630,6 +7784,7 @@
       areaCap: c.areaCap, maxCanvas: c.maxCanvas, canvasPx: c.canvas ? c.canvas.width * c.canvas.height : 0, reads: c.adapter.reads, bytes: c.adapter.bytes, authGen: c.authGen } : null; },
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
       dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },
+    videoLoadTuning: VP_LOAD, openVideoList: openVideoList, vpState: function () { return VP; },
     openServerPath: openServerPath, openViaBackend: openViaBackend, openProg: openProgBegin,
     uploadFile: uploadFile, canServeFile: canServeFile, browseTo: browseTo, backend: function () { return BE; },
     showDetails: showDetails, m3uUrl: m3uUrl, copyText: copyText,

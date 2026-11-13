@@ -195,7 +195,7 @@ class CDP {
       const t = v.textTracks[0];
       let cues = t && t.cues ? Array.from(t.cues).map(c => c.text) : null;
       return { hasTrack: !!tr, src: tr && tr.src.slice(0, 5), mode: t && t.mode, cues,
-               opts: Array.from(document.querySelector('#vpSubSel').options).map(o => o.textContent) };`);
+               opts: Array.from(document.querySelector('#vpSubSel').options).map(o => o.title || o.textContent) };`);
     check('自动挂上 <track>（blob: URL）', sub.hasTrack && sub.src === 'blob:', sub);
     check('字幕模式 showing', sub.mode === 'showing', sub);
     check('SRT 被转成 cue（BOM / CRLF / 逗号都处理了）', sub.cues && sub.cues[0] === '你好，字幕' && sub.cues[1] === '第二句', sub.cues);
@@ -252,6 +252,9 @@ class CDP {
     const cdir = path.join(vdir, 'cloud'); fs.mkdirSync(cdir);
     fs.copyFileSync(vp, path.join(cdir, 'clip.webm'));
     fs.copyFileSync(path.join(vdir, 'clip.srt'), path.join(cdir, 'clip.srt'));
+    // GBK 编码的简体字幕（0xC4E3 0xBAC3 = 你好）+ 英文字幕：默认应选简体，且 GBK 解码正确
+    fs.writeFileSync(path.join(cdir, 'clip.chs.srt'), Buffer.concat([Buffer.from('1\r\n00:00:00,100 --> 00:00:01,500\r\n', 'latin1'), Buffer.from([0xC4, 0xE3, 0xBA, 0xC3]), Buffer.from(' GBK\r\n', 'latin1')]));
+    fs.writeFileSync(path.join(cdir, 'clip.en.srt'), '1\r\n00:00:00,100 --> 00:00:01,500\r\nhello english\r\n');
     const dav = spawn(PY, ['-u', 'tests/fake_webdav_serve.py', cdir, '--alist'], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
     let davOut = ''; dav.stdout.on('data', (d) => (davOut += d));
     for (let i = 0; i < 60 && !/ROOT=/.test(davOut); i++) await sleep(200);
@@ -264,6 +267,17 @@ class CDP {
         const m = document.querySelector('#rcloud');
         return { open: !m.classList.contains('hidden'), pwType: document.querySelector('#rcPass').type, state: document.querySelector('#rcState').textContent };`);
       check('未配置时点 ☁ 云端 弹出 WebDAV 账号表单（密码框 type=password）', form.open && form.pwType === 'password' && /尚未连接/.test(form.state), form);
+      const risk = await cdp.eval(`
+        const set = (id, v) => { const e = document.querySelector(id); e.value = v; e.dispatchEvent(new Event('input')); };
+        set('#rcUrl', 'http://192.158.1.75:5244/dav'); set('#rcUser', 'u'); set('#rcPass', 'x');
+        document.querySelector('#rcConnect').click(); await __wait(500);
+        const out = { msg: document.querySelector('#rcMsg').textContent, btn: document.querySelector('#rcConnect').textContent };
+        const c = await fetch('/api/remote/config?t=' + window.__IV_TOKEN).then(r => r.json());
+        out.connected = c.connected;
+        set('#rcUrl', 'http://192.168.1.75:5244/dav');      // 改成内网地址：按钮恢复，不再要二次确认
+        out.btnAfter = document.querySelector('#rcConnect').textContent;
+        return out;`);
+      check('http:// + 公网地址：显示明文风险警告，需二次点击，未发起连接', /公网/.test(risk.msg) && /明文/.test(risk.msg) && risk.btn === '仍然连接' && risk.connected === false && risk.btnAfter === '连接', risk);
       const fill = (url, pw) => `
         const set = (id, v) => { const e = document.querySelector(id); e.value = v; e.dispatchEvent(new Event('input')); };
         set('#rcUrl', ${JSON.stringify(url)}); set('#rcUser', 'u'); set('#rcPass', ${JSON.stringify(pw)});
@@ -303,7 +317,38 @@ class CDP {
                  cues: t && t.cues ? Array.from(t.cues).map(c => c.text) : null,
                  leak: (v.src || '').includes('u:p@') || document.documentElement.outerHTML.includes('Basic dTpw') };`);
       check('云端视频经 /api/remote/data 播放（无认证头 / URL 无凭据）', cv.shown && /^\/api\/remote\/data\?/.test(cv.src || '') && cv.rs >= 1 && !cv.err && !cv.leak, cv);
-      check('云端同名字幕自动挂载', cv.cues && cv.cues[0] === '你好，字幕', cv.cues);
+      check('云端字幕：默认选简体（chs），GBK 解码正确', cv.cues && cv.cues[0] === '你好 GBK', cv.cues);
+      const lab = await cdp.eval(`
+        const sel = document.querySelector('#vpSubSel');
+        return { opts: Array.from(sel.options).map(o => o.textContent), cur: sel.selectedOptions[0].textContent };`);
+      check('字幕下拉按语言后缀给人话标签（简体中文 / English / 同名）', lab.cur.startsWith('简体中文') && lab.opts.some(t => t.startsWith('English')) && lab.opts.some(t => t.startsWith('字幕 (srt)')), lab);
+      const en = await cdp.eval(`
+        const sel = document.querySelector('#vpSubSel');
+        sel.value = Array.from(sel.options).find(o => o.textContent.startsWith('English')).value; sel.dispatchEvent(new Event('change'));
+        await __wait(900);
+        const t = document.querySelector('#vpVideo').textTracks[0];
+        return t && t.cues ? Array.from(t.cues).map(c => c.text) : null;`);
+      check('手动切到 English', en && en[0] === 'hello english', en);
+      // 续播：MediaRecorder 的 webm 没有时长，这里给 video 元素桩上 duration / currentTime，走真实的保存与恢复代码
+      const rs = await cdp.eval(`
+        const v = document.querySelector('#vpVideo');
+        Object.defineProperty(v, 'duration', { configurable: true, get: () => 600 });
+        let cur = 125.5; window.__setCT = null;
+        Object.defineProperty(v, 'currentTime', { configurable: true, get: () => cur, set: (x) => { cur = x; window.__setCT = x; } });
+        v.dispatchEvent(new Event('pause')); await __wait(600);
+        const j = await fetch('/api/progress?t=' + window.__IV_TOKEN).then(r => r.json());
+        return j.books._video_resume_;`);
+      const rk = Object.keys(rs || {}).filter(k => /^dav:127\.0\.0\.1:\d+\/dav\/.*clip\.webm$/.test(k));
+      check('云端视频暂停时保存续播点（key = dav:host:port/路径，无账号密码）', rk.length === 1 && rs[rk[0]] === 125500 && !/u:p@/.test(rk[0]), rs);
+      await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await __wait(400); window.__setCT = null; return 1;`);
+      await cdp.eval(`document.querySelector('#startDisk').click(); await __wait(1200);
+        const li = Array.from(document.querySelectorAll('#browseList .brow-item')).find(e => /clip\.webm/.test(e.textContent));
+        li.click(); document.querySelector('#browseOpen').click(); await __wait(2500); return 1;`);
+      const back = await cdp.eval(`
+        const sel = document.querySelector('#vpSubSel');
+        return { ct: window.__setCT, cur: sel.selectedOptions[0] && sel.selectedOptions[0].textContent };`);
+      check('重新打开云端视频：自动跳到上次位置', back.ct === 125.5, back);
+      check('重新打开：记住了上次选的字幕（English）', /^English/.test(back.cur || ''), back);
       await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await __wait(300); return 1;`);
       const dis = await cdp.eval(`
         document.querySelector('#btnDisk').click(); await __wait(400);
