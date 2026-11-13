@@ -380,7 +380,7 @@
   .browse-empty { padding: 16px; color: var(--muted); font-size: 13px; text-align: center; }
   #browseInfo { margin-right: auto; font-size: 12px; color: var(--muted); }
   #btnDisk { display: none; }
-  body.has-backend #btnDisk { display: inline-flex; }
+  body.has-backend #btnDisk, body.has-backend #startDisk, body.has-backend #startCloud { display: inline-flex; }
   #backendTag { display: none; font-size: 11px; color: var(--muted); }
   body.has-backend #backendTag { display: inline; }
 
@@ -416,7 +416,7 @@
   .shelf-empty { color: var(--muted); font-size: 13px; padding: 18px 4px; line-height: 1.8; }
 
   /* ---------- 云端书库账号 / 返回（只在 http(s) 且无本地后端时出现）---------- */
-  #btnBack, #startDav, #startShelf, #btnShelf { display: none; }
+  #btnBack, #startDav, #startShelf, #btnShelf, #startDisk, #startCloud { display: none; }
   body.has-dav #startShelf, body.has-dav #btnShelf { display: inline-flex; }
   body.has-back #btnBack { display: inline-flex; }
   body.has-dav #startDav { display: inline-flex; }
@@ -616,6 +616,8 @@
       <button class="btn" id="startZip">📦 打开压缩包</button>
       <button class="btn primary" id="startShelf" title="浏览云端书库的目录，点书就读">📚 云端书架</button>
       <button class="btn" id="startDav" title="云端书库（WebDAV）账号">☁ 书库账号</button>
+      <button class="btn" id="startDisk" title="按磁盘路径打开（需本地后端）">🖧 磁盘路径</button>
+      <button class="btn" id="startCloud" title="浏览并播放后端已配置的 WebDAV 云端（AList 等）里的视频；未配置会弹出账号表单">☁ 云端</button>
     </div>
     <p class="start-resume" id="resumeHint"></p>
     <p class="start-hint">
@@ -6555,6 +6557,12 @@
     location.assign(launchBack);
   });
   $('#startDav').addEventListener('click', function () { askDav(); });
+  /* 起始页的全屏层盖住了顶部工具栏，所以后端模式的入口在这里再放一份 */
+  $('#startDisk').addEventListener('click', openBrowse);
+  $('#startCloud').addEventListener('click', function () {
+    openBrowse();
+    if (!browseRemote) $('#browseCloud').click();
+  });
   $('#btnVolPrev').addEventListener('click', function () { volStep(-1); });
   $('#btnVolNext').addEventListener('click', function () { volStep(1); });
   $('#volBarPrev').addEventListener('click', function () { volStep(-1); });

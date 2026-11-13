@@ -152,6 +152,24 @@ class CDP {
     fs.writeFileSync(path.join(vdir, 'old.avi'), Buffer.from('RIFF....AVI '));
     fs.writeFileSync(path.join(vdir, 'extra.vtt'), 'WEBVTT\n\n00:00:00.200 --> 00:00:01.000\nvtt line\n');
 
+    log('\n[1b] 起始页（全屏层盖住工具栏）也能进磁盘路径 / 云端');
+    const sp = await cdp.eval(`
+      const start = document.querySelector('#start');
+      const b = document.querySelector('#startDisk'), c = document.querySelector('#startCloud');
+      const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const hit = (e) => { const r = e.getBoundingClientRect(); const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return t === e || e.contains(t); };
+      const out = { startShown: !start.classList.contains('hidden'), disk: vis(b), diskHit: hit(b), cloud: vis(c), cloudHit: hit(c) };
+      b.click(); await __wait(600);
+      out.browseOpen = !document.querySelector('#browse').classList.contains('hidden');
+      out.cloudBtn = vis(document.querySelector('#browseCloud'));
+      const cb = document.querySelector('#browseCloud'); const r = cb.getBoundingClientRect();
+      const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      out.cloudBtnHit = t === cb || cb.contains(t);
+      document.querySelector('#browse .modal-close').click(); await __wait(200);
+      return out;`);
+    check('起始页「磁盘路径」「云端」按钮可见且未被遮挡（elementFromPoint 命中按钮）', sp.startShown && sp.disk && sp.diskHit && sp.cloud && sp.cloudHit, sp);
+    check('点起始页「磁盘路径」打开 #browse，且 ☁ 云端 可见可点', sp.browseOpen && sp.cloudBtn && sp.cloudBtnHit, sp);
+
     log('\n[2] 浏览器后端按路径打开视频');
     await cdp.eval(`window.__IV.openServerPath(${JSON.stringify(vp)}); await __wait(1500); return 1;`);
     let st = await cdp.eval(`

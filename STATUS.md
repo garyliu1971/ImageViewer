@@ -308,3 +308,6 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 - PROPFIND：目录 href 带尾斜杠、绝对 URL href、中文、`/dav` 前缀都有测试（`TestAListLikeRelay`）；字幕类文件在网页版后端列表里标为 `subtitle`。
 - 没有真实 AList 验证过；只用假 WebDAV + 假 CDN 模拟。
 
+**补充（起始页入口）**：起始页的全屏层（z-index 50）盖住了顶部工具栏（z-index 40），所以后端模式下「🖧 磁盘路径」「☁ 云端」在没打开内容前点不到（原有问题）。
+起始页按钮行新增这两个按钮（仅后端模式显示）；「☁ 云端」未配置账号时直接弹出账号表单。e2e 用 `elementFromPoint` 断言按钮没被遮挡。
+
