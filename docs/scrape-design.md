@@ -1,6 +1,6 @@
 # 媒体刮削（海报 / 元数据）设计 · 第 1 步：引擎
 
-状态：第 1 步（引擎 + HTTP 接口）与第 2 步（海报墙 UI）已实现（分支 `feature/iv-scrape-engine`，**依赖** `feature/iv-cloud-video-polish`，未推送）。
+状态：第 1 步（引擎 + HTTP 接口）与第 2 步（海报墙 UI）已实现（分支 `feature/iv-scrape-engine`，已 rebase 到包含 #25 / #26 的最新 `origin/main`，未推送）。
 第 3 步（系列合并 / 继续观看横栏 / 可选 NFO）尚未做。Owner 已确认：令牌只走环境变量、阈值 0.8 / 0.08、缓存 150 天、按需刮削 + 只刮当前层、不做 NFO、`include_adult=false`、署名放帮助页底部与海报墙脚注。
 
 ## 1. 范围与已定决策

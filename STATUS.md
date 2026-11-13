@@ -327,7 +327,7 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 
 ## 媒体刮削引擎（第 1 步，分支 `feature/iv-scrape-engine`）
 
-**依赖**：本分支叠在本地未推送的 `feature/iv-cloud-video-polish` 之上（同样改 `web_backend.py`，叠着避免冲突）；先合那个再合这个。未推送、未开 PR、未部署。
+**基线**：已 rebase 到最新 `origin/main`（cloud-video-polish #25 与内网直连 #26 已合并，本分支不再依赖其它未合并分支）。未推送、未开 PR、未部署。
 
 - 设计文档：`docs/scrape-design.md`（流水线 / 数据模型 / 缓存与 TTL / pin / 接口 / 隐私与署名 / 第 2、3 步计划 / 待 Owner 确认的问题）。
 - 引擎：`scrape.py`（文件名解析、TMDB 客户端、sqlite 缓存、pin、needs_review、后台扫描任务）；`web_backend.py` 加了 `/api/scrape/{status,item,match,pin,image,purge,scan,job}`。
