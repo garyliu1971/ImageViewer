@@ -571,6 +571,54 @@ class TestAListLikeRelay(FixtureCase):
         finally:
             wb.RESUME_MAX_KEYS = old
 
+    # ---------- 云端字幕 ----------
+    def test_remote_sidecar_subtitle_listing_and_bytes(self):
+        """AList 风格目录：中文名、空格、方括号、语言后缀；字幕经中转原样给出（GBK 字节不被改）。"""
+        from tests.fake_webdav import FakeWebDav
+        gbk = "1\r\n00:00:01,000 --> 00:00:02,000\r\n你好，世界\r\n".encode("gbk")
+        d = "/dav/天翼云盘/[字幕组] 电影 (2020)/"
+        files = {
+            d + "S01E01 第一集.mkv": self.BLOB,
+            d + "S01E01 第一集.zh.srt": gbk,
+            d + "S01E01 第一集.chs.ass": b"[Events]\n",
+            d + "S01E01 第一集.en.srt": b"1",
+            d + "S01E01 第一集.srt": b"1",
+            d + "别的电影.srt": b"1",
+            d + "封面.jpg": b"jpg",
+            d + "大字幕.mp4": self.BLOB,
+            d + "大字幕.srt": b"x" * (wb.SUBTITLE_MAX_BYTES + 10),
+        }
+        dav = FakeWebDav(files, user="u", pw="p", trailing_slash_dirs=True)
+        root = dav.start()
+        self._stop.append(dav.stop)
+        st, _ = http_post(self.base + "/api/remote/config", {"base_url": root, "username": "u", "password": "p"}, token=self.token)
+        self.assertEqual(st, 200)
+        st, _, body = http_get(self.base + "/api/remote/ls?path=" + urllib.parse.quote(d), self.token)
+        ents = {e["name"]: e for e in json.loads(body)["entries"]}
+        self.assertEqual(ents["S01E01 第一集.mkv"]["kind"], "video")
+        for n in ("S01E01 第一集.zh.srt", "S01E01 第一集.chs.ass", "S01E01 第一集.en.srt", "S01E01 第一集.srt"):
+            self.assertEqual(ents[n]["kind"], "subtitle", n)
+        # 列出来的 path 直接取字节
+        st, hdr, data = http_get(self._u(ents["S01E01 第一集.zh.srt"]["path"]), self.token)
+        self.assertEqual((st, data), (200, gbk))
+        # 太大的字幕：明确的错误，不灌给浏览器
+        st, _, body = http_get(self._u(d + "大字幕.srt"), self.token)
+        self.assertEqual(st, 413)
+        self.assertIn("太大", json.loads(body)["error"])
+
+    def test_local_sidecar_names_with_spaces_brackets_and_suffixes(self):
+        vd = os.path.join(self.tmp, "[组] 电影 (2020)")
+        os.makedirs(vd)
+        v = os.path.join(vd, "S01E01 第一集.mkv")
+        _write(v, b"x")
+        for n in ("S01E01 第一集.zh.srt", "S01E01 第一集.CHS.ass", "S01E01 第一集.en.vtt", "S01E01 第一集.srt",
+                  "S01E01 第一集X.srt", "别的.srt", "S01E01 第一集.txt"):
+            _write(os.path.join(vd, n), b"1")
+        names = [x["name"] for x in wb.find_sidecar_subtitles(v)]
+        self.assertEqual(sorted(names), sorted(["S01E01 第一集.zh.srt", "S01E01 第一集.CHS.ass",
+                                               "S01E01 第一集.en.vtt", "S01E01 第一集.srt"]))
+        self.assertEqual(wb.read_sidecar_subtitle(v, "S01E01 第一集.zh.srt"), b"1")
+
     def test_propfind_alist_style_hrefs(self):
         """目录 href 带尾斜杠 + 中文 + /dav 前缀；绝对 URL 的 href 也认。"""
         for kw in ({"trailing_slash_dirs": True}, {"trailing_slash_dirs": True, "absolute_href": True}):

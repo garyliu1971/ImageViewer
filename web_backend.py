@@ -975,6 +975,20 @@ class Handler(BaseHTTPRequestHandler):
             clen = up.get("Content-Length") if up else None
             clen = int(clen) if clen is not None and str(clen).isdigit() else None
             cr = up.get("Content-Range") if up else None
+            if ext_of(path) in SUBTITLE_EXTS and (clen is None or clen > SUBTITLE_MAX_BYTES):
+                # 字幕文件很小：太大（或不知道多大且读过上限）直接拒绝，别把奇怪的东西灌给浏览器
+                if clen is not None:
+                    return self._err("字幕文件太大（%d KB，上限 %d MB）" % (clen // 1024, SUBTITLE_MAX_BYTES >> 20), 413)
+                head = resp.read(SUBTITLE_MAX_BYTES + 1)
+                if len(head) > SUBTITLE_MAX_BYTES:
+                    return self._err("字幕文件太大（上限 %d MB）" % (SUBTITLE_MAX_BYTES >> 20), 413)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(head)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(head)
+                return
             code, skip, out_len = (206 if status == 206 else 200), 0, clen
             if rng and status == 200:
                 # 上游不支持 Range（AList 某些网盘 / CDN 会忽略它，回 200 整文件）：
