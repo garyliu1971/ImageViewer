@@ -19,7 +19,7 @@ ZIP_EXTS = {".zip", ".cbz"}
 RAR_EXTS = {".rar", ".cbr"}
 ARCHIVE_EXTS = ZIP_EXTS | RAR_EXTS
 PDF_EXTS = {".pdf"}
-VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp"}
+VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".wmv", ".flv", ".m4v", ".ts", ".mpg", ".mpeg", ".3gp", ".ogv"}
 AUDIO_EXTS = {".mp3", ".flac", ".wav", ".m4a", ".aac", ".ogg", ".opus", ".wma", ".ape"}
 
 MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS | PDF_EXTS

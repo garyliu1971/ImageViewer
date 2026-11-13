@@ -242,6 +242,137 @@ class TestCapabilities(unittest.TestCase):
         self.assertIn(".cbz", caps["extensions"])
 
 
+class TestVideoServing(FixtureCase):
+    """视频：Range（200/206/后缀/416）、Content-Type、旁挂字幕。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.httpd, cls.thread, cls.url = wb.serve(0, open_browser=False)
+        cls.base = cls.url.rstrip("/")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+
+    def setUp(self):
+        super().setUp()
+        self.token = wb.Handler.token
+        self.vdir = os.path.join(self.tmp, "视频")
+        os.makedirs(self.vdir)
+        self.blob = bytes(range(256)) * 40            # 10240 字节，内容可定位
+        self.mp4 = os.path.join(self.vdir, "电影.mp4")
+        _write(self.mp4, self.blob)
+        for ext in ("webm", "ogv", "mov", "m4v", "mkv", "avi"):
+            _write(os.path.join(self.vdir, "x." + ext), b"0123456789")
+
+    def _get(self, path, rng=None):
+        u = self.base + "/api/data?path=" + urllib.parse.quote(path)
+        return http_get(u, self.token, {"Range": rng} if rng else None)
+
+    def test_parse_range_unit(self):
+        self.assertIsNone(wb.parse_range("", 100))
+        self.assertIsNone(wb.parse_range("items=0-1", 100))
+        self.assertIsNone(wb.parse_range("bytes=0-1,5-6", 100))     # 多段：忽略 Range
+        self.assertEqual(wb.parse_range("bytes=0-9", 100), (0, 9))
+        self.assertEqual(wb.parse_range("bytes=90-", 100), (90, 99))
+        self.assertEqual(wb.parse_range("bytes=90-500", 100), (90, 99))   # 终点越界按文件尾截断
+        self.assertEqual(wb.parse_range("bytes=-10", 100), (90, 99))
+        self.assertEqual(wb.parse_range("bytes=-500", 100), (0, 99))
+        for bad in ("bytes=100-", "bytes=5-2", "bytes=-0", "bytes=abc", "bytes=-", "bytes=1-x"):
+            with self.assertRaises(wb.RangeNotSatisfiable, msg=bad):
+                wb.parse_range(bad, 100)
+
+    def test_full_response_has_accept_ranges_and_mime(self):
+        st, hdr, body = self._get(self.mp4)
+        self.assertEqual((st, body), (200, self.blob))
+        self.assertEqual(hdr["Accept-Ranges"], "bytes")
+        self.assertEqual(hdr["Content-Type"], "video/mp4")
+        self.assertEqual(hdr["Content-Length"], str(len(self.blob)))
+
+    def test_partial_range(self):
+        st, hdr, body = self._get(self.mp4, "bytes=100-199")
+        self.assertEqual(st, 206)
+        self.assertEqual(body, self.blob[100:200])
+        self.assertEqual(hdr["Content-Range"], "bytes 100-199/%d" % len(self.blob))
+        self.assertEqual(hdr["Content-Length"], "100")
+        self.assertEqual(hdr["Accept-Ranges"], "bytes")
+
+    def test_open_ended_and_suffix_range(self):
+        n = len(self.blob)
+        st, hdr, body = self._get(self.mp4, "bytes=%d-" % (n - 50))
+        self.assertEqual((st, body), (206, self.blob[-50:]))
+        self.assertEqual(hdr["Content-Range"], "bytes %d-%d/%d" % (n - 50, n - 1, n))
+        st, hdr, body = self._get(self.mp4, "bytes=-30")
+        self.assertEqual((st, body), (206, self.blob[-30:]))
+        self.assertEqual(hdr["Content-Range"], "bytes %d-%d/%d" % (n - 30, n - 1, n))
+
+    def test_range_start_zero_is_206(self):
+        """<video> 常先发 bytes=0-，必须回 206 + Content-Range，Chrome/Safari 才认为可拖动。"""
+        st, hdr, body = self._get(self.mp4, "bytes=0-")
+        self.assertEqual((st, body), (206, self.blob))
+        self.assertTrue(hdr["Content-Range"].startswith("bytes 0-"))
+
+    def test_invalid_range_416(self):
+        n = len(self.blob)
+        for bad in ("bytes=%d-" % n, "bytes=99999-100000", "bytes=50-10", "bytes=-0", "bytes=zz"):
+            st, hdr, _ = self._get(self.mp4, bad)
+            self.assertEqual(st, 416, bad)
+            self.assertEqual(hdr["Content-Range"], "bytes */%d" % n, bad)
+
+    def test_head_has_no_body(self):
+        u = self.base + "/api/data?path=" + urllib.parse.quote(self.mp4) + "&t=" + urllib.parse.quote(self.token)
+        req = urllib.request.Request(u, method="HEAD", headers={"Range": "bytes=0-9"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            self.assertEqual(r.status, 206)
+            self.assertEqual(r.headers["Content-Length"], "10")
+            self.assertEqual(r.read(), b"")
+
+    def test_content_types_by_extension(self):
+        want = {"webm": "video/webm", "ogv": "video/ogg", "mov": "video/quicktime", "m4v": "video/mp4",
+                "mkv": "video/x-matroska", "avi": "video/x-msvideo"}
+        for ext, mime in want.items():
+            st, hdr, _ = self._get(os.path.join(self.vdir, "x." + ext))
+            self.assertEqual((st, hdr["Content-Type"]), (200, mime), ext)
+
+    def test_video_needs_token_and_whitelist(self):
+        u = self.base + "/api/data?path=" + urllib.parse.quote(self.mp4)
+        self.assertEqual(http_get(u)[0], 403)
+        txt = os.path.join(self.vdir, "电影.txt")
+        _write(txt, b"x")
+        self.assertEqual(self._get(txt)[0], 400)
+
+    def test_ls_marks_video_kind(self):
+        u = self.base + "/api/ls?recursive=0&path=" + urllib.parse.quote(self.vdir)
+        st, _, body = http_get(u, self.token)
+        kinds = {e["name"]: e["kind"] for e in json.loads(body)["entries"]}
+        self.assertEqual(kinds["电影.mp4"], "video")
+        self.assertEqual(kinds["x.mkv"], "video")
+
+    def test_sidecar_subtitles_list_and_read(self):
+        _write(os.path.join(self.vdir, "电影.srt"), ("1" + chr(10) + "00:00:01,000 --> 00:00:02,000" + chr(10) + "你好" + chr(10)).encode("utf-8"))
+        _write(os.path.join(self.vdir, "电影.zh.vtt"), b"WEBVTT")
+        _write(os.path.join(self.vdir, "别的.srt"), b"nope")
+        base = self.base + "/api/subtitle?path=" + urllib.parse.quote(self.mp4)
+        st, _, body = http_get(base, self.token)
+        self.assertEqual(st, 200)
+        self.assertEqual([s["name"] for s in json.loads(body)["subs"]], ["电影.srt", "电影.zh.vtt"])
+        st, _, raw = http_get(base + "&name=" + urllib.parse.quote("电影.srt"), self.token)
+        self.assertEqual(st, 200)
+        self.assertIn("你好".encode("utf-8"), raw)
+
+    def test_sidecar_subtitle_rejects_unlisted_and_traversal(self):
+        _write(os.path.join(self.vdir, "别的.srt"), b"nope")
+        base = self.base + "/api/subtitle?path=" + urllib.parse.quote(self.mp4)
+        for name in ("别的.srt", "../漫画/说明.txt", "..%sx.srt" % chr(92), "电影.mp4"):
+            st, _, _ = http_get(base + "&name=" + urllib.parse.quote(name), self.token)
+            self.assertEqual(st, 400, name)
+        # path 不是视频 -> 不能借这个接口读别的目录
+        u = self.base + "/api/subtitle?path=" + urllib.parse.quote(os.path.join(self.book, "00_cover.png"))
+        self.assertEqual(http_get(u, self.token)[0], 400)
+        self.assertEqual(http_get(base)[0], 403)
+
+
 class TestHttpApi(FixtureCase):
     @classmethod
     def setUpClass(cls):

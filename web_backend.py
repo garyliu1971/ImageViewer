@@ -54,7 +54,22 @@ SERVABLE = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS | ARCHIVE_EXTS | PDF_EXTS
 
 # 这些接口拿的是「本机磁盘路径」，必须先过白名单；/api/remote/* 走的是网盘路径
 # （可能是目录、也可能是远端任意文件名），不能套本地这条规则。
-LOCAL_PATH_ROUTES = {"/api/archive", "/api/data", "/api/thumb", "/api/pdf", "/api/pdfpage"}
+LOCAL_PATH_ROUTES = {"/api/archive", "/api/data", "/api/thumb", "/api/pdf", "/api/pdfpage",
+                     "/api/subtitle"}
+
+# 视频：Content-Type 显式给出（Windows 的 mimetypes 读注册表，不可靠）。
+# BROWSER_VIDEO_EXTS 是主流浏览器原生能播的容器（里面的编码仍可能不支持，由前端 canPlayType / error 事件判断）；
+# 其余视频扩展名（mkv/avi/wmv...）照样可列出、可读，但前端会提示「浏览器不支持」。
+VIDEO_MIME = {
+    ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".ogv": "video/ogg",
+    ".mov": "video/quicktime", ".mkv": "video/x-matroska", ".avi": "video/x-msvideo",
+    ".wmv": "video/x-ms-wmv", ".flv": "video/x-flv", ".ts": "video/mp2t",
+    ".mpg": "video/mpeg", ".mpeg": "video/mpeg", ".3gp": "video/3gpp",
+}
+BROWSER_VIDEO_EXTS = {".mp4", ".m4v", ".webm", ".ogv", ".mov"}
+SUBTITLE_EXTS = {".srt", ".vtt", ".ass", ".ssa"}
+SUBTITLE_MAX_BYTES = 4 * 1024 * 1024
+STREAM_CHUNK = 256 * 1024
 
 # 浏览器选中的文件上传到后端的上限（只走 127.0.0.1，不跨机器）
 UPLOAD_MAX_BYTES = 512 * 1024 * 1024
@@ -128,6 +143,10 @@ def configure_rar_tool():
         return True
     except Exception:
         return False
+
+
+def ext_of(path):
+    return os.path.splitext(path)[1].lower()
 
 
 def is_servable(path):
@@ -317,6 +336,79 @@ def make_thumbnail(path, entry=None, width=160):
             pass
 
 
+class RangeNotSatisfiable(Exception):
+    pass
+
+
+def parse_range(header, size):
+    """解析 HTTP Range 头（只支持单段 bytes）。
+
+    返回 None（没有 Range / 不是 bytes 单位 / 多段 -> 按整文件 200 回）或 (start, end)（含端点）。
+    无法满足（起点越界、后缀长度为 0、语法非法）-> 抛 RangeNotSatisfiable（调用方回 416）。
+    """
+    if not header:
+        return None
+    h = header.strip()
+    if not h.lower().startswith("bytes="):
+        return None
+    spec = h[6:].strip()
+    if "," in spec:                      # 多段：浏览器播放视频不会发；按规范可以忽略 Range
+        return None
+    a, sep, b = spec.partition("-")
+    a, b = a.strip(), b.strip()
+    if not sep or not (a or b) or not (a.isdigit() or a == "") or not (b.isdigit() or b == ""):
+        raise RangeNotSatisfiable(header)
+    if a == "":                          # 后缀：最后 N 字节
+        n = int(b)
+        if n == 0 or size == 0:
+            raise RangeNotSatisfiable(header)
+        return max(0, size - n), size - 1
+    start = int(a)
+    end = int(b) if b else size - 1
+    if start >= size or (b and end < start):
+        raise RangeNotSatisfiable(header)
+    return start, min(end, size - 1)
+
+
+def video_mime(path):
+    ext = os.path.splitext(path)[1].lower()
+    return VIDEO_MIME.get(ext) or mimetypes.guess_type(path)[0] or "application/octet-stream"
+
+
+def find_sidecar_subtitles(video_path):
+    """同目录下与视频同主名的字幕：foo.mp4 -> foo.srt / foo.zh.srt / foo.en.vtt ...（只看兄弟文件，便宜）。"""
+    d = os.path.dirname(os.path.abspath(video_path))
+    stem = os.path.splitext(os.path.basename(video_path))[0].lower()
+    out = []
+    try:
+        names = sorted(os.listdir(d), key=natural_key)
+    except OSError:
+        return out
+    for n in names:
+        ext = os.path.splitext(n)[1].lower()
+        if ext not in SUBTITLE_EXTS:
+            continue
+        base = os.path.splitext(n)[0].lower()
+        if base == stem or base.startswith(stem + "."):
+            full = os.path.join(d, n)
+            if os.path.isfile(full):
+                out.append({"name": n, "ext": ext[1:], "size": os.path.getsize(full)})
+    return out
+
+
+def read_sidecar_subtitle(video_path, name):
+    """读视频旁的字幕原始字节。name 必须是 find_sidecar_subtitles 列出的纯文件名，不能带路径。"""
+    if name != os.path.basename(name) or "/" in name or chr(92) in name:
+        raise PermissionError("不允许读取该文件")
+    if not any(s["name"] == name for s in find_sidecar_subtitles(video_path)):
+        raise PermissionError("不允许读取该文件")
+    full = os.path.join(os.path.dirname(os.path.abspath(video_path)), name)
+    if os.path.getsize(full) > SUBTITLE_MAX_BYTES:
+        raise PermissionError("字幕文件太大")
+    with open(full, "rb") as f:
+        return f.read()
+
+
 def read_file(path, start=0, length=None):
     """按 Range 读本地文件（视频/大图用）。"""
     if not is_servable(path) or not os.path.isfile(path):
@@ -361,6 +453,7 @@ def capabilities():
         "lan": bool(getattr(Handler, "lan", False)),
         "lan_url": getattr(Handler, "lan_url", "") or "",
         "extensions": sorted(SERVABLE),
+        "video_exts": sorted(BROWSER_VIDEO_EXTS),
     }
 
 
@@ -526,6 +619,53 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, msg, code=400):
         self._json({"ok": False, "error": msg}, code)
 
+    def _send_file(self, path, ctype, rng_header):
+        """本地文件按 Range 流式发送（视频拖进度条靠它）。
+
+        无 Range -> 200 整文件；合法 Range -> 206；不可满足 -> 416 + Content-Range: bytes */size。
+        不把整段读进内存（几个 GB 的视频也行）。
+        """
+        size = os.path.getsize(path)
+        try:
+            rng = parse_range(rng_header, size)
+        except RangeNotSatisfiable:
+            body = b'{"ok": false, "error": "Range Not Satisfiable"}'
+            self.send_response(416)
+            self.send_header("Content-Range", "bytes */%d" % size)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+            return
+        if rng is None:
+            code, start, end = 200, 0, size - 1
+        else:
+            code, (start, end) = 206, rng
+        length = max(0, end - start + 1) if size else 0
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "private, max-age=60")
+        if code == 206:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+        self.end_headers()
+        if self.command == "HEAD" or not length:
+            return
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                left = length
+                while left > 0:
+                    chunk = f.read(min(STREAM_CHUNK, left))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    left -= len(chunk)
+        except (ConnectionError, OSError):
+            self.close_connection = True      # 浏览器拖进度条会中断上一个请求，属正常
+
     def _ok_token(self, q):
         return (q.get("t") or [""])[0] == self.token
 
@@ -661,19 +801,21 @@ class Handler(BaseHTTPRequestHandler):
                 data = archive_read(path, entry)
                 return self._bytes(data, mimetypes.guess_type(entry)[0] or "application/octet-stream",
                                    extra={"Cache-Control": "private, max-age=60"})
-            rng = (q.get("range") or [""])[0]
-            start, length = 0, None
-            if rng.startswith("bytes="):
-                a, _, b = rng[6:].partition("-")
-                start = int(a or 0)
-                length = (int(b) - start + 1) if b else None
-            data, s, e, total = read_file(path, start, length)
-            ctype = mimetypes.guess_type(path)[0] or "application/octet-stream"
-            if rng and (s or e < total - 1):
-                return self._bytes(data, ctype, code=206, extra={
-                    "Content-Range": "bytes %d-%d/%d" % (s, e, total),
-                    "Accept-Ranges": "bytes"})
-            return self._bytes(data, ctype, extra={"Accept-Ranges": "bytes"})
+            if not is_servable(path) or not os.path.isfile(path):
+                raise PermissionError("不允许读取该文件")
+            ctype = (video_mime(path) if ext_of(path) in VIDEO_EXTS
+                     else mimetypes.guess_type(path)[0] or "application/octet-stream")
+            # 真正的 Range 请求头优先（<video> 用）；保留 ?range=bytes=a-b 给不能带头的调用方
+            rng = self.headers.get("Range") or (q.get("range") or [""])[0]
+            return self._send_file(path, ctype, rng)
+        if route == "/api/subtitle":
+            name = (q.get("name") or [""])[0]
+            if ext_of(path) not in VIDEO_EXTS:
+                raise PermissionError("不允许读取该文件")
+            if not name:
+                return self._json({"ok": True, "subs": find_sidecar_subtitles(path)})
+            return self._bytes(read_sidecar_subtitle(path, name), "application/octet-stream",
+                               extra={"Cache-Control": "no-store"})
         if route == "/api/thumb":
             width = int((q.get("w") or ["160"])[0])
             entry = (q.get("entry") or [""])[0]
