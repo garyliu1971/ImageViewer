@@ -474,6 +474,53 @@ class TestEndpoints(Base):
         st, _, b = self.post("/api/scrape/scan", {"items": [{"path": self.vid}]})
         self.assertEqual(st, 503)
 
+    def test_search_endpoint(self):
+        st, _, b = http("GET", self.u("/api/scrape/search", q="dune", year="2021", type="movie"))
+        r = json.loads(b)["results"]
+        self.assertEqual((st, [x["tmdb_id"] for x in r]), (200, [7002]))
+        self.assertEqual(r[0]["title_zh"], "沙丘")
+        for kw in ({"q": ""}, {"q": "x" * 200}, {"q": "a", "type": "book"}, {"q": "a", "year": "abc"}, {"q": "a", "year": "99999"}):
+            self.assertEqual(http("GET", self.u("/api/scrape/search", **kw))[0], 400, kw)
+
+    def test_peek_is_offline_and_brief(self):
+        n = len(self.fake.requests)
+        st, _, b = self.post("/api/scrape/peek", {"items": [{"path": self.vid}, {"path": "/x/y.txt"}]})
+        j = json.loads(b)
+        self.assertEqual(len(self.fake.requests), n)                 # 完全不联网
+        self.assertIsNone(j["items"][0]["item"])
+        self.assertEqual(j["items"][0]["parsed"]["title_candidates"][0], "流浪地球")
+        self.assertIn("error", j["items"][1])
+        self.post("/api/scrape/match", {"path": self.vid})
+        wb.video_resume_save(self.vid, 90000, 600000)
+        j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": self.vid}]})[2])
+        it = j["items"][0]
+        self.assertEqual((it["item"]["media"]["title_zh"], it["resume_ms"]), ("流浪地球", 90000))
+        self.assertNotIn("episodes", json.dumps(it["item"]))
+        self.assertTrue(j["token_configured"])
+
+    def test_peek_expired_details_do_not_fetch(self):
+        self.post("/api/scrape/match", {"path": self.vid})
+        self.sc.purge(True)
+        # matches 表被清空 -> item None；再造一条仅详情过期的情形
+        self.post("/api/scrape/match", {"path": self.vid})
+        self.clock.t += 151 * DAY
+        n = len(self.fake.requests)
+        j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": self.vid}]})[2])
+        self.assertIsNone(j["items"][0]["item"])
+        self.assertEqual(len(self.fake.requests), n)
+
+    def test_cancel_endpoint(self):
+        st, _, b = self.post("/api/scrape/scan", {"items": [{"path": self.vid}]})
+        jid = json.loads(b)["job"]["id"]
+        self.assertEqual(self.post("/api/scrape/cancel", {"id": jid})[0], 200)
+
+    def test_pin_scope_reported(self):
+        ep = os.path.join(os.path.abspath(os.sep), "tv", "Weird Show", "S01E01.mkv")
+        it = json.loads(self.post("/api/scrape/pin", {"path": ep, "media_type": "tv", "tmdb_id": 1396})[2])["item"]
+        self.assertEqual((it["status"], it["pin_scope"]), ("pinned", "group"))
+        j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": ep}]})[2])
+        self.assertEqual(j["items"][0]["item"]["pin_scope"], "group")
+
     def test_token_never_leaks_anywhere(self):
         """用错令牌 / 429 / 网络失败各走一遍，所有响应体、响应头、stdout/stderr 里都不能出现令牌。"""
         seen = []

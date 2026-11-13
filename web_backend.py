@@ -1100,6 +1100,9 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/scrape/item":
                 src = {"path": (q.get("path") or [""])[0], "remote": (q.get("remote") or [""])[0]}
                 return self._json({"ok": True, "item": sc.item(scrape_key(src))})
+            if route == "/api/scrape/search":
+                return self._json({"ok": True, "results": sc.search_manual(
+                    (q.get("q") or [""])[0], (q.get("year") or [""])[0], (q.get("type") or ["movie"])[0])})
             if route == "/api/scrape/job":
                 j = sc.job((q.get("id") or [""])[0])
                 return self._json({"ok": bool(j), "job": j}, 200 if j else 404)
@@ -1123,6 +1126,24 @@ class Handler(BaseHTTPRequestHandler):
                 tid = body.get("tmdb_id")
                 item = sc.pin(scrape_key(body), body.get("media_type"), tid, str(body.get("scope") or "auto"))
                 return self._json({"ok": True, "item": item})
+            if route == "/api/scrape/peek":
+                items = body.get("items")
+                if not isinstance(items, list) or len(items) > 500:
+                    return self._err("items 需为最多 500 个 {path|remote}")
+                out = []
+                for i in items:
+                    try:
+                        k = scrape_key(i)
+                    except Exception as e:
+                        out.append({"error": "%s" % e})
+                        continue
+                    r = sc.peek(k)
+                    r["resume_ms"] = video_resume_get(key=k)
+                    out.append(r)
+                return self._json({"ok": True, "items": out, "token_configured": sc.client.has_token()})
+            if route == "/api/scrape/cancel":
+                sc.cancel_job(str(body.get("id") or ""))
+                return self._json({"ok": True})
             if route == "/api/scrape/purge":
                 return self._json({"ok": True, "removed": sc.purge(bool(body.get("all")))})
             if route == "/api/scrape/scan":

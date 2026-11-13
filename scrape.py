@@ -588,6 +588,7 @@ class Scraper:
         self.db_path = os.path.join(data_dir, "scrape.db")
         self.img_dir = os.path.join(data_dir, "img")
         self._lock = threading.RLock()
+        self._tl = threading.local()
         self._jobs = {}
         self._job_lock = threading.Lock()
         os.makedirs(self.img_dir, exist_ok=True)
@@ -619,6 +620,8 @@ class Scraper:
     def _cached(self, ck, fetch):
         v = self._cache_get(ck)
         if v is None:
+            if getattr(self._tl, "offline", False):
+                raise TmdbError("缓存里没有（离线模式）", code="offline")
             v = fetch()
             self._cache_put(ck, v)
         return v
@@ -808,6 +811,7 @@ class Scraper:
 
     def _assemble(self, key, parsed, group, status, source, ref, score, alternatives, updated):
         item = {"key": key, "group_key": group, "kind": parsed["kind"], "parsed": parsed,
+                "pin_scope": getattr(self._tl, "pin_scope", None) if status == "pinned" else None,
                 "status": status, "source": source, "score": score, "alternatives": alternatives,
                 "media": None, "season": None, "episode": None,
                 "updated_at": updated, "expires_at": (updated or self.now()) + TTL_SECONDS}
@@ -828,6 +832,7 @@ class Scraper:
             if k:
                 row = self._get_row("pins", k)
                 if row:
+                    self._tl.pin_scope = "video" if k == key else "group"
                     return json.loads(row[0]), row[1]
         return None, None
 
@@ -864,6 +869,7 @@ class Scraper:
         """只读缓存，不联网拿搜索（详情过期则需要联网，失败时返回 None 而不是旧数据）。"""
         parsed, group = self.parse_key(key)
         pin, at = self._find_pin(key, group)
+        self._tl.offline = True
         try:
             if pin:
                 return self._assemble(key, parsed, group, "pinned", "pin", pin, 1.0, [], at)
@@ -874,7 +880,38 @@ class Scraper:
                                       m.get("score", 0), m.get("alternatives", []), row[1])
         except TmdbError:
             return None
+        finally:
+            self._tl.offline = False
         return None
+
+    def peek(self, key):
+        """列表页用：只解析 + 读缓存，绝不联网。返回精简信息。"""
+        parsed, group = self.parse_key(key)
+        it = self.item(key)
+        return {"key": key, "group_key": group, "parsed": parsed, "item": brief(it) if it else None}
+
+    def search_manual(self, query, year=None, media_type="movie"):
+        """「修正匹配」用：按用户输入的文本搜 TMDB（仍然只代理搜索，结果精简）。"""
+        q = str(query or "").strip()
+        if not q or len(q) > 100 or any(ord(c) < 32 for c in q):
+            raise ValueError("搜索词不合法")
+        if media_type not in ("movie", "tv"):
+            raise ValueError("media_type 必须是 movie 或 tv")
+        y = None
+        if year not in (None, "", 0):
+            if isinstance(year, bool) or not str(year).isdigit() or not 1880 <= int(year) <= 2100:
+                raise ValueError("年份不合法")
+            y = int(year)
+        res = self._search(media_type, q, y)
+        out = []
+        for r in res[:12]:
+            t = r.get("title") or r.get("name") or ""
+            out.append({"media_type": media_type, "tmdb_id": r.get("id"), "title": t,
+                        "title_zh": t if _has_cjk(t) else "",
+                        "original_title": r.get("original_title") or r.get("original_name") or "",
+                        "year": (r.get("release_date") or r.get("first_air_date") or "")[:4],
+                        "poster_path": r.get("poster_path") or "", "overview": (r.get("overview") or "")[:160]})
+        return out
 
     def pin(self, key, media_type, tmdb_id, scope="auto"):
         """用户指定正确的条目。电视剧默认锁整个系列目录（group），电影锁单个视频。tmdb_id=None 取消锁定。"""
@@ -895,6 +932,7 @@ class Scraper:
         if isinstance(tmdb_id, bool) or not isinstance(tmdb_id, int) or not (0 < tmdb_id < 10 ** 9):
             raise ValueError("tmdb_id 不合法")
         ref = {"media_type": media_type, "tmdb_id": tmdb_id}
+        self._tl.pin_scope = "group" if target != key else "video"
         item = self._assemble(key, parsed, group, "pinned", "pin", ref, 1.0, [], self.now())   # 先验证能取到，再落盘
         with self._lock, self._conn() as c:
             c.execute("INSERT OR REPLACE INTO pins VALUES(?,?,?)", (target, json.dumps(ref), self.now()))
@@ -950,6 +988,17 @@ class Scraper:
         with self._job_lock:
             if jid in self._jobs:
                 self._jobs[jid]["cancel"] = True
+
+
+def brief(item):
+    """列表 / 海报墙用的精简条目（不含整季分集）。"""
+    if not item:
+        return None
+    m = item.get("media") or {}
+    return {"status": item["status"], "source": item["source"], "score": item["score"],
+            "pin_scope": item.get("pin_scope"), "group_key": item.get("group_key"),
+            "media": {k: m.get(k) for k in ("media_type", "tmdb_id", "title", "title_zh", "title_en", "year",
+                                            "poster_path", "vote_average", "number_of_seasons")} if m else None}
 
 
 class _Conn:
