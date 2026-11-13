@@ -322,3 +322,16 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 - 体检脚本 `c:	mplist_check.py`（仓库外，只用标准库）：从环境变量读账号，内网地址强制直连，检查 PROPFIND / 视频 Range（不跟随与跟随重定向）/ 后缀 Range / 同名字幕。
 - 字幕偏好、续播点都只在后端模式；纯静态 /iv/ 页面仍无云端视频。
 
+
+---
+
+## 媒体刮削引擎（第 1 步，分支 `feature/iv-scrape-engine`）
+
+**依赖**：本分支叠在本地未推送的 `feature/iv-cloud-video-polish` 之上（同样改 `web_backend.py`，叠着避免冲突）；先合那个再合这个。未推送、未开 PR、未部署。
+
+- 设计文档：`docs/scrape-design.md`（流水线 / 数据模型 / 缓存与 TTL / pin / 接口 / 隐私与署名 / 第 2、3 步计划 / 待 Owner 确认的问题）。
+- 引擎：`scrape.py`（文件名解析、TMDB 客户端、sqlite 缓存、pin、needs_review、后台扫描任务）；`web_backend.py` 加了 `/api/scrape/{status,item,match,pin,image,purge,scan,job}`。
+- 令牌只读环境变量 `TMDB_TOKEN`；`TMDB_API_BASE` / `TMDB_IMAGE_BASE` 可指向自己信任的网关（校验 https / 内网 http，无账号密码）。缓存目录 `IV_SCRAPE_DIR`（缺省 `<配置目录>/scrape_cache`），缓存 150 天过期。
+- 测试：`tests/test_scrape_parser.py`（表驱动解析）、`tests/test_scrape.py`（客户端 / 缓存 / TTL / pin / 令牌不泄露 / 端点，对 `tests/fake_tmdb.py`）。
+- 体检脚本（仓库外）：`c:\tmp\tmdb_check.py`。
+- **没有对真实 TMDB 验证过**；没有 UI；署名（TMDB logo + 声明）要在第 2 步 UI 里补，发布前必须有。
