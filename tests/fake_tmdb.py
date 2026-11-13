@@ -36,6 +36,12 @@ MOVIES = {
            "orig": "The Matrix Reloaded", "date": "2003-05-15", "poster": "/matrix2_poster.jpg", "backdrop": "",
            "pop": 40, "runtime": 138, "genres": []},
 }
+MOVIES[7001] = {"zh": {"title": "沙丘", "overview": "1984 版。", "tagline": ""},
+                "en": {"title": "Dune", "overview": "The 1984 film.", "tagline": ""}, "orig": "Dune",
+                "date": "1984-12-14", "poster": "/dune1984_poster.jpg", "backdrop": "", "pop": 40, "runtime": 137, "genres": []}
+MOVIES[7002] = {"zh": {"title": "沙丘", "overview": "2021 版。", "tagline": ""},
+                "en": {"title": "Dune", "overview": "The 2021 film.", "tagline": ""}, "orig": "Dune",
+                "date": "2021-09-15", "poster": "/dune2021_poster.jpg", "backdrop": "", "pop": 42, "runtime": 155, "genres": []}
 TV = {
     1396: {"zh": {"name": "绝命毒师", "overview": "化学老师变成毒枭。"},
            "en": {"name": "Breaking Bad", "overview": "A chemistry teacher turns drug lord."},
