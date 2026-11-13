@@ -262,6 +262,37 @@
   #dropOverlay.show { display: flex; }
   #dropOverlay > div { background: rgba(0,0,0,.55); padding: 16px 28px; border-radius: 12px; }
 
+  /* ---------- 视频播放（原生 <video>）---------- */
+  #vplayer {
+    position: fixed; inset: 0; z-index: 65; display: flex; flex-direction: column;
+    background: #000; color: var(--text);
+  }
+  #vplayer.hidden { display: none; }
+  .vp-top { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); flex: 0 0 auto; min-height: 44px; }
+  #vpTitle { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  #vpPos { flex: 0 0 auto; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vp-stage { position: relative; flex: 1 1 auto; min-height: 0; display: flex; align-items: center; justify-content: center; }
+  #vpVideo { width: 100%; height: 100%; background: #000; object-fit: contain; }
+  #vpMsg {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: min(520px, calc(100% - 32px));
+    background: rgba(26,29,36,.96); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px;
+    font-size: 14px; line-height: 1.7; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center;
+  }
+  #vpMsg.hidden { display: none; }
+  .vp-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 8px 10px; flex: 0 0 auto;
+    background: var(--panel); padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .vp-bar .btn { min-height: 36px; }
+  .vp-bar select { max-width: 42vw; min-height: 34px; }
+  .vp-lab { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); }
+  /* 字幕：半透明黑底白字，手机上也看得清；字号由 #vpCueStyle 按档位覆盖 */
+  #vpVideo::cue { color: #fff; background: rgba(0,0,0,.72); font-family: system-ui, "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.35; text-shadow: 0 1px 2px #000; }
+  @media (max-width: 640px) {
+    .vp-bar .btn { padding: 8px 10px; }
+    #vpPos { display: none; }
+  }
+
   /* ---------- 弹窗 ---------- */
   .modal {
     position: fixed; inset: 0; z-index: 70;
@@ -349,7 +380,7 @@
   .browse-empty { padding: 16px; color: var(--muted); font-size: 13px; text-align: center; }
   #browseInfo { margin-right: auto; font-size: 12px; color: var(--muted); }
   #btnDisk { display: none; }
-  body.has-backend #btnDisk { display: inline-flex; }
+  body.has-backend #btnDisk, body.has-backend #startDisk, body.has-backend #startCloud { display: inline-flex; }
   #backendTag { display: none; font-size: 11px; color: var(--muted); }
   body.has-backend #backendTag { display: inline; }
 
@@ -385,7 +416,7 @@
   .shelf-empty { color: var(--muted); font-size: 13px; padding: 18px 4px; line-height: 1.8; }
 
   /* ---------- 云端书库账号 / 返回（只在 http(s) 且无本地后端时出现）---------- */
-  #btnBack, #startDav, #startShelf, #btnShelf { display: none; }
+  #btnBack, #startDav, #startShelf, #btnShelf, #startDisk, #startCloud { display: none; }
   body.has-dav #startShelf, body.has-dav #btnShelf { display: inline-flex; }
   body.has-back #btnBack { display: inline-flex; }
   body.has-dav #startDav { display: inline-flex; }
@@ -397,6 +428,15 @@
     display: block; width: 100%; margin-top: 4px; font: inherit; color: var(--text); background: #12151b;
     border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; outline: none;
   }
+  #rcloud { z-index: 77; }
+  #rcloud .dav-note { color: var(--muted); font-size: 13px; line-height: 1.7; margin-bottom: 4px; }
+  #rcloud label { display: block; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  #rcloud input[type=text], #rcloud input[type=password] {
+    display: block; width: 100%; margin-top: 4px; font: inherit; font-size: 16px; color: var(--text); background: #12151b;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; outline: none;
+  }
+  #rcState { margin-top: 8px; font-size: 13px; color: #7fd18b; word-break: break-all; }
+  #rcMsg { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff9d5c; word-break: break-all; }
   #davMsg { min-height: 18px; margin-top: 10px; font-size: 13px; color: #ff9d5c; }
 
   /* ---------- 读书时换书（云端书库里的书才出现）---------- */
@@ -472,7 +512,7 @@
   <div class="toolbar-group">
     <button class="btn" id="btnBack" title="回到打开这本书的页面">← 返回</button>
     <button class="btn primary" id="btnFolder" title="打开文件夹（子目录自动识别为章节）">📂 文件夹</button>
-    <button class="btn" id="btnFiles" title="打开图片（可多选）">🖼 图片</button>
+    <button class="btn" id="btnFiles" title="打开图片 / 视频（可多选；视频可同时选字幕 .srt .vtt .ass）">🖼 图片/视频</button>
     <button class="btn" id="btnZip" title="打开压缩包 zip / cbz / epub / rar / cbr / 7z / cb7 / tar / cbt / tgz 或 pdf">📦 压缩包</button>
     <button class="btn" id="btnShelf" title="云端书架（L）：浏览书库目录">📚 书架</button>
     <button class="btn" id="btnDisk" title="按磁盘路径打开（目录 / rar·cbr / PDF，需本地后端）">🖧 磁盘路径</button>
@@ -572,10 +612,12 @@
       支持双页、日漫右→左、裁白边、纸质质感、缩略图、自动翻页、断点续读。</p>
     <div class="start-actions">
       <button class="btn primary" id="startFolder">📂 打开文件夹</button>
-      <button class="btn" id="startFiles">🖼 打开图片</button>
+      <button class="btn" id="startFiles">🖼 打开图片 / 视频</button>
       <button class="btn" id="startZip">📦 打开压缩包</button>
       <button class="btn primary" id="startShelf" title="浏览云端书库的目录，点书就读">📚 云端书架</button>
       <button class="btn" id="startDav" title="云端书库（WebDAV）账号">☁ 书库账号</button>
+      <button class="btn" id="startDisk" title="按磁盘路径打开（需本地后端）">🖧 磁盘路径</button>
+      <button class="btn" id="startCloud" title="浏览并播放后端已配置的 WebDAV 云端（AList 等）里的视频；未配置会弹出账号表单">☁ 云端</button>
     </div>
     <p class="start-resume" id="resumeHint"></p>
     <p class="start-hint">
@@ -782,6 +824,8 @@
       <input type="text" id="browsePath" placeholder="C:\漫画 或 C:\漫画\书.cbr 或 D:\pdf\书.pdf">
       <button class="btn" id="browseGo">转到</button>
       <button class="btn" id="browseUp">上一级</button>
+      <button class="btn" id="browseCloud" title="浏览后端已配置的 WebDAV 云端（目前可播放里面的视频）">☁ 云端</button>
+      <button class="btn icon" id="browseCloudCfg" title="云端账号设置（WebDAV）">⚙</button>
     </div>
     <div id="browseRecent"></div>
     <div id="browseList"><div class="browse-empty">输入路径后点「转到」</div></div>
@@ -797,12 +841,61 @@
   </div>
 </div>
 
+<div id="vplayer" class="hidden" role="dialog" aria-label="视频播放">
+  <div class="vp-top">
+    <button class="btn icon" id="vpClose" title="关闭（Esc）">✕</button>
+    <span id="vpTitle"></span>
+    <span id="vpPos"></span>
+  </div>
+  <div class="vp-stage">
+    <video id="vpVideo" controls playsinline preload="metadata"></video>
+    <div id="vpMsg" class="hidden"><div id="vpMsgText"></div><button class="btn primary hidden" id="vpTry">仍然尝试播放</button></div>
+  </div>
+  <div class="vp-bar">
+    <button class="btn" id="vpPrev" title="上一个视频">⏮ 上一个</button>
+    <button class="btn" id="vpNext" title="下一个视频">下一个 ⏭</button>
+    <label class="vp-lab">倍速
+      <select id="vpRate">
+        <option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option>
+        <option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="3">3×</option>
+      </select>
+    </label>
+    <button class="btn" id="vpPip" title="画中画" hidden>⧉ 画中画</button>
+    <label class="vp-lab">字幕
+      <select id="vpSubSel"><option value="-1">无字幕</option></select>
+    </label>
+    <button class="btn" id="vpSubLoad" title="载入本地字幕 .srt / .vtt / .ass">＋ 载入字幕</button>
+    <button class="btn" id="vpSubSize" title="字幕大小（点一下切换）">字幕 A</button>
+  </div>
+</div>
+<input type="file" id="vpSubInput" accept=".srt,.vtt,.ass,.ssa,text/vtt" hidden>
+
+<div id="rcloud" class="modal hidden">
+  <div class="modal-card" style="max-width:460px">
+    <button class="modal-close" data-close="rcloud">✕</button>
+    <h2>云端账号（WebDAV）</h2>
+    <p class="dav-note">连接 AList / 坚果云 / NAS 等的 WebDAV，然后在「☁ 云端」里浏览并播放里面的视频。
+      账号只保存在运行后端的这台电脑上（与桌面版共用），不会发给浏览器；建议用<b>只读</b>账号。
+      AList 的地址通常是 <code>http://主机:5244/dav</code>（<b>要带 /dav</b>）。</p>
+    <div id="rcState"></div>
+    <label>WebDAV 地址<input type="text" id="rcUrl" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.10:5244/dav" inputmode="url"></label>
+    <label>用户名<input type="text" id="rcUser" autocomplete="username" spellcheck="false"></label>
+    <label>密码<input type="password" id="rcPass" autocomplete="current-password"></label>
+    <p id="rcMsg"></p>
+    <div class="modal-actions">
+      <button class="btn" id="rcDisconnect" style="margin-right:auto" title="删除后端保存的这个云端账号">断开并忘记</button>
+      <button class="btn" data-close="rcloud">取消</button>
+      <button class="btn primary" id="rcConnect">连接</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast"></div>
 <div id="openProg" role="status" aria-live="polite"><div class="op-t"></div><div class="op-s"></div><div class="op-bar"><i></i></div></div>
 
 <input type="file" id="folderInput" webkitdirectory multiple hidden>
 <input type="file" id="fileInput" multiple
-       accept="image/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.jfif,.apng,.svg" hidden>
+       accept="image/*,video/*,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.jfif,.apng,.svg,.mp4,.m4v,.webm,.ogv,.mov,.mkv,.avi,.srt,.vtt,.ass,.ssa" hidden>
 <input type="file" id="zipInput" accept=".zip,.cbz,.epub,.pdf,.rar,.cbr,.7z,.cb7,.tar,.cbt,.tgz,.tar.gz,.gz,application/zip,application/epub+zip,application/pdf,application/vnd.rar,application/x-rar-compressed,application/x-7z-compressed,application/x-tar,application/gzip" hidden>
 
 <script id="iv-core">
@@ -2515,6 +2608,124 @@
     return P;
   }
 
+  /* ================= 视频：格式判断 + 字幕转换（纯函数，Node 可测）================= */
+  /* 浏览器原生容器；mkv / avi / wmv / flv / ts 等能列出但多半播不了（mkv 里装 h264+aac 时 Chrome 偶尔可以，所以仍允许尝试） */
+  var VIDEO_EXTS = /\.(mp4|m4v|webm|ogv|mov|mkv|avi|wmv|flv|ts|mpg|mpeg|3gp)$/i;
+  var VIDEO_NATIVE_EXTS = /\.(mp4|m4v|webm|ogv|mov)$/i;
+  var VIDEO_MIME = { mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg', mov: 'video/quicktime',
+    mkv: 'video/x-matroska', avi: 'video/x-msvideo', wmv: 'video/x-ms-wmv', flv: 'video/x-flv', ts: 'video/mp2t',
+    mpg: 'video/mpeg', mpeg: 'video/mpeg', '3gp': 'video/3gpp' };
+  var SUB_EXTS = /\.(srt|vtt|ass|ssa)$/i;
+  function isVideoName(n) { return VIDEO_EXTS.test(String(n || '')); }
+  function videoMime(n) { var m = /\.([^.\/\\]+)$/.exec(String(n || '')); return (m && VIDEO_MIME[m[1].toLowerCase()]) || ''; }
+  /** 该文件名在这个浏览器里大概率能不能播：'yes' / 'maybe'（mkv 等：看 canPlayType，Chrome 对 h264 mkv 常能播）/ 'no'
+   *  canPlay = video.canPlayType.bind(video)（传进来方便测试）。canPlayType 对 '' 意味着肯定不行，
+   *  对 'maybe' 只是「可能」，真正的编码问题只有 error 事件能告诉我们。 */
+  function videoSupport(name, canPlay) {
+    var mime = videoMime(name);
+    if (!mime) return 'no';
+    var r = '';
+    try { r = canPlay ? canPlay(mime) : ''; } catch (e) { r = ''; }
+    if (r === 'probably') return 'yes';
+    if (r === 'maybe') return VIDEO_NATIVE_EXTS.test(name) ? 'yes' : 'maybe';
+    return 'no';
+  }
+  /** MediaError.code -> 中文说明（code 4 = 格式 / 编码不支持，最常见） */
+  function videoErrorMessage(err, name) {
+    var code = err && err.code;
+    var ext = (/\.([^.\/\\]+)$/.exec(String(name || '')) || ['', ''])[1].toLowerCase();
+    if (code === 1) return '播放被中止';
+    if (code === 2) return '网络错误，视频没能读完（后端是否还在运行？）';
+    if (code === 3) return '视频解码失败（文件可能损坏，或编码浏览器不支持）';
+    if (VIDEO_NATIVE_EXTS.test('x.' + ext)) return '浏览器不支持这个视频的编码（常见于 H.265/HEVC、AC3 音轨）。可用桌面版（VLC）播放，或先转成 H.264 + AAC 的 mp4';
+    return '浏览器不支持 .' + ext + ' 格式或其中的编码，请用桌面版（VLC）播放，或先转成 H.264 + AAC 的 mp4';
+  }
+  /** 字幕字节 -> 文本：UTF-8 / UTF-16 BOM 优先，其次严格 UTF-8，不合法再按 GBK（国内 srt 常见）*/
+  function decodeSubtitle(bytes) {
+    var u = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    try {
+      if (u.length >= 2 && u[0] === 0xFF && u[1] === 0xFE) return new TextDecoder('utf-16le').decode(u.subarray(2));
+      if (u.length >= 2 && u[0] === 0xFE && u[1] === 0xFF) return new TextDecoder('utf-16be').decode(u.subarray(2));
+      if (u.length >= 3 && u[0] === 0xEF && u[1] === 0xBB && u[2] === 0xBF) u = u.subarray(3);
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(u); }
+      catch (e) { return new TextDecoder('gbk').decode(u); }
+    } catch (e2) { return new TextDecoder('utf-8').decode(u); }
+  }
+  function subNormalizeText(t) {
+    return String(t == null ? '' : t).replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+  }
+  /** SRT 的 00:01:02,500 / 1:02,5 / 00:01:02.500 -> WebVTT 的 00:01:02.500 */
+  function subTime(t) {
+    var m = /^\s*(?:(\d+):)?(\d+):(\d+)(?:[,.](\d+))?\s*$/.exec(t);
+    if (!m) return null;
+    var ms = ((m[4] || '0') + '00').slice(0, 3);
+    function p2(x) { x = String(x); return x.length < 2 ? '0' + x : x; }
+    return p2(m[1] || 0) + ':' + p2(m[2]) + ':' + p2(m[3]) + '.' + ms;
+  }
+  /** 去掉浏览器 ::cue 不认的标记（<font>、{\an8} 之类），保留 <i> <b> <u>；转义裸 & 和 < */
+  function subCleanText(line) {
+    return line.replace(/\{\\[^}]*\}/g, '').replace(/<\/?font[^>]*>/gi, '')
+      .replace(/<(?!\/?(?:i|b|u|c|v|ruby|rt)(?:[ .][^>]*)?>)/gi, '&lt;')
+      .replace(/&(?!(?:amp|lt|gt|nbsp|lrm|rlm);)/g, '&amp;');
+  }
+  /** SRT -> WebVTT。已经是 WebVTT 的原样（只规整换行 / BOM）返回 */
+  function srtToVtt(text) {
+    var t = subNormalizeText(text).replace(/^\s+/, '');
+    if (/^WEBVTT/.test(t)) return t.replace(/\s*$/, '\n');
+    var out = ['WEBVTT', ''];
+    t.split(/\n{2,}/).forEach(function (blk) {
+      var lines = blk.split('\n').filter(function (l, i, a) { return !(l === '' && (i === 0 || i === a.length - 1)); });
+      if (!lines.length) return;
+      var ti = -1;
+      for (var i = 0; i < lines.length && i < 3; i++) if (lines[i].indexOf('-->') >= 0) { ti = i; break; }
+      if (ti < 0) return;                                   /* 没时间轴的块（残缺 / 注释）直接丢 */
+      var parts = lines[ti].split('-->');
+      var a = subTime(parts[0]), bm = /^\s*(\S+)/.exec(parts[1] || ''), b = bm ? subTime(bm[1]) : null;
+      if (!a || !b) return;
+      var body = lines.slice(ti + 1).map(subCleanText).filter(function (l) { return l.trim() !== ''; });
+      if (!body.length) return;
+      out.push(a + ' --> ' + b);
+      Array.prototype.push.apply(out, body);
+      out.push('');
+    });
+    return out.join('\n');
+  }
+  function assTime(t) {                                     /* 0:01:02.50 -> 00:01:02.500 */
+    var m = /^\s*(\d+):(\d+):(\d+)[.](\d+)\s*$/.exec(t);
+    if (!m) return null;
+    function p2(x) { x = String(x); return x.length < 2 ? '0' + x : x; }
+    return p2(m[1]) + ':' + p2(m[2]) + ':' + p2(m[3]) + '.' + ((m[4] + '00').slice(0, 3));
+  }
+  /** ASS / SSA -> WebVTT：只取 [Events] 的 Dialogue 文本，样式 / 定位全部丢弃（尽力而为） */
+  function assToVtt(text) {
+    var lines = subNormalizeText(text).split('\n');
+    var inEvents = false, fmt = null, cues = [];
+    lines.forEach(function (ln) {
+      var s = ln.trim();
+      if (/^\[.*\]$/.test(s)) { inEvents = /^\[events\]$/i.test(s); return; }
+      if (!inEvents) return;
+      var m = /^(Format|Dialogue)\s*:\s*(.*)$/i.exec(s);
+      if (!m) return;
+      if (/^format$/i.test(m[1])) { fmt = m[2].split(',').map(function (x) { return x.trim().toLowerCase(); }); return; }
+      var cols = fmt || ['layer', 'start', 'end', 'style', 'name', 'marginl', 'marginr', 'marginv', 'effect', 'text'];
+      var ti = cols.indexOf('text'); if (ti < 0) ti = cols.length - 1;
+      var f = m[2].split(','), txt = f.slice(ti).join(',');
+      var a = assTime(f[cols.indexOf('start')] || ''), b = assTime(f[cols.indexOf('end')] || '');
+      if (!a || !b) return;
+      txt = txt.replace(/\{[^}]*\}/g, '').replace(/\\N/g, '\n').replace(/\\n/g, '\n').replace(/\\h/g, ' ').trim();
+      txt = txt.split('\n').map(subCleanText).filter(function (l) { return l.trim() !== ''; }).join('\n');
+      if (txt) cues.push({ a: a, b: b, t: txt });
+    });
+    cues.sort(function (x, y) { return x.a < y.a ? -1 : x.a > y.a ? 1 : 0; });
+    var out = ['WEBVTT', ''];
+    cues.forEach(function (c) { out.push(c.a + ' --> ' + c.b); out.push(c.t); out.push(''); });
+    return out.join('\n');
+  }
+  /** 按扩展名选转换器：srt / vtt -> srtToVtt（已是 vtt 则原样），ass / ssa -> assToVtt */
+  function subtitleToVtt(text, name) {
+    return /\.(ass|ssa)$/i.test(String(name || '')) ? assToVtt(text) : srtToVtt(text);
+  }
+
   global.IVCore = {
     parsePropfind: parsePropfind, shelfSplit: shelfSplit, LIB_OPEN_KINDS: LIB_OPEN_KINDS, relJoin: relJoin, shelfCrumbs: shelfCrumbs,
     hash53: hash53, progressDirUrl: progressDirUrl, progressDirChain: progressDirChain, progressUrl: progressUrl, normalizeProgress: normalizeProgress,
@@ -2529,6 +2740,8 @@
     WEB_IMAGE_EXTS: WEB_IMAGE_EXTS, DESKTOP_EXTS: DESKTOP_EXTS, MEDIA_EXTS: MEDIA_EXTS,
     ARCHIVE_EXTS: ARCHIVE_EXTS, ARCH_EXTS: ARCH_EXTS, ARCH_WARN_BYTES: ARCH_WARN_BYTES, archKind: archKind, archPickImages: archPickImages,
     archErrorMessage: archErrorMessage, fetchWhole: fetchWhole,
+    isVideoName: isVideoName, videoMime: videoMime, videoSupport: videoSupport, videoErrorMessage: videoErrorMessage,
+    decodeSubtitle: decodeSubtitle, srtToVtt: srtToVtt, assToVtt: assToVtt, subtitleToVtt: subtitleToVtt, SUB_EXTS: SUB_EXTS,
     clamp: clamp, naturalCompare: naturalCompare, baseName: baseName, topDir: topDir,
     commonRoot: commonRoot, rotatedSize: rotatedSize, computeZoom: computeZoom,
     clampPan: clampPan, zoomAtPan: zoomAtPan,
@@ -2898,7 +3111,8 @@
       var n = it.name || it.path || '';
       /* 后端列目录时已经知道类型，优先用 skind/isImage（PDF 页名不靠扩展名） */
       if (it.isImage) { keep.push(it); return; }
-      if (it.skind === 'video' || it.skind === 'audio') { skipped.push({ name: n, why: '视频/音频需桌面版' }); return; }
+      if (it.skind === 'video') { skipped.push({ name: n, why: '视频请在「浏览」里单独打开' }); return; }
+      if (it.skind === 'audio') { skipped.push({ name: n, why: '视频/音频需桌面版' }); return; }
       if (it.skind === 'pdf' || it.skind === 'archive') { skipped.push({ name: n, why: BE.on ? '请单独打开' : '需桌面版' }); return; }
       if (C.WEB_IMAGE_EXTS.test(n)) keep.push(it);
       else if (C.ARCHIVE_EXTS.test(n) || ((BE.on || /^https?:$/.test(location.protocol)) && C.archKind(n))) skipped.push({ name: n, why: '压缩包请单独打开' });
@@ -3761,6 +3975,7 @@
   document.addEventListener('keydown', function (e) {
     /* Ctrl/Cmd/Alt 组合键留给浏览器（Ctrl+D 收藏、Ctrl+C 复制、Ctrl++ 缩放…），不能同时触发看图操作 */
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (vpOpen()) { vpKey(e); return; }          /* 视频播放层开着：键盘只归它，不去翻后面的书 */
     var tag = e.target && e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') {
       if (e.key === 'Enter' && !$('#jump').classList.contains('hidden')) { e.preventDefault(); doJump(); }
@@ -3820,7 +4035,7 @@
     }
   });
 
-  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent'];
+  var MODALS = ['help', 'jump', 'detail', 'browse', 'dav', 'shelf', 'bm', 'ttsSet', 'aiConsent', 'rcloud'];
   function anyModal() {
     return MODALS.some(function (id) { return !$('#' + id).classList.contains('hidden'); });
   }
@@ -4500,6 +4715,10 @@
                  isImage: e.kind === 'image', spath: e.path, url: dataUrl(e.path) };
       });
       if (!items.length) { toast('该目录下没有媒体文件'); return null; }
+      if (!items.some(function (i) { return i.isImage; })) {          /* 没有图片、只有视频：直接进视频播放（图 + 视频混放时仍按图册开，视频请在「浏览」里单独点） */
+        var vids = items.filter(function (i) { return i.skind === 'video'; });
+        if (vids.length) { openVideoList(vids.map(function (i) { return { name: i.path, path: i.spath, url: i.url }; }), 0); return true; }
+      }
       openItems(items, { kind: 'dir', title: C.baseName(path), key: normKey(path), keepRoot: true });
       return true;
     });
@@ -4557,6 +4776,7 @@
       return Promise.resolve(false);
     }
     void ext;
+    if (C.isVideoName(path)) return openServerVideo(path);     /* 视频：<video> + 后端 Range，同目录其它视频当播放列表 */
     var p;
     if (isArchivePath(path)) p = openServerArchive(path);
     else if (/\.pdf$/i.test(path)) p = openServerPdf(path);
@@ -4582,11 +4802,15 @@
   }
 
   /* ---------------- 后端模式：目录浏览器 ---------------- */
-  var browsePath = '';
+  var browsePath = '', browseRemote = false, browseLocalPath = '';
   function browseTo(path) {
     var list = $('#browseList');
     list.innerHTML = '<div class="browse-empty">读取中…</div>';
-    return apiJson('/api/ls', { path: path, recursive: '0' }).then(function (j) {
+    var req = browseRemote ? apiJson('/api/remote/ls', { path: path }).then(function (j) {
+      return { dir: j.path, entries: (j.entries || []).map(function (e) { return { rel: e.rel, name: e.name, kind: e.kind, path: e.path, size: e.size }; }) };
+    }) : apiJson('/api/ls', { path: path, recursive: '0' });
+    return req.then(function (j) {
+      if (!browseRemote) browseLocalPath = j.dir;
       browsePath = j.dir;
       $('#browsePath').value = j.dir;
       var rows = [];
@@ -4622,6 +4846,12 @@
     if (!r || r.kind === 'empty') { toast('先选中一个项'); return Promise.resolve(false); }
     if (r.kind === 'up') return Promise.resolve(browseTo(r.path)).then(function () { return false; });
     if (r.dir) return Promise.resolve(browseTo(r.path)).then(function () { return false; });
+    if (browseRemote) {                      /* 云端：目前只接了视频（经后端 /api/remote/data 中转，<video> 不需要认证头） */
+      if (r.kind !== 'video') { toast('云端目前只能播放视频；图 / 压缩包请用书架'); return Promise.resolve(false); }
+      openRemoteVideo(r.path, list._rows);
+      toggleModal('browse', false);
+      return Promise.resolve(true);
+    }
     /* 打开成功就收窗，失败留着让用户改路径 */
     return openServerPath(r.path).then(function (ok) {
       if (ok) toggleModal('browse', false);
@@ -4649,6 +4879,298 @@
       lsSet('iv.recent', rec);
     } catch (e) { /* ignore */ }
   }
+
+  /* ================= 视频播放（浏览器原生 <video>，不转码）=================
+     数据来源：后端模式的 /api/data（真 Range，可拖进度条）或拖进来 / 选中的本地 File（blob: URL）。
+     续播点：后端模式写桌面版同一个 _video_resume_（/api/videoresume，毫秒）；纯浏览器模式没有落盘处，不记。 */
+  var LS_VIDEO = 'iv.video.ui.v1';
+  var VP = { items: [], i: -1, subs: [], subIdx: -1, trackUrl: null, lastSave: 0, resumeMs: null, tryAnyway: false, seq: 0 };
+  var vpPrefs = lsGet(LS_VIDEO, null) || {};
+  var VP_CUE_SIZES = [80, 100, 130, 170];
+  function vpV() { return $('#vpVideo'); }
+  function vpOpen() { return !$('#vplayer').classList.contains('hidden'); }
+  function vpSavePrefs() { lsSet(LS_VIDEO, vpPrefs); }
+  function vpMsg(text, canTry) {
+    $('#vpMsgText').textContent = text || '';
+    $('#vpTry').classList.toggle('hidden', !canTry);
+    $('#vpMsg').classList.toggle('hidden', !text);
+  }
+  function vpApplyCue() {
+    var st = $('#vpCueStyle');
+    if (!st) { st = document.createElement('style'); st.id = 'vpCueStyle'; document.head.appendChild(st); }
+    var pct = VP_CUE_SIZES[C.clamp(vpPrefs.cue == null ? 1 : vpPrefs.cue, 0, VP_CUE_SIZES.length - 1)];
+    st.textContent = '#vpVideo::cue { font-size: ' + pct + '%; }';
+    $('#vpSubSize').textContent = '字幕 ' + (pct < 100 ? 'A-' : pct === 100 ? 'A' : pct < 170 ? 'A+' : 'A++');
+  }
+  function vpFmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return (h ? h + ':' + (m < 10 ? '0' : '') : '') + m + ':' + (s < 10 ? '0' : '') + s;
+  }
+
+  /** items: [{ name, path?(后端磁盘路径), url, subs?:[{name, file}] }]；idx 从哪个开始 */
+  function openVideoList(items, idx) {
+    if (!items || !items.length) return;
+    closeModals();
+    VP.items = items;
+    $('#start').classList.add('hidden');
+    $('#vplayer').classList.remove('hidden');
+    document.body.style.overscrollBehavior = 'contain';
+    var v = vpV();
+    $('#vpPip').hidden = !(document.pictureInPictureEnabled && v.requestPictureInPicture);
+    $('#vpRate').value = String(vpPrefs.rate || 1);
+    vpApplyCue();
+    vpLoad(C.clamp(idx || 0, 0, items.length - 1));
+  }
+
+  function vpLoad(i) {
+    var v = vpV(), seq = ++VP.seq;
+    vpSaveResume(true);
+    var it = VP.items[i];
+    VP.i = i; VP.tryAnyway = false; VP.resumeMs = null; VP.lastSave = 0;
+    vpSubReset();
+    vpMsg('');
+    $('#vpTitle').textContent = it.name; $('#vpTitle').title = it.path || it.name;
+    $('#vpPos').textContent = VP.items.length > 1 ? (i + 1) + ' / ' + VP.items.length : '';
+    $('#vpPrev').disabled = i <= 0; $('#vpNext').disabled = i >= VP.items.length - 1;
+    document.title = it.name;
+    /* canPlayType 只看容器：'no' 时先提示，但允许「仍然尝试」（Chrome 对 mkv 里的 H.264 常常其实能播） */
+    var sup = C.videoSupport(it.name, v.canPlayType.bind(v));
+    if (sup === 'no') {
+      v.removeAttribute('src'); v.load();
+      vpMsg('这个浏览器声称不支持 ' + (C.videoMime(it.name) || it.name) + ' 格式。' + C.videoErrorMessage({ code: 4 }, it.name), true);
+    } else {
+      vpSetSrc(it);
+    }
+    /* 续播点 + 旁挂字幕（后端模式才有）：各自异步，过期（切到别的视频）就丢 */
+    if (BE.on && it.path) {
+      apiJson('/api/videoresume', { path: it.path }).then(function (j) {
+        if (seq !== VP.seq || !j || !j.ms) return;
+        VP.resumeMs = j.ms;
+        if (v.readyState >= 1) vpApplyResume();
+      })['catch'](function () { /* 没有续播点也不影响播放 */ });
+      apiJson('/api/subtitle', { path: it.path }).then(function (j) {
+        if (seq !== VP.seq) return;
+        (j.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, remote: it.path }); });
+        vpSubRefresh();
+        if (VP.subs.length && VP.subIdx < 0) vpSubSelect(0);
+      })['catch'](function () { /* 列不出字幕就算了 */ });
+    }
+    (it.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, file: s.file, url: s.url }); });
+    vpSubRefresh();
+    if (it.subs && it.subs.length && VP.subIdx < 0) vpSubSelect(0);
+  }
+
+  function vpSetSrc(it) {
+    var v = vpV();
+    v.src = it.url;
+    v.playbackRate = vpPrefs.rate || 1;
+    v.defaultPlaybackRate = vpPrefs.rate || 1;
+    var p = v.play();
+    if (p && p['catch']) p['catch'](function () { /* 自动播放被拦：用户点播放即可 */ });
+  }
+  function vpApplyResume() {
+    var v = vpV();
+    if (!VP.resumeMs) return;
+    var t = VP.resumeMs / 1000; VP.resumeMs = null;
+    if (isFinite(v.duration) && t < v.duration - 3) {
+      try { v.currentTime = t; toast('已接上上次进度 ' + vpFmtTime(t)); } catch (e) { /* 不可 seek 的流 */ }
+    }
+  }
+  function vpSaveResume(force) {
+    var v = vpV(), it = VP.items[VP.i];
+    if (!BE.on || !it || !it.path || !v.src || !isFinite(v.duration) || v.duration <= 0) return;
+    var now = Date.now();
+    if (!force && now - VP.lastSave < 5000) return;
+    VP.lastSave = now;
+    var ms = v.ended ? Math.floor(v.duration * 1000) : Math.floor(v.currentTime * 1000);
+    try {
+      fetch(apiPath('/api/videoresume', { path: it.path }), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, keepalive: true,
+        body: JSON.stringify({ path: it.path, ms: ms, length: Math.floor(v.duration * 1000) })
+      })['catch'](function () { /* 后端没了就算了，下次再记 */ });
+    } catch (e) { /* ignore */ }
+  }
+
+  /* ---- 字幕 ---- */
+  function vpSubReset() {
+    var v = vpV();
+    Array.prototype.slice.call(v.querySelectorAll('track')).forEach(function (t) { t.remove(); });
+    if (VP.trackUrl) { try { URL.revokeObjectURL(VP.trackUrl); } catch (e) { /* ignore */ } VP.trackUrl = null; }
+    VP.subs = []; VP.subIdx = -1;
+    vpSubRefresh();
+  }
+  function vpSubRefresh() {
+    var sel = $('#vpSubSel');
+    sel.innerHTML = '<option value="-1">无字幕</option>' + VP.subs.map(function (s, i) {
+      return '<option value="' + i + '">' + esc(s.name) + '</option>';
+    }).join('');
+    sel.value = String(VP.subIdx);
+  }
+  /** 把 WebVTT 文本挂成 <track>（Blob URL）；null = 关闭字幕 */
+  function vpSubAttach(vtt, label) {
+    var v = vpV();
+    Array.prototype.slice.call(v.querySelectorAll('track')).forEach(function (t) { t.remove(); });
+    if (VP.trackUrl) { try { URL.revokeObjectURL(VP.trackUrl); } catch (e) { /* ignore */ } VP.trackUrl = null; }
+    if (vtt == null) return;
+    VP.trackUrl = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+    var tr = document.createElement('track');
+    tr.kind = 'subtitles'; tr.label = label || '字幕'; tr.srclang = 'zh'; tr.src = VP.trackUrl; tr['default'] = true;
+    v.appendChild(tr);
+    tr.addEventListener('load', function () { try { tr.track.mode = 'showing'; } catch (e) { /* ignore */ } });
+    try { tr.track.mode = 'showing'; } catch (e2) { /* ignore */ }
+  }
+  function vpSubSelect(i) {
+    var s = VP.subs[i], seq = VP.seq;
+    VP.subIdx = s ? i : -1;
+    $('#vpSubSel').value = String(VP.subIdx);
+    if (!s) { vpSubAttach(null); return Promise.resolve(); }
+    function use(bytesOrText) {
+      if (seq !== VP.seq) return;
+      var text = typeof bytesOrText === 'string' ? bytesOrText : C.decodeSubtitle(new Uint8Array(bytesOrText));
+      var vtt = C.subtitleToVtt(text, s.name);
+      if (!/-->/.test(vtt)) { toast('字幕「' + s.name + '」里没有读到时间轴（不是有效的 srt / vtt / ass？）'); vpSubAttach(null); return; }
+      vpSubAttach(vtt, s.name);
+    }
+    if (s.text != null) { use(s.text); return Promise.resolve(); }
+    if (s.url) return fetch(s.url).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
+    if (s.file) return s.file.arrayBuffer().then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
+    return fetch(apiPath('/api/subtitle', { path: s.remote, name: s.name })).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    }).then(use, function (e) { toast('读取字幕失败：' + ((e && e.message) || e)); });
+  }
+  function vpSubAddFiles(files) {
+    var added = -1;
+    Array.prototype.forEach.call(files || [], function (f) {
+      if (!C.SUB_EXTS.test(f.name)) { toast('不是字幕文件（支持 .srt .vtt .ass .ssa）：' + f.name); return; }
+      VP.subs.push({ name: f.name, file: f }); added = VP.subs.length - 1;
+    });
+    vpSubRefresh();
+    if (added >= 0) vpSubSelect(added);
+  }
+
+  function vpClose() {
+    var v = vpV();
+    vpSaveResume(true);
+    VP.seq++;
+    try { v.pause(); } catch (e) { /* ignore */ }
+    if (document.pictureInPictureElement) { try { document.exitPictureInPicture(); } catch (e2) { /* ignore */ } }
+    v.removeAttribute('src'); v.load();
+    vpSubReset();
+    $('#vplayer').classList.add('hidden');
+    document.body.style.overscrollBehavior = '';
+    document.title = '图片 / 漫画浏览器';
+    VP.items = []; VP.i = -1;
+    if (!pages.length) $('#start').classList.remove('hidden');
+  }
+  function vpStep(d) {
+    var n = VP.i + d;
+    if (n < 0 || n >= VP.items.length) return;
+    vpLoad(n);
+  }
+  function vpKey(e) {
+    if (e.key === 'Escape') { e.preventDefault(); vpClose(); return; }
+    var tag = e.target && e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'VIDEO') return;    /* 焦点在原生控件上：交给浏览器 */
+    var v = vpV();
+    if (e.key === ' ') { e.preventDefault(); if (v.paused) v.play(); else v.pause(); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 5); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 5); }
+    else if (e.key === 'PageUp') { e.preventDefault(); vpStep(-1); }
+    else if (e.key === 'PageDown') { e.preventDefault(); vpStep(1); }
+  }
+
+  /** 从拖放 / 选文件得到的 File 列表里取视频（+ 同时给的字幕）。返回 true = 已接手 */
+  function openVideoFiles(entries) {
+    var vids = entries.filter(function (e) { return e.file && C.isVideoName(e.name); });
+    if (!vids.length) return false;
+    if (entries.some(function (e) { return C.WEB_IMAGE_EXTS.test(e.name); })) return false;     /* 图 + 视频混选：按图册开（视频会被跳过并提示） */
+    var subs = entries.filter(function (e) { return e.file && C.SUB_EXTS.test(e.name); })
+      .map(function (e) { return { name: e.name, file: e.file }; });
+    vids.sort(function (a, b) { return C.naturalCompare(a.name, b.name); });
+    var items = vids.map(function (e) {
+      var stem = e.name.replace(/\.[^.]+$/, '').toLowerCase();
+      var mine = subs.filter(function (s) { var b = s.name.replace(/\.[^.]+$/, '').toLowerCase(); return b === stem || b.indexOf(stem + '.') === 0; });
+      return { name: e.name, url: URL.createObjectURL(e.file), file: e.file, subs: mine.length ? mine : (vids.length === 1 ? subs : []) };
+    });
+    openVideoList(items, 0);
+    return true;
+  }
+  /** 云端（后端已配置的 WebDAV）：同目录视频当播放列表，同主名字幕自动挂；全部经 /api/remote/data 中转 */
+  function openRemoteVideo(path, rows) {
+    var vids = (rows || []).filter(function (r) { return r.kind === 'video'; });
+    var subRows = (rows || []).filter(function (r) { return C.SUB_EXTS.test(r.name || ''); });
+    var items = vids.map(function (r) {
+      var stem = r.name.replace(/\.[^.]+$/, '').toLowerCase();
+      return { name: r.name, url: apiPath('/api/remote/data', { path: r.path }), remotePath: r.path,
+        subs: subRows.filter(function (s) { var b = s.name.replace(/\.[^.]+$/, '').toLowerCase(); return b === stem || b.indexOf(stem + '.') === 0; })
+          .map(function (s) { return { name: s.name, url: apiPath('/api/remote/data', { path: s.path }) }; }) };
+    });
+    var idx = 0;
+    items.forEach(function (it, k) { if (it.remotePath === path) idx = k; });
+    if (!items.length) items = [{ name: C.baseName(path), url: apiPath('/api/remote/data', { path: path }) }];
+    openVideoList(items, idx);
+  }
+  /** 后端模式：按磁盘路径播放，同目录的其它视频当播放列表 */
+  function openServerVideo(path) {
+    var dir = String(path).replace(/[\\/][^\\/]*$/, '');
+    return apiJson('/api/ls', { path: dir, recursive: '0' }).then(function (j) {
+      var vids = (j.entries || []).filter(function (e) { return e.kind === 'video'; });
+      var norm = normKey(path).toLowerCase();
+      var idx = 0;
+      var items = vids.map(function (e, k) {
+        if (normKey(e.path).toLowerCase() === norm) idx = k;
+        return { name: e.name, path: e.path, url: dataUrl(e.path) };
+      });
+      if (!items.length) items = [{ name: C.baseName(path), path: path, url: dataUrl(path) }];
+      openVideoList(items, idx);
+      return true;
+    }, function () {
+      openVideoList([{ name: C.baseName(path), path: path, url: dataUrl(path) }], 0);
+      return true;
+    });
+  }
+
+  (function wireVideo() {
+    var v = vpV();
+    $('#vpClose').addEventListener('click', vpClose);
+    $('#vpPrev').addEventListener('click', function () { vpStep(-1); });
+    $('#vpNext').addEventListener('click', function () { vpStep(1); });
+    $('#vpRate').addEventListener('change', function () {
+      var r = parseFloat(this.value) || 1;
+      v.playbackRate = r; v.defaultPlaybackRate = r; vpPrefs.rate = r; vpSavePrefs();
+    });
+    $('#vpPip').addEventListener('click', function () {
+      if (document.pictureInPictureElement) document.exitPictureInPicture()['catch'](function () {});
+      else if (v.requestPictureInPicture) v.requestPictureInPicture()['catch'](function (e) { toast('画中画不可用：' + ((e && e.message) || e)); });
+    });
+    $('#vpSubSel').addEventListener('change', function () { vpSubSelect(parseInt(this.value, 10)); });
+    $('#vpSubLoad').addEventListener('click', function () { $('#vpSubInput').click(); });
+    $('#vpSubInput').addEventListener('change', function (e) { var fs = e.target.files; vpSubAddFiles(fs); e.target.value = ''; });
+    $('#vpSubSize').addEventListener('click', function () {
+      vpPrefs.cue = ((vpPrefs.cue == null ? 1 : vpPrefs.cue) + 1) % VP_CUE_SIZES.length; vpSavePrefs(); vpApplyCue();
+    });
+    $('#vpTry').addEventListener('click', function () {
+      var it = VP.items[VP.i]; if (!it) return;
+      VP.tryAnyway = true; vpMsg(''); vpSetSrc(it);
+    });
+    v.addEventListener('loadedmetadata', function () { vpMsg(''); vpApplyResume(); });
+    v.addEventListener('playing', function () { vpMsg(''); });
+    v.addEventListener('timeupdate', function () { vpSaveResume(false); });
+    v.addEventListener('pause', function () { vpSaveResume(true); });
+    v.addEventListener('ended', function () {
+      vpSaveResume(true);
+      if (VP.i < VP.items.length - 1) { toast('播放下一个：' + VP.items[VP.i + 1].name); vpStep(1); }
+    });
+    v.addEventListener('error', function () {
+      var it = VP.items[VP.i];
+      if (!it || !v.getAttribute('src')) return;
+      vpMsg(C.videoErrorMessage(v.error, it.name), false);
+    });
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden' && vpOpen()) vpSaveResume(true); });
+    window.addEventListener('pagehide', function () { if (vpOpen()) vpSaveResume(true); });
+  })();
 
   /* ================= 拖放 ================= */
   var dragDepth = 0;
@@ -4682,6 +5204,7 @@
     }
     Promise.all(jobs).then(function () {
       entries.forEach(function (e) { if (e.file && !e.size) e.size = e.file.size; });
+      if (openVideoFiles(entries)) return;            /* 拖进来的视频：浏览器直接播（blob URL，不上传后端） */
       /* 后端模式下 rar/cbr/pdf 先落到后端再按路径打开（浏览器拿不到绝对路径） */
       var served = entries.filter(function (e) { return e.file && canServeFile(e.name); });
       if (served.length) {
@@ -5287,7 +5810,7 @@
   document.querySelectorAll('[data-close]').forEach(function (b) {
     b.addEventListener('click', function () { toggleModal(b.dataset.close, false); });
   });
-  ['help', 'detail', 'jump', 'browse', 'dav', 'shelf'].forEach(function (id) {
+  ['help', 'detail', 'jump', 'browse', 'dav', 'shelf', 'rcloud'].forEach(function (id) {
     $('#' + id).addEventListener('click', function (e) { if (e.target === $('#' + id)) toggleModal(id, false); });
   });
   $('#folderInput').addEventListener('change', function (e) {
@@ -5300,6 +5823,7 @@
     var list = filesFromInput(e.target);
     e.target.value = '';
     if (!list.length) return;
+    if (openVideoFiles(list)) return;
     if (list.length === 1 && list[0].file && canServeFile(list[0].name)) {
       openViaBackend(list[0].file); return;
     }
@@ -5352,6 +5876,62 @@
     browseTo(up || p);
   });
   $('#browseOpen').addEventListener('click', function () { browseOpenSel(); });
+  /* 云端（后端 WebDAV）账号：后端 POST /api/remote/config 会先连一次自检，成功才保存；密码从不回显 */
+  function rcRefresh() {
+    return apiJson('/api/remote/config').then(function (c) {
+      $('#rcState').textContent = c.connected ? '已连接：' + c.base_url + (c.username ? '（' + c.username + '）' : '') : '尚未连接';
+      $('#rcDisconnect').disabled = !c.connected;
+      if (c.connected) { $('#rcUrl').value = c.base_url; $('#rcUser').value = c.username || ''; }
+      return c;
+    });
+  }
+  function openRcloud(msg) {
+    $('#rcMsg').textContent = msg || ''; $('#rcPass').value = '';
+    toggleModal('rcloud', true);
+    rcRefresh()['catch'](function (e) { $('#rcMsg').textContent = '读取配置失败：' + ((e && e.message) || e); });
+    setTimeout(function () { try { $('#rcUrl').value ? $('#rcPass').focus() : $('#rcUrl').focus(); } catch (e) {} }, 60);
+  }
+  function enterCloud() {
+    browseRemote = true; $('#browseCloud').classList.add('on');
+    return browseTo('');
+  }
+  function leaveCloud() {
+    browseRemote = false; $('#browseCloud').classList.remove('on');
+    return browseTo(browseLocalPath || $('#browsePath').value || '');
+  }
+  $('#browseCloud').addEventListener('click', function () {
+    if (browseRemote) { leaveCloud(); return; }
+    apiJson('/api/remote/config').then(function (c) {
+      if (!c.connected) { openRcloud('先填 WebDAV 账号（AList 地址形如 http://主机:5244/dav）'); return; }
+      enterCloud();
+    })['catch'](function (e) { toast('读取云端配置失败：' + ((e && e.message) || e)); });
+  });
+  $('#browseCloudCfg').addEventListener('click', function () { openRcloud(''); });
+  $('#rcConnect').addEventListener('click', function () {
+    var url = $('#rcUrl').value.trim(), btn = this;
+    if (!url) { $('#rcMsg').textContent = '请填 WebDAV 地址'; return; }
+    if (!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    btn.disabled = true; $('#rcMsg').textContent = '正在连接…';
+    apiJson('/api/remote/config', null, 'POST', { base_url: url, username: $('#rcUser').value.trim(), password: $('#rcPass').value }).then(function () {
+      $('#rcPass').value = '';
+      toggleModal('rcloud', false);
+      toast('云端已连接');
+      if (!$('#browse').classList.contains('hidden')) return enterCloud();
+    }, function (e) {
+      var m = String((e && e.message) || e);
+      var hint = /404|Not Found/i.test(m) ? '（地址对吗？AList 要带 /dav，例如 http://主机:5244/dav）'
+        : /401|Unauthorized/i.test(m) ? '（用户名或密码不对？AList 需要在「用户」里开启 WebDAV 读取权限）' : '';
+      $('#rcMsg').textContent = '连接失败：' + m + hint;
+    }).then(function () { btn.disabled = false; });
+  });
+  $('#rcPass').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#rcConnect').click(); } });
+  $('#rcDisconnect').addEventListener('click', function () {
+    apiJson('/api/remote/disconnect', null, 'POST', {}).then(function () {
+      $('#rcUrl').value = ''; $('#rcUser').value = ''; $('#rcPass').value = '';
+      toggleModal('rcloud', false); toast('已断开并删除云端账号');
+      if (browseRemote) leaveCloud();
+    }, function (e) { $('#rcMsg').textContent = '断开失败：' + ((e && e.message) || e); });
+  });
   $('#browseList').addEventListener('click', function (e) {
     var it = e.target.closest ? e.target.closest('.brow-item') : null;
     if (!it) return;
@@ -5977,6 +6557,12 @@
     location.assign(launchBack);
   });
   $('#startDav').addEventListener('click', function () { askDav(); });
+  /* 起始页的全屏层盖住了顶部工具栏，所以后端模式的入口在这里再放一份 */
+  $('#startDisk').addEventListener('click', openBrowse);
+  $('#startCloud').addEventListener('click', function () {
+    openBrowse();
+    if (!browseRemote) $('#browseCloud').click();
+  });
   $('#btnVolPrev').addEventListener('click', function () { volStep(-1); });
   $('#btnVolNext').addEventListener('click', function () { volStep(1); });
   $('#volBarPrev').addEventListener('click', function () { volStep(-1); });

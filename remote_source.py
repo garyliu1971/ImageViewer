@@ -71,6 +71,25 @@ class RemoteProvider:
         return None
 
 
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """跟随重定向（AList 的 WebDAV 常把文件 GET 302 到网盘 CDN），但跨主机 / 降级到 http 时丢掉 Authorization，
+    免得把 WebDAV 账号发给 CDN。Range 等其它头原样保留，CDN 才能回 206。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        a, b = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+        if (a.scheme, a.netloc.lower()) != (b.scheme, b.netloc.lower()):
+            for store in (new.headers, new.unredirected_hdrs):
+                for k in [k for k in store if k.lower() == "authorization"]:
+                    del store[k]
+        return new
+
+
+_safe_opener = urllib.request.build_opener(_SafeRedirect())
+
+
 class WebDavProvider(RemoteProvider):
     """WebDAV（坚果云 / NAS / 阿里云盘 WebDAV 等）provider，Basic Auth + PROPFIND。"""
 
@@ -139,6 +158,8 @@ class WebDavProvider(RemoteProvider):
             href = resp.findtext("{DAV:}href")
             if not href:
                 continue
+            if "://" in href:                      # 个别服务器回绝对 URL：只留路径（保持百分号编码）
+                href = urllib.parse.urlsplit(href).path or "/"
             # href 保持百分号编码，用于后续请求 URL；仅显示名解码
             if urllib.parse.unquote(href).rstrip("/") == requested:
                 continue  # 跳过集合自身（按解码后比较，兼容 %e4/%E4 大小写与中文原文）
@@ -162,10 +183,12 @@ class WebDavProvider(RemoteProvider):
                     kind = "archive"
                 elif ext in PDF_EXTS:
                     kind = "pdf"
+                elif ext in (".srt", ".vtt", ".ass", ".ssa"):
+                    kind = "subtitle"     # 网页版播视频时挂同名字幕用；桌面版 media_only=True 看不到
                 else:
                     kind = "other"
                 keep = (("image", "video", "audio") if media_only
-                        else ("image", "video", "audio", "archive", "pdf"))
+                        else ("image", "video", "audio", "archive", "pdf", "subtitle"))
                 if kind not in keep:
                     continue
                 entries.append(RemoteSource(
@@ -179,7 +202,7 @@ class WebDavProvider(RemoteProvider):
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(self._url(src.path), headers=hdrs)
-        return urllib.request.urlopen(req, timeout=60)
+        return _safe_opener.open(req, timeout=60)
 
     THUMB_MAX_BYTES = 20 * 1024 * 1024
 

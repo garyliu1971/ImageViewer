@@ -1898,3 +1898,63 @@ test('createAiPager + createTtsRunner：无文字层的 PDF 经 AI 取页后，r
   assert.ok(states.some((s) => s[0] === 'notext' && s[1] === 2));
   assert.ok(states.some((s) => s[0] === 'done'));
 });
+
+// ---------------- 视频：格式判断 / 字幕转换 ----------------
+test('视频格式判断：扩展名 + canPlayType', () => {
+  assert.ok(C.isVideoName('a/b/电影.MP4'));
+  assert.ok(C.isVideoName('x.mkv'));
+  assert.ok(!C.isVideoName('x.mp3'));
+  assert.ok(!C.isVideoName('x.srt'));
+  assert.equal(C.videoMime('a.webm'), 'video/webm');
+  assert.equal(C.videoMime('a.mov'), 'video/quicktime');
+  assert.equal(C.videoMime('a.txt'), '');
+  const chromeLike = (m) => (/mp4|webm|ogg/.test(m) ? 'probably' : /matroska/.test(m) ? 'maybe' : '');
+  assert.equal(C.videoSupport('a.mp4', chromeLike), 'yes');
+  assert.equal(C.videoSupport('a.mkv', chromeLike), 'maybe');
+  assert.equal(C.videoSupport('a.avi', chromeLike), 'no');
+  assert.equal(C.videoSupport('a.txt', chromeLike), 'no');
+  assert.equal(C.videoSupport('a.mp4', () => ''), 'no');
+  assert.match(C.videoErrorMessage({ code: 4 }, 'a.mp4'), /HEVC/);
+  assert.match(C.videoErrorMessage({ code: 4 }, 'a.avi'), /\.avi/);
+  assert.match(C.videoErrorMessage({ code: 2 }, 'a.mp4'), /网络/);
+});
+
+test('SRT -> WebVTT：BOM / CRLF / 逗号 / 序号 / 标记', () => {
+  const srt = '\uFEFF1\r\n00:00:01,000 --> 00:00:02,500\r\n你好\r\n世界\r\n\r\n2\r\n00:01:02,5 --> 00:01:03,000 X1:10\r\n<font color="red">second</font> {\\an8}line & more\r\n\r\n';
+  const vtt = C.srtToVtt(srt);
+  assert.ok(vtt.startsWith('WEBVTT\n\n'));
+  assert.ok(!vtt.includes('\r') && !vtt.includes('\uFEFF'));
+  assert.ok(vtt.includes('00:00:01.000 --> 00:00:02.500\n你好\n世界\n'));
+  assert.ok(vtt.includes('00:01:02.500 --> 00:01:03.000\n'));          // 毫秒位补齐到 3 位
+  assert.ok(vtt.includes('second line &amp; more'));                    // font / {\an8} 被去掉，& 转义
+  assert.ok(!/,\d{3} -->/.test(vtt));
+});
+
+test('SRT -> WebVTT：短时间、无序号、已是 VTT、垃圾块', () => {
+  assert.ok(C.srtToVtt('1:02,3 --> 1:03,4\nhi\n').includes('00:01:02.300 --> 00:01:03.400\nhi'));
+  assert.ok(C.srtToVtt('00:00:01.000 --> 00:00:02.000\nno index\n').includes('no index'));
+  const v = 'WEBVTT\r\n\r\n00:00:01.000 --> 00:00:02.000\r\nhi\r\n';
+  assert.equal(C.srtToVtt(v), 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n');
+  const junk = C.srtToVtt('随便一段\n\n3\nnot a time\ntext\n\n4\n00:00:05,000 --> 00:00:06,000\nok\n');
+  assert.equal(junk, 'WEBVTT\n\n00:00:05.000 --> 00:00:06.000\nok\n');
+  assert.equal(C.srtToVtt(''), 'WEBVTT\n');
+});
+
+test('ASS -> WebVTT：只取 Dialogue 文本，丢样式，排序', () => {
+  const ass = '[Script Info]\nTitle: x\n[V4+ Styles]\nStyle: Default,Arial,20\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n' +
+    'Dialogue: 0,0:00:05.00,0:00:06.50,Default,,0,0,0,,{\\an8\\b1}第二句\\N换行, 带逗号\n' +
+    'Comment: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,注释不要\n' +
+    'Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,第一句\n';
+  const vtt = C.assToVtt(ass);
+  assert.equal(vtt, 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n第一句\n\n00:00:05.000 --> 00:00:06.500\n第二句\n换行, 带逗号\n');
+  assert.equal(C.subtitleToVtt(ass, 'a.ass'), vtt);
+  assert.ok(C.subtitleToVtt('1\n00:00:01,000 --> 00:00:02,000\nx\n', 'a.srt').startsWith('WEBVTT'));
+});
+
+test('字幕解码：UTF-8 BOM / GBK / UTF-16LE', () => {
+  const u8 = new Uint8Array([0xEF, 0xBB, 0xBF, ...Buffer.from('你好', 'utf8')]);
+  assert.equal(C.decodeSubtitle(u8), '你好');
+  assert.equal(C.decodeSubtitle(new Uint8Array([0xC4, 0xE3, 0xBA, 0xC3])), '你好');       // GBK 的“你好”
+  const u16 = new Uint8Array([0xFF, 0xFE, 0x60, 0x4F, 0x7D, 0x59]);
+  assert.equal(C.decodeSubtitle(u16), '你好');
+});
