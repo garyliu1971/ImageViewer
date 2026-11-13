@@ -279,6 +279,21 @@
     font-size: 14px; line-height: 1.7; text-align: center; display: flex; flex-direction: column; gap: 12px; align-items: center;
   }
   #vpMsg.hidden { display: none; }
+  #vpInfo { flex: 0 1 auto; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+  #vpInfo.warn { color: #e0b060; }
+  #vpInfo.hidden { display: none; }
+  #vpNote { position: absolute; left: 12px; right: 12px; top: 10px; z-index: 3; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    background: rgba(40,34,18,.94); border: 1px solid rgba(224,176,96,.5); border-radius: 10px; padding: 8px 12px; font-size: 13px; line-height: 1.6; }
+  #vpNote.hidden { display: none; }
+  #vpNoteText { flex: 1 1 260px; }
+  #vpNote .btn { font-size: 12px; padding: 4px 10px; background: rgba(255,255,255,.12); }
+  #vpNote .btn.primary { background: var(--accent); color: #fff; }
+  #vpTc { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--panel); flex: 0 0 auto; font-size: 12px; }
+  #vpTc.hidden { display: none; }
+  #vpTcSeek { flex: 1 1 auto; width: auto; }
+  #vpTcTime { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #vpTc .btn { font-size: 12px; padding: 3px 8px; background: rgba(255,255,255,.1); }
+
   #vpLoad { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; flex-direction: column; align-items: center;
     gap: 8px; padding: 14px 18px; border-radius: 12px; background: rgba(0,0,0,.55); font-size: 13px; text-align: center; pointer-events: none;
     max-width: min(460px, calc(100% - 32px)); z-index: 2; }
@@ -1014,12 +1029,22 @@
   <div class="vp-top">
     <button class="btn icon" id="vpClose" title="关闭（Esc）">✕</button>
     <span id="vpTitle"></span>
+    <span id="vpInfo" class="hidden"></span>
     <span id="vpPos"></span>
   </div>
   <div class="vp-stage">
     <video id="vpVideo" controls playsinline preload="metadata"></video>
     <div id="vpMsg" class="hidden"><div id="vpMsgText"></div><button class="btn primary hidden" id="vpTry">仍然尝试播放</button></div>
     <div id="vpLoad" class="hidden" role="status" aria-live="polite"><div class="vp-spin"></div><div id="vpLoadText">加载中…</div><div id="vpLoadHint"></div><button class="btn hidden" id="vpLoadTry">仍然尝试播放</button></div>
+    <div id="vpNote" class="hidden" role="status"><span id="vpNoteText"></span><span><button class="btn hidden" id="vpNoteVlc">用 VLC 打开</button> <button class="btn primary hidden" id="vpNoteFf">转成可播放音轨（ffmpeg）</button> <button class="btn" id="vpNoteX" title="关闭提示">✕</button></span></div>
+  </div>
+  <div id="vpTc" class="hidden">
+    <button class="btn" id="vpTcPlay" title="播放 / 暂停">⏯</button>
+    <input type="range" id="vpTcSeek" min="0" max="1" step="1" value="0" aria-label="进度（转码流：拖动后重新开始转码）">
+    <span id="vpTcTime">0:00 / 0:00</span>
+    <select id="vpTcAudio" title="音轨"></select>
+    <button class="btn" id="vpTcStereo" title="把多声道混成立体声（5.1 声音太小时用）">立体声混音：关</button>
+    <button class="btn" id="vpTcOff" title="退出转码，回到直接播放">退出转码</button>
   </div>
   <div class="vp-bar">
     <button class="btn" id="vpPrev" title="上一个视频">⏮ 上一个</button>
@@ -3146,6 +3171,7 @@
     var tags = [];
     tags.push(caps.rar ? 'rar/cbr ✓' : 'rar/cbr ✗（需 rarfile + 7-Zip）');
     tags.push(caps.pdf ? 'PDF ✓' : 'PDF ✗（需 pymupdf）');
+    tags.push(caps.ffmpeg && caps.ffmpeg.available ? 'ffmpeg ✓ ' + (caps.ffmpeg.version || '') : 'ffmpeg ✗（可选：转码 / 编码信息；winget install Gyan.FFmpeg 后重启后端）');
     $('#backendTag').textContent = ' · 后端已连接 ' + tags.join(' · ');
     $('#backendTag').style.display = 'inline';
     $('#statusNote').textContent = '本地后端已连接：rar/cbr、PDF、磁盘路径、与桌面版共享进度可用';
@@ -5184,6 +5210,7 @@
     var it = VP.items[i];
     VP.i = i; VP.tryAnyway = false; VP.resumeMs = null; VP.lastSave = 0;
     vpLoadStop(); VP.metaReady = false;
+    clearInterval(VP.silentT); VP.noteShown = false; VP.tc = null; VP.heavyShown = false; vpNoteHide(); vpTcUi();
     vpSubReset();
     vpMsg('');
     $('#vpTitle').textContent = it.name; $('#vpTitle').title = it.path || it.name;
@@ -5215,6 +5242,7 @@
     }
     (it.subs || []).forEach(function (s) { VP.subs.push({ name: s.name, file: s.file, url: s.url }); });
     vpSubRefresh(); vpSubAuto(seq);
+    vpProbeLoad(it, seq);
   }
 
   /* 每个视频记住自己选过的字幕（本浏览器 localStorage；key 和续播点同一套：本机路径 / 云端路径）。'' = 用户关掉了字幕 */
@@ -5257,7 +5285,7 @@
   /* ---- 加载 / 缓冲状态：从设置 src 起到 canplay / playing 一直显示「加载中…」，3 秒后带上已等待秒数；
      播放中 waiting / stalled 显示「缓冲中…」。加载慢（mkv 的索引在文件尾、云端要多次 Range 读）不是错误：
      只有 error 事件才报错；超过 hintMs 还没拿到元数据只给一条中性提示，不中止加载。---- */
-  var VP_LOAD = { showMs: 3000, hintMs: 45000 };          /* 测试可调：window.__IV.videoLoadTuning */
+  var VP_LOAD = { showMs: 3000, hintMs: 45000, silentSecs: 3 };          /* 测试可调：window.__IV.videoLoadTuning */
   var VP_HINT_SLOW = '加载较慢或格式不受浏览器支持（如 HEVC / AC3 / DTS）。可继续等待，或点「仍然尝试播放」。';
   function vpLoadTick() {
     var L = VP.load; if (!L) return;
@@ -5280,24 +5308,24 @@
   }
   function vpApplyResume() {
     var v = vpV();
-    if (!VP.resumeMs) return;
+    if (!VP.resumeMs || VP.tc) return;
     var t = VP.resumeMs / 1000; VP.resumeMs = null;
     if (isFinite(v.duration) && t < v.duration - 3) {
       try { v.currentTime = t; toast('已接上上次进度 ' + vpFmtTime(t)); } catch (e) { /* 不可 seek 的流 */ }
     }
   }
   function vpSaveResume(force) {
-    var v = vpV(), it = VP.items[VP.i];
-    if (!BE.on || !it || !(it.path || it.remotePath) || !v.src || !isFinite(v.duration) || v.duration <= 0) return;
+    var v = vpV(), it = VP.items[VP.i], dur = vpDur();
+    if (!BE.on || !it || !(it.path || it.remotePath) || !v.src || !isFinite(dur) || dur <= 0) return;
     var now = Date.now();
     if (!force && now - VP.lastSave < 5000) return;
     VP.lastSave = now;
-    var ms = v.ended ? Math.floor(v.duration * 1000) : Math.floor(v.currentTime * 1000);
+    var ms = v.ended ? Math.floor(dur * 1000) : Math.floor(vpPos() * 1000);
     try {
       var who = it.path ? { path: it.path } : { remote: it.remotePath };
       fetch(apiPath('/api/videoresume', who), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, keepalive: true,
-        body: JSON.stringify(Object.assign({ ms: ms, length: Math.floor(v.duration * 1000) }, who))
+        body: JSON.stringify(Object.assign({ ms: ms, length: Math.floor(dur * 1000) }, who))
       })['catch'](function () { /* 后端没了就算了，下次再记 */ });
     } catch (e) { /* ignore */ }
   }
@@ -5314,7 +5342,7 @@
     var sel = $('#vpSubSel');
     sel.innerHTML = '<option value="-1">无字幕</option>' + VP.subs.map(function (s, i) {
       var it = VP.items[VP.i];
-      return '<option value="' + i + '" title="' + esc(s.name) + '">' + esc(it ? C.subLabel(it.name, s.name) : s.name) + '</option>';
+      return '<option value="' + i + '" title="' + esc(s.name) + '">' + esc(it && s.emb == null ? C.subLabel(it.name, s.name) : s.name) + '</option>';
     }).join('');
     sel.value = String(VP.subIdx);
   }
@@ -5354,11 +5382,15 @@
     function use(bytesOrText) {
       if (seq !== VP.seq) return;
       var text = typeof bytesOrText === 'string' ? bytesOrText : C.decodeSubtitle(new Uint8Array(bytesOrText));
-      var vtt = C.subtitleToVtt(text, s.name);
+      var vtt = C.subtitleToVtt(text, s.emb != null ? 'emb.vtt' : s.name);
       if (!/-->/.test(vtt)) { toast('字幕「' + s.name + '」里没有读到时间轴（不是有效的 srt / vtt / ass？）'); vpSubAttach(null); return; }
       vpSubAttach(vtt, s.name);
     }
     if (s.text != null) { use(s.text); return Promise.resolve(); }
+    if (s.emb != null) {                                   /* 内嵌文字字幕：后端用 ffmpeg 转成 WebVTT（转码流按起点偏移对时） */
+      var cur = VP.items[VP.i];
+      return vpFetchSub(apiPath('/api/media/subtitle', Object.assign(vpWho(cur), { stream: s.emb, start: VP.tc ? VP.tc.offset : 0 }))).then(use, fail);
+    }
     if (s.url) return vpFetchSub(s.url).then(use, fail);
     if (s.file) {
       if (s.file.size > C.SUB_MAX_BYTES) { fail(new Error('字幕文件太大（上限 ' + (C.SUB_MAX_BYTES / 1048576) + ' MB）')); return Promise.resolve(); }
@@ -5379,8 +5411,10 @@
   function vpClose() {
     var v = vpV();
     vpLoadStop();
+    clearInterval(VP.silentT); clearTimeout(VP.seekT); vpNoteHide(); $('#vpInfo').classList.add('hidden');
     vpSaveResume(true);
     VP.seq++;
+    VP.tc = null; vpTcUi();
     try { v.pause(); } catch (e) { /* ignore */ }
     if (document.pictureInPictureElement) { try { document.exitPictureInPicture(); } catch (e2) { /* ignore */ } }
     v.removeAttribute('src'); v.load();
@@ -5404,8 +5438,8 @@
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'VIDEO') return;    /* 焦点在原生控件上：交给浏览器 */
     var v = vpV();
     if (e.key === ' ') { e.preventDefault(); if (v.paused) v.play(); else v.pause(); }
-    else if (e.key === 'ArrowLeft') { e.preventDefault(); v.currentTime = Math.max(0, v.currentTime - 5); }
-    else if (e.key === 'ArrowRight') { e.preventDefault(); v.currentTime = Math.min(v.duration || 1e9, v.currentTime + 5); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); vpSeekTo((VP.seekPending != null && VP.tc ? VP.seekPending : vpPos()) - 5); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); vpSeekTo((VP.seekPending != null && VP.tc ? VP.seekPending : vpPos()) + 5); }
     else if (e.key === 'PageUp') { e.preventDefault(); vpStep(-1); }
     else if (e.key === 'PageDown') { e.preventDefault(); vpStep(1); }
   }
@@ -5461,6 +5495,164 @@
     });
   }
 
+
+  /* ================= ffmpeg 辅助：音轨无声提示 / 编码信息 / 实时转码播放 / 内嵌字幕 / 用 VLC 打开（可选，没装 ffmpeg 就不出现）=================
+     转码流是 fragmented MP4，没有真实时长也不能随便拖：这里自己画进度条，拖动 = 以新的起点重启转码流（-ss）；
+     续播点 / 已看都按「原文件时间 = 起点偏移 + currentTime」记在原文件的 key 下。 */
+  function vpFfOk() { return !!(BE.on && BE.caps && BE.caps.ffmpeg && BE.caps.ffmpeg.available); }
+  function vpWho(it) { return it.path ? { path: it.path } : { remote: it.remotePath }; }
+  function vpPos() { var v = vpV(); return (VP.tc ? VP.tc.offset : 0) + (v.currentTime || 0); }
+  function vpDur() { var v = vpV(); return VP.tc ? (VP.tc.duration || 0) : v.duration; }
+  function vpAudioDesc(a) { return String(a.codec || '?').toUpperCase() + (a.channels ? ' ' + (a.channels === 6 ? '5.1' : a.channels === 8 ? '7.1' : a.channels === 2 ? '2.0' : a.channels + 'ch') : ''); }
+  function vpInfoText(p) {
+    var bits = [];
+    if (p.container) bits.push(({ matroska: 'MKV', mov: 'MP4', mpegts: 'TS', mpeg: 'MPEG', asf: 'WMV', flv: 'FLV', avi: 'AVI', ogg: 'OGG' })[p.container] || p.container.toUpperCase());
+    if (p.video) bits.push(String(p.video.codec || '?').toUpperCase() + (p.video.bits > 8 ? ' ' + p.video.bits + 'bit' : '') + (p.video.width ? ' ' + p.video.width + '×' + p.video.height : ''));
+    if (p.audio.length) bits.push(p.audio.map(vpAudioDesc).slice(0, 3).join(' / '));
+    if (p.duration) bits.push(vpFmtTime(p.duration));
+    return bits.join(' · ');
+  }
+  function vpProbeLoad(it, seq) {
+    VP.probe = null; $('#vpInfo').classList.add('hidden');
+    if (!vpFfOk() || !(it.path || it.remotePath)) return;
+    apiJson('/api/media/probe', vpWho(it)).then(function (j) {
+      if (seq !== VP.seq) return;
+      VP.probe = j.probe;
+      var el = $('#vpInfo'), p = j.probe;
+      el.textContent = vpInfoText(p); el.title = p.reason + '（' + (p.action === 'direct' ? '可直接播放' : p.action) + '）';
+      el.classList.toggle('warn', p.action !== 'direct'); el.classList.remove('hidden');
+      vpEmbSubs(it, p);
+    })['catch'](function () { /* 探测失败不影响播放 */ });
+  }
+  function vpEmbSubs(it, p) {
+    var added = false;
+    (p.subtitles || []).forEach(function (s) {
+      if (!s.extractable) return;
+      if (VP.subs.some(function (x) { return x.emb === s.index; })) return;
+      VP.subs.push({ name: '内嵌 #' + (s.index + 1) + (s.language ? ' ' + s.language : '') + (s.title ? ' ' + s.title : '') + ' (' + s.codec + ')', emb: s.index });
+      added = true;
+    });
+    if (added) { vpSubRefresh(); vpSubAuto(VP.seq); }
+  }
+  function vpNoteHide() { $('#vpNote').classList.add('hidden'); }
+  function vpNoteShow(text, vlc, ff) {
+    $('#vpNoteText').textContent = text;
+    $('#vpNoteVlc').classList.toggle('hidden', !vlc);
+    $('#vpNoteFf').classList.toggle('hidden', !ff);
+    $('#vpNote').classList.remove('hidden');
+  }
+  /* 「有画面没声音」：真正在播（currentTime 在走、没静音、音量 > 0）满 silentSecs 秒后，Chrome 的已解码音频字节数仍是 0 */
+  function vpAudioSilent(v) {
+    if (typeof v.webkitAudioDecodedByteCount === 'number') return v.webkitAudioDecodedByteCount === 0;
+    if (v.mozHasAudio === false) return true;
+    return !!(v.audioTracks && v.audioTracks.length === 0);
+  }
+  function vpSilentWatch() {
+    clearInterval(VP.silentT); VP.silentN = 0; VP.silentLast = -1;
+    VP.silentT = setInterval(function () {
+      var v = vpV();
+      if (VP.tc || !v.getAttribute('src') || v.paused || v.ended || v.muted || v.volume === 0 || VP.noteShown) { VP.silentN = 0; VP.silentLast = v.currentTime; return; }
+      if (v.currentTime <= VP.silentLast) { VP.silentLast = v.currentTime; return; }      /* 没在走（缓冲 / seek）不算 */
+      VP.silentLast = v.currentTime; VP.silentN++;
+      if (VP.silentN < VP_LOAD.silentSecs) return;
+      clearInterval(VP.silentT);
+      if (!vpAudioSilent(v)) return;
+      var p = VP.probe;
+      if (p && !p.audio.length) return;                       /* 本来就没有音轨（默片）：不是问题 */
+      var codec = p && p.audio.length ? p.audio.filter(function (a) { return !a.browser_ok; })[0] : null;
+      VP.noteShown = true;
+      vpNoteShow(codec ? '这个视频的音轨（' + vpAudioDesc(codec) + '）浏览器无法解码，所以没有声音。'
+                       : '这个视频的音轨（可能是 AC3 / E-AC3 / DTS / TrueHD）浏览器无法解码，所以没有声音',
+                 !!(BE.on && BE.caps.vlc), vpFfOk());
+    }, 1000);
+  }
+  function vpTcUi() {
+    var tc = VP.tc, v = vpV();
+    $('#vpTc').classList.toggle('hidden', !tc);
+    v.controls = !tc;
+    if (!tc) return;
+    var sk = $('#vpTcSeek');
+    sk.max = String(Math.max(1, Math.floor(tc.duration || 1)));
+    $('#vpTcStereo').textContent = '立体声混音：' + (tc.stereo ? '开' : '关');
+    var sel = $('#vpTcAudio'), p = VP.probe;
+    sel.innerHTML = (p ? p.audio : []).map(function (a) { return '<option value="' + a.index + '">' + esc(vpAudioDesc(a) + (a.language ? ' · ' + a.language : '') + (a.title ? ' · ' + a.title : '')) + '</option>'; }).join('');
+    sel.value = String(tc.audio);
+    vpTcTick();
+  }
+  function vpTcTick() {
+    var tc = VP.tc; if (!tc) return;
+    var pos = vpPos();
+    if (!VP.tcDrag) $('#vpTcSeek').value = String(Math.floor(pos));
+    $('#vpTcTime').textContent = vpFmtTime(pos) + ' / ' + vpFmtTime(tc.duration || 0);
+  }
+  /** 开始 / 重启转码流：startSec = 原文件时间轴上的起点；mode 由后端按探测结果决定（auto） */
+  function vpTcStart(startSec, audioIdx, keepNote) {
+    var it = VP.items[VP.i], v = vpV();
+    if (!vpFfOk() || !it || !(it.path || it.remotePath)) return Promise.resolve();
+    var seq = VP.seq;
+    var go = function (p) {
+      if (seq !== VP.seq) return;
+      var st = Math.max(0, Math.min(startSec || 0, Math.max(0, (p.duration || 0) - 1)));
+      var audio = audioIdx != null ? audioIdx : (VP.tc ? VP.tc.audio : p.audio_index);
+      var stereo = VP.tc ? VP.tc.stereo : !!VP.tcStereo;
+      VP.tc = { offset: st, audio: audio, duration: p.duration, stereo: stereo };
+      if (!keepNote) vpNoteHide();
+      vpTcUi();
+      v.src = apiPath('/api/media/stream', Object.assign(vpWho(it), { mode: 'auto', audio: audio, start: st, stereo: stereo ? 1 : 0 }));
+      v.playbackRate = vpPrefs.rate || 1;
+      VP.metaReady = false; vpLoadStop(); vpLoadStart('load');
+      var pr = v.play(); if (pr && pr['catch']) pr['catch'](function () {});
+      var sub = VP.subs[VP.subIdx];
+      if (sub && sub.emb != null) vpSubSelect(VP.subIdx, true);                /* 内嵌字幕按新起点重新对时 */
+      if (p.action === 'transcode_video' && !VP.heavyShown) { VP.heavyShown = true; toast('这个视频的画面编码（' + String(p.video.codec).toUpperCase() + '）浏览器解不了，正在实时转成 H.264：比较耗 CPU / 显卡，请耐心等待'); }
+    };
+    if (VP.probe) { go(VP.probe); return Promise.resolve(); }
+    return apiJson('/api/media/probe', vpWho(it)).then(function (j) { VP.probe = j.probe; go(j.probe); },
+      function (e) { toast('ffmpeg 探测失败：' + ((e && e.message) || e)); });
+  }
+  function vpTcStop() {
+    var it = VP.items[VP.i], v = vpV(); if (!VP.tc || !it) return;
+    var pos = vpPos();
+    VP.tc = null; vpTcUi();
+    v.src = it.url; VP.resumeMs = Math.floor(pos * 1000);
+    VP.metaReady = false; vpLoadStop(); vpLoadStart('load');
+    var pr = v.play(); if (pr && pr['catch']) pr['catch'](function () {});
+  }
+  function vpSeekTo(sec) {
+    if (VP.tc) {                                          /* 转码流：去抖后以新起点重启 */
+      clearTimeout(VP.seekT);
+      VP.seekPending = Math.max(0, Math.min(sec, (VP.tc.duration || 1e9) - 1));
+      $('#vpTcTime').textContent = vpFmtTime(VP.seekPending) + ' / ' + vpFmtTime(VP.tc.duration || 0);
+      VP.seekT = setTimeout(function () { vpTcStart(VP.seekPending); }, 300);
+    } else { var v = vpV(); v.currentTime = Math.max(0, Math.min(v.duration || 1e9, sec)); }
+  }
+  function vpOpenVlc() {
+    var it = VP.items[VP.i]; if (!it || !(it.path || it.remotePath)) return;
+    apiJson('/api/open-external', null, 'POST', vpWho(it)).then(function () { toast('已交给 VLC 打开（这里的播放可以关了）'); },
+      function (e) { toast('用 VLC 打开失败：' + ((e && e.message) || e)); });
+  }
+  (function wireFf() {
+    var v = vpV();
+    $('#vpNoteX').addEventListener('click', vpNoteHide);
+    $('#vpNoteVlc').addEventListener('click', vpOpenVlc);
+    $('#vpNoteFf').addEventListener('click', function () { vpTcStart(vpPos(), null); });
+    $('#vpTcPlay').addEventListener('click', function () { if (v.paused) v.play(); else v.pause(); });
+    var sk = $('#vpTcSeek');
+    sk.addEventListener('input', function () { VP.tcDrag = true; $('#vpTcTime').textContent = vpFmtTime(+sk.value) + ' / ' + vpFmtTime(VP.tc ? VP.tc.duration : 0); });
+    sk.addEventListener('change', function () { VP.tcDrag = false; vpSeekTo(+sk.value); });
+    $('#vpTcAudio').addEventListener('change', function () { vpTcStart(vpPos(), +this.value); });
+    $('#vpTcStereo').addEventListener('click', function () { if (VP.tc) { VP.tc.stereo = !VP.tc.stereo; VP.tcStereo = VP.tc.stereo; vpTcStart(vpPos(), VP.tc.audio, true); } });
+    $('#vpTcOff').addEventListener('click', vpTcStop);
+    v.addEventListener('timeupdate', vpTcTick);
+    v.addEventListener('playing', vpSilentWatch);
+    v.addEventListener('error', function () {
+      if (!VP.tc) return;
+      vpLoadStop();
+      vpMsg('转码流没能播放：可能是 ffmpeg 打不开这个文件、同时转码的任务太多（上限 ' + 2 + ' 个），或后端已重启。可点「退出转码」回到直接播放，或用 VLC 打开。', false);
+      $('#vpMsg').classList.remove('hidden');
+    });
+  })();
+
   (function wireVideo() {
     var v = vpV();
     $('#vpClose').addEventListener('click', vpClose);
@@ -5499,7 +5691,8 @@
     v.addEventListener('error', function () {
       var it = VP.items[VP.i];
       if (!it || !v.getAttribute('src')) return;
-      vpLoadStop();                                        /* 真正的 error 事件才算失败 */
+      vpLoadStop();
+      if (VP.tc) return;                                   /* 转码流的错误由 wireFf 的处理器给提示 */                                        /* 真正的 error 事件才算失败 */
       vpMsg(C.videoErrorMessage(v.error, it.name), false);
     });
     document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden' && vpOpen()) vpSaveResume(true); });
@@ -7591,7 +7784,7 @@
       areaCap: c.areaCap, maxCanvas: c.maxCanvas, canvasPx: c.canvas ? c.canvas.width * c.canvas.height : 0, reads: c.adapter.reads, bytes: c.adapter.bytes, authGen: c.authGen } : null; },
     launchInfo: function () { return { back: launchBack, hash: location.hash, pending: !!davPending,
       dav: davCfg ? { base: davCfg.base, library: davCfg.library, user: davCfg.user, hasPass: !!davCfg.pass } : null }; },
-    videoLoadTuning: VP_LOAD, openVideoList: openVideoList,
+    videoLoadTuning: VP_LOAD, openVideoList: openVideoList, vpState: function () { return VP; },
     openServerPath: openServerPath, openViaBackend: openViaBackend, openProg: openProgBegin,
     uploadFile: uploadFile, canServeFile: canServeFile, browseTo: browseTo, backend: function () { return BE; },
     showDetails: showDetails, m3uUrl: m3uUrl, copyText: copyText,

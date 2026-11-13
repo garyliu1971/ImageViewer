@@ -32,6 +32,8 @@ _cache_lock = threading.Lock()
 
 
 def _candidates(name):
+    if os.environ.get("IV_NO_FFMPEG"):          # 测试 / 排障：假装没装 ffmpeg
+        return
     exe = name + (".exe" if IS_WIN else "")
     env = os.environ.get("FFMPEG_PATH" if name == "ffmpeg" else "FFPROBE_PATH")
     if env:
