@@ -413,6 +413,8 @@
   .wc-badge.b-pin { background: #2d6a3e; }
   .wc-cnt { top: 6px; right: 6px; }
   .wc-mark { bottom: 6px; left: 6px; }
+  .wc-mark.done { background: #2d6a3e; }
+  .sd-ep-w { font-size: 11px; padding: 2px 8px; background: rgba(255,255,255,.07); flex: 0 0 auto; }
   .wc-title { margin-top: 6px; font-size: 13px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   .wc-sub { font-size: 11.5px; color: var(--muted); }
   .wall-empty { grid-column: 1 / -1; padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
@@ -924,6 +926,7 @@
         <select id="wallSort" title="排序">
           <option value="name">按名称</option><option value="year">按年份（新→旧）</option><option value="rating">按评分（高→低）</option>
         </select>
+        <label class="shelf-opt" title="把下面两层子目录里的视频也列出来；Show/Season 1、Show/Season 2 这类分季目录会合成一张剧集卡"><input type="checkbox" id="wallSub" checked> 含子目录</label>
         <button class="btn" id="wallScan" title="只刮削当前这一层目录里的视频（不递归）">刮削当前目录</button>
       </div>
       <div id="wallProg"><span id="wallProgText"></span><span class="bar"><i id="wallProgBar"></i></span><button class="btn" id="wallCancel">取消</button></div>
@@ -964,6 +967,7 @@
           <div class="sd-note" id="sdNote"></div>
           <div class="sd-actions">
             <button class="btn primary" id="sdPlay">▶ 播放</button>
+            <button class="btn" id="sdWatch">标记已看</button>
             <button class="btn" id="sdFix">修正匹配</button>
           </div>
         </div>
@@ -5077,11 +5081,13 @@
     if (r.dir) return Promise.resolve(browseTo(r.path)).then(function () { return false; });
     if (browseRemote) {                      /* 云端：目前只接了视频（经后端 /api/remote/data 中转，<video> 不需要认证头） */
       if (r.kind !== 'video') { toast('云端目前只能播放视频；图 / 压缩包请用书架'); return Promise.resolve(false); }
+      wallRemember('');
       openRemoteVideo(r.path, list._rows);
       toggleModal('browse', false);
       return Promise.resolve(true);
     }
     /* 打开成功就收窗，失败留着让用户改路径 */
+    if (C.isVideoName(r.path)) wallRemember('');
     return openServerPath(r.path).then(function (ok) {
       if (ok) toggleModal('browse', false);
       return ok;
@@ -5337,6 +5343,8 @@
     document.title = '图片 / 漫画浏览器';
     VP.items = []; VP.i = -1;
     if (!pages.length) $('#start').classList.remove('hidden');
+    var ret = W.ret; W.ret = null;
+    if (ret && BE.on) wallRestore(ret);        /* 从海报墙 / 列表播放的：回到原来的目录视图 */
   }
   function vpStep(d) {
     var n = VP.i + d;
@@ -6233,18 +6241,28 @@
   /* ================= 海报墙 / 媒体刮削（TMDB，仅后端模式）=================
      令牌只在后端读环境变量 TMDB_TOKEN；本页从不输入、不保存、不显示令牌，只看 /api/scrape/status 的 true/false。
      列表页只调 /api/scrape/peek（解析文件名 + 读缓存，不联网）；可见的卡片再逐个 /api/scrape/match（后端节流）。 */
-  var LS_WALL = 'iv.wall.v1', LS_PLAYED = 'iv.scrape.played.v1';
-  var W = { on: false, rows: [], remote: false, cards: [], byId: {}, seq: 0, q: [], running: 0, fails: 0,
+  var LS_WALL = 'iv.wall.v1', LS_PLAYED = 'iv.scrape.played.v1';   /* LS_PLAYED 只用于一次性迁移 */
+  var W = { on: false, rows: [], all: [], dirRows: {}, sub: true, ret: null, remote: false, cards: [], byId: {}, seq: 0, q: [], running: 0, fails: 0,
             tokenOk: null, stop: '', jobId: '', jobTimer: 0, io: null, purgeArm: 0 };
   var wallPrefs = lsGet(LS_WALL, null) || {};
   function wallReq(r) { return W.remote ? { remote: r.path } : { path: r.path }; }
-  function playedKey(path, remote) { return (remote ? 'r:' : 'l:') + normKey(path).toLowerCase(); }
-  function isPlayed(path) { var m = lsGet(LS_PLAYED, null) || {}; return !!m[playedKey(path, W.remote)]; }
-  function markPlayed(path, remote) {
-    var m = lsGet(LS_PLAYED, null) || {};
-    m[playedKey(path, remote)] = 1;
-    var ks = Object.keys(m); if (ks.length > 3000) delete m[ks[0]];
-    lsSet(LS_PLAYED, m);
+  function isWatched(f) { return !!f.peek.watched; }
+  function wallDirOf(p) { return String(p).replace(/[\\/][^\\/]*$/, ''); }
+  /* 一次性迁移：旧版本把「已看」记在浏览器 localStorage（只含本机路径），现在统一进后端 _video_watched_ */
+  function wallMigratePlayed() {
+    var m = lsGet(LS_PLAYED, null);
+    if (!m || !BE.on) return;
+    try { localStorage.removeItem(LS_PLAYED); } catch (e) { /* ignore */ }
+    Object.keys(m).filter(function (k) { return k.indexOf('l:') === 0; }).slice(0, 300).forEach(function (k) {
+      apiJson('/api/videoresume', null, 'PUT', { path: k.slice(2), watched: true })['catch'](function () {});
+    });
+  }
+  function wallSetWatched(files, flag) {
+    return Promise.all(files.map(function (f) {
+      return apiJson('/api/videoresume', null, 'PUT', Object.assign(wallReq(f.row), { watched: flag })).then(function (j) {
+        f.peek.watched = !!j.watched;
+      });
+    }));
   }
   function wallFmt(ms) { return vpFmtTime(ms / 1000); }
   function wallImg(p, size) { return p ? apiPath('/api/scrape/image', { p: p, size: size || 'w342' }) : ''; }
@@ -6256,6 +6274,43 @@
     $('#viewList').classList.toggle('on', !W.on);
     wallPrefs.view = W.on ? 'wall' : 'list'; lsSet(LS_WALL, wallPrefs);
     if (W.on) wallLoad(); else wallStopAll();
+  }
+  /* 从海报墙 / 详情页 / 列表播放视频前记下视图；播放器关闭时（vpClose）回到同一个目录、模式、排序、筛选、滚动位置 */
+  function wallRemember(detailId) {
+    var list = $('#browseList'), sel = list.querySelector('.brow-item.sel');
+    W.ret = { path: browsePath, remote: browseRemote, wall: W.on, filter: $('#wallFilter').value, sort: $('#wallSort').value,
+              scroll: $('#wallGrid').scrollTop, listScroll: list.scrollTop, sel: sel ? +sel.dataset.i : -1,
+              detail: detailId || '', season: D.season, sub: W.sub };
+  }
+  function wallRestore(ret) {
+    browseRemote = !!ret.remote;
+    $('#browseCloud').classList.toggle('on', browseRemote);
+    W.sub = ret.sub !== false;
+    W.on = !!ret.wall;
+    $('#browse').classList.toggle('wall-on', W.on);
+    $('#viewWall').classList.toggle('on', W.on);
+    $('#viewList').classList.toggle('on', !W.on);
+    $('#wallFilter').value = ret.filter || '';
+    $('#wallSort').value = ret.sort || 'name';
+    W.pending = ret;
+    toggleModal('browse', true);
+    browseTo(ret.path).then(function () {
+      if (W.on) return;                                     // 海报墙：wallLoad 渲染完会走 wallAfterRender
+      var list = $('#browseList');
+      list.scrollTop = ret.listScroll || 0;
+      var it = ret.sel >= 0 ? list.querySelector('.brow-item[data-i="' + ret.sel + '"]') : null;
+      if (it) it.classList.add('sel');
+      W.pending = null;
+    });
+  }
+  function wallAfterRender() {
+    var ret = W.pending; if (!ret) return;
+    W.pending = null;
+    $('#wallGrid').scrollTop = ret.scroll || 0;
+    if (ret.detail && W.byId[ret.detail]) {
+      wallOpenDetail(W.byId[ret.detail]);
+      if (ret.season !== undefined && D.seasons.indexOf(ret.season) >= 0) { D.season = ret.season; D.seq++; wallDetailLoad(); }
+    }
   }
   function wallStopAll() { W.seq++; W.q = []; if (W.io) { W.io.disconnect(); W.io = null; } }
 
@@ -6272,23 +6327,70 @@
     '② 关闭并重新启动后端（启动网页版.bat / python web_backend.py），再回到这里点「海报墙」。<br>' +
     '只想临时试用：<code>$env:TMDB_TOKEN=\'你的令牌\'; python web_backend.py</code>';
 
+  var WALL_MAX_DIRS = 60, WALL_MAX_VIDEOS = 500;
+  /* 当前目录的视频 +（可选）往下最多两层子目录里的视频：Show/Season 1、Show S02、第二季 这类分季目录合到同一张剧集卡 */
+  function wallCollect(direct, entries, seq) {
+    W.dirRows = {}; W.dirRows[browsePath] = entries;
+    if (!W.sub) return Promise.resolve(direct);
+    var out = direct.slice(), calls = 0, truncated = false;
+    var isDir = function (r) { return r.dir || r.kind === 'dir'; };
+    var level1 = entries.filter(isDir);
+    var listDir = function (d) {
+      calls++;
+      var req = W.remote ? apiJson('/api/remote/ls', { path: d.path }) : apiJson('/api/ls', { path: d.path, recursive: '0' });
+      return req.then(function (j) {
+        var es = (j.entries || []).map(function (e) { return { rel: e.rel, name: e.name, kind: e.kind, path: e.path, size: e.size, dir: e.kind === 'dir' }; });
+        W.dirRows[d.path] = es;
+        return es;
+      }, function () { return []; });
+    };
+    var pool = function (dirs, depth) {
+      var next = [], idx = 0;
+      var worker = function () {
+        if (seq !== W.seq || idx >= dirs.length) return Promise.resolve();
+        if (calls >= WALL_MAX_DIRS) { truncated = true; return Promise.resolve(); }
+        var d = dirs[idx++];
+        return listDir(d).then(function (es) {
+          es.forEach(function (e) {
+            if (e.kind === 'video' && out.length < WALL_MAX_VIDEOS) out.push(e);
+            else if (isDir(e) && depth < 2) next.push(e);
+          });
+          return worker();
+        });
+      };
+      return Promise.all([worker(), worker(), worker(), worker()]).then(function () {
+        return next.length && depth < 2 && seq === W.seq ? pool(next, depth + 1) : null;
+      });
+    };
+    return pool(level1, 1).then(function () { W.truncated = truncated; return out; });
+  }
+
   function wallLoad() {
     var list = $('#browseList');
-    var rows = (list._rows || []).filter(function (r) { return r.kind === 'video'; });
+    var entries = list._rows || [];
+    var rows = entries.filter(function (r) { return r.kind === 'video'; });
     var seq = ++W.seq;
-    W.rows = rows; W.remote = browseRemote; W.q = []; W.running = 0; W.fails = 0; W.stop = '';
+    W.rows = rows; W.remote = browseRemote; W.q = []; W.running = 0; W.fails = 0; W.stop = ''; W.truncated = false;
     if (W.io) { W.io.disconnect(); W.io = null; }
     var grid = $('#wallGrid');
-    if (!rows.length) { grid.innerHTML = '<div class="wall-empty">这个目录里没有视频。换到有视频的目录，或切回「列表」。</div>'; wallStats(); return; }
+    $('#wallSub').checked = W.sub;
     grid.innerHTML = '<div class="wall-empty">读取中…</div>';
-    apiJson('/api/scrape/peek', null, 'POST', { items: rows.slice(0, 500).map(wallReq) }).then(function (j) {
-      if (seq !== W.seq) return;
+    wallCollect(rows, entries, seq).then(function (all) {
+      if (seq !== W.seq) return null;
+      W.all = all;
+      if (!all.length) { grid.innerHTML = '<div class="wall-empty">这个目录里没有视频' + (W.sub ? '（含两层子目录）' : '') + '。换到有视频的目录，或切回「列表」。</div>'; wallStats(); return null; }
+      return apiJson('/api/scrape/peek', null, 'POST', { items: all.slice(0, WALL_MAX_VIDEOS).map(wallReq) });
+    }).then(function (j) {
+      if (!j || seq !== W.seq) return;
       W.tokenOk = !!j.token_configured;
       wallNotice(W.tokenOk ? '' : NOTICE_NO_TOKEN);
       wallBuild(j.items || []);
       wallRender();
       wallStats();
-    }, function (e) {
+      if (W.truncated) $('#wallStats').textContent += ' · 子目录太多，只扫描了前 ' + WALL_MAX_DIRS + ' 个';
+      wallAfterRender();
+      wallMigratePlayed();
+    })['catch'](function (e) {
       if (seq !== W.seq) return;
       grid.innerHTML = '<div class="wall-empty">读取失败：' + esc((e && e.message) || e) + '</div>';
     });
@@ -6296,7 +6398,7 @@
 
   function wallBuild(items) {
     var map = {}, cards = [];
-    W.rows.slice(0, 500).forEach(function (r, i) {
+    W.all.slice(0, WALL_MAX_VIDEOS).forEach(function (r, i) {
       var p = items[i];
       if (!p || p.error) return;
       var c0 = (p.parsed.title_candidates || [])[0] || r.name.replace(/\.[^.]+$/, '');
@@ -6307,6 +6409,7 @@
       c.files.push({ row: r, peek: p });
       if (p.item && (!c.item || p.item.status === 'pinned')) c.item = p.item;
     });
+    cards = wallMergeByTmdb(cards);
     cards.forEach(function (c) {
       c.files.sort(function (a, b) {
         var sa = a.peek.parsed.season == null ? 0 : a.peek.parsed.season, sb = b.peek.parsed.season == null ? 0 : b.peek.parsed.season;
@@ -6316,7 +6419,42 @@
       });
     });
     W.cards = cards; W.byId = {};
-    cards.forEach(function (c) { W.byId[c.id] = c; });
+    cards.forEach(function (c) { W.byId[c.id] = c; (c.mergedFrom || []).forEach(function (x) { W.byId[x] = c; }); });
+  }
+
+  /* 同一部剧分散在多个目录（Show/Season 1、Show S02、第二季…）：按 TMDB id 合成一张卡（含缓存 / 锁定的结果） */
+  function mergeKeyOf(c) {
+    var m = c.item && c.item.media;
+    return m && m.media_type === 'tv' && m.tmdb_id ? 'tv:' + m.tmdb_id : '';
+  }
+  function wallMergeByTmdb(cards) {
+    var by = {}, out = [];
+    cards.forEach(function (c) {
+      var k = c.type === 'series' ? mergeKeyOf(c) : '';
+      if (!k) { out.push(c); return; }
+      var base = by[k];
+      if (!base) { by[k] = c; out.push(c); return; }
+      base.files = base.files.concat(c.files);
+      base.mergedFrom = (base.mergedFrom || [base.id]).concat([c.id]);
+      if (c.item && c.item.status === 'pinned') base.item = c.item;
+    });
+    return out;
+  }
+  function wallRemerge() {
+    var before = W.cards.length;
+    W.cards = wallMergeByTmdb(W.cards);
+    if (W.cards.length === before) return false;
+    W.byId = {};
+    W.cards.forEach(function (c) { W.byId[c.id] = c; (c.mergedFrom || []).forEach(function (x) { W.byId[x] = c; }); });
+    W.cards.forEach(function (c) {
+      c.files.sort(function (a, b) {
+        var sa = a.peek.parsed.season == null ? 0 : a.peek.parsed.season, sb = b.peek.parsed.season == null ? 0 : b.peek.parsed.season;
+        if (sa !== sb) return sa - sb;
+        var ea = a.peek.parsed.episode == null ? 1e9 : a.peek.parsed.episode, eb = b.peek.parsed.episode == null ? 1e9 : b.peek.parsed.episode;
+        return ea - eb || (a.row.name < b.row.name ? -1 : 1);
+      });
+    });
+    return true;
   }
 
   function cardInfo(c) {
@@ -6328,10 +6466,12 @@
   function wallMark(c) {
     var played = 0, resume = 0;
     c.files.forEach(function (f) {
-      if (isPlayed(f.row.path)) played++;
+      if (isWatched(f)) played++;
       if (f.peek.resume_ms > 0) resume = resume || f.peek.resume_ms;
     });
-    if (c.type === 'movie') return resume ? '<span class="wc-mark">▶ ' + wallFmt(resume) + '</span>' : (played ? '<span class="wc-mark">✓ 已看</span>' : '');
+    /* 剧集：只有所有可见的集都已看才算「已看」；否则显示 n/N */
+    if (c.type === 'movie') return resume ? '<span class="wc-mark">▶ ' + wallFmt(resume) + '</span>' : (played ? '<span class="wc-mark done">✓ 已看</span>' : '');
+    if (played === c.files.length) return '<span class="wc-mark done">✓ 已看完</span>';
     if (resume) return '<span class="wc-mark">▶ 继续</span>';
     return played ? '<span class="wc-mark">✓ ' + played + '/' + c.files.length + '</span>' : '';
   }
@@ -6396,7 +6536,8 @@
         apiJson('/api/scrape/match', null, 'POST', wallReq(c.files[0].row)).then(function (j) {
           if (seq !== W.seq) return;
           W.fails = 0; c.item = j.item; c.full = j.item;
-          wallRefreshCard(c);
+          if (wallRemerge()) { var sc = $('#wallGrid').scrollTop; wallRender(); $('#wallGrid').scrollTop = sc; }
+          else wallRefreshCard(c);
         }, function (e) {
           if (seq !== W.seq) return;
           c.queued = false;
@@ -6445,7 +6586,7 @@
   function wallScan() {
     if (!W.tokenOk) { wallNotice(NOTICE_NO_TOKEN); return; }
     if (W.jobId) return;
-    var items = W.rows.slice(0, 2000).map(wallReq);
+    var items = W.rows.slice(0, 2000).map(wallReq);      /* 只刮当前这一层（W.rows = 当前目录自己的视频，不含子目录） */
     if (!items.length) { toast('当前目录没有视频'); return; }
     apiJson('/api/scrape/scan', null, 'POST', { items: items }).then(function (j) {
       W.jobId = j.job.id; $('#wallProg').classList.add('on'); $('#wallScan').disabled = true;
@@ -6505,6 +6646,7 @@
     });
   }
   function wallDetailRender(item) {
+    D.lastItem = item;
     var c = D.card, f = cardInfo(c), m = (item && item.media) || null;
     $('#sdTitle').textContent = f.title;
     $('#sdEn').textContent = f.en;
@@ -6528,6 +6670,9 @@
     files.forEach(function (x) { if (!resume && x.peek.resume_ms > 0) { resume = x.peek.resume_ms; first = x; } });
     $('#sdPlay').textContent = resume ? '▶ 继续观看 ' + wallFmt(resume) : '▶ 播放';
     $('#sdPlay')._file = first;
+    var allW = files.length && files.every(isWatched);
+    $('#sdWatch').textContent = c.type === 'series' ? (allW ? '全部标为未看' : '全部标为已看') : (allW ? '标记未看' : '标记已看');
+    $('#sdWatch')._flag = !allW;
     // 剧集：季 + 分集
     var body = $('#sdBody');
     if (c.type !== 'series') { body.innerHTML = ''; return; }
@@ -6541,15 +6686,17 @@
       var nm = e ? (e.name_zh || e.name_en) : '';
       var sub = e && e.name_zh && e.name_en && e.name_en !== e.name_zh ? e.name_en + ' · ' : '';
       var mark = x.peek.resume_ms > 0 ? '<span class="sd-ep-m cont">▶ ' + wallFmt(x.peek.resume_ms) + '</span>' :
-        isPlayed(x.row.path) ? '<span class="sd-ep-m done">✓ 已看</span>' : '<span class="sd-ep-m">未看</span>';
+        isWatched(x) ? '<span class="sd-ep-m done">✓ 已看</span>' : '<span class="sd-ep-m">未看</span>';
       return '<div class="sd-ep" data-fi="' + i + '"><div class="sd-still" style="' + (e && e.still_path ? 'background-image:url(\'' + wallImg(e.still_path, 'w185') + '\')' : '') + '"></div>' +
-        '<div class="sd-ep-t">' + (n != null ? 'E' + (n < 10 ? '0' : '') + n + ' · ' : '') + esc(nm || x.row.name) + '<small>' + esc(sub + x.row.name) + '</small></div>' + mark + '</div>';
+        '<div class="sd-ep-t">' + (n != null ? 'E' + (n < 10 ? '0' : '') + n + ' · ' : '') + esc(nm || x.row.name) + '<small>' + esc(sub + x.row.name) + '</small></div>' + mark +
+        '<button class="btn sd-ep-w" data-w="' + i + '" title="' + (isWatched(x) ? '标记未看' : '标记已看') + '">' + (isWatched(x) ? '○ 未看' : '✓ 已看') + '</button></div>';
     }).join('');
     body.innerHTML = h;
   }
   function wallPlay(file) {
     if (!file) return;
-    if (W.remote) openRemoteVideo(file.row.path, W.rows); else openServerVideo(file.row.path);
+    wallRemember(D.card ? D.card.id : '');
+    if (W.remote) openRemoteVideo(file.row.path, W.dirRows[wallDirOf(file.row.path)] || W.rows); else openServerVideo(file.row.path);
   }
 
   /* ---- 修正匹配 ---- */
@@ -6590,14 +6737,24 @@
     });
   }
   function wallPin(r) {
-    var c = FX.card, body = wallReq(c.files[0].row);
-    body.media_type = r ? r.media_type : 'movie'; body.tmdb_id = r ? r.tmdb_id : null;
-    apiJson('/api/scrape/pin', null, 'POST', body).then(function (j) {
+    var c = FX.card;
+    var seenG = {}, reps = c.files.filter(function (f) {
+      var g = f.peek.group_key || f.row.path;
+      if (seenG[g] || (c.type === 'movie' && f !== c.files[0])) return false;
+      return (seenG[g] = true);
+    });
+    var pinOne = function (f) {
+      var body = wallReq(f.row);
+      body.media_type = r ? r.media_type : 'movie'; body.tmdb_id = r ? r.tmdb_id : null;
+      return apiJson('/api/scrape/pin', null, 'POST', body);
+    };
+    Promise.all(reps.map(pinOne)).then(function (js) {
+      var j = js[0];
       toggleModal('scrFix', false); toggleModal('scrDetail', false);
       toast(r ? '已锁定：' + j.item.media.title : '已取消锁定');
       var id = c.id;
       var after = function () { wallLoad(); };
-      if (!r) apiJson('/api/scrape/match', null, 'POST', Object.assign(wallReq(c.files[0].row), { force: true }))['catch'](function () {}).then(after); else after();
+      if (!r) Promise.all(reps.map(function (f) { return apiJson('/api/scrape/match', null, 'POST', Object.assign(wallReq(f.row), { force: true }))['catch'](function () {}); })).then(after); else after();
     }, function (e) { toast('锁定失败：' + ((e && e.message) || e)); });
   }
 
@@ -6617,9 +6774,23 @@
     });
     $('#sdPlay').addEventListener('click', function () { wallPlay(this._file); });
     $('#sdFix').addEventListener('click', wallOpenFix);
+    $('#sdWatch').addEventListener('click', function () {
+      var flag = this._flag, c = D.card;
+      if (!c) return;
+      wallSetWatched(c.files, flag).then(function () { wallDetailRender(D.lastItem || null); wallRender(); },
+        function (er) { toast('标记失败：' + ((er && er.message) || er)); });
+    });
+    $('#wallSub').addEventListener('change', function () { W.sub = this.checked; wallPrefs.sub = W.sub; lsSet(LS_WALL, wallPrefs); if (W.on) wallLoad(); });
     $('#sdBody').addEventListener('click', function (e) {
       var b = e.target.closest ? e.target.closest('[data-season]') : null;
       if (b) { D.season = b.dataset.season === '' ? null : +b.dataset.season; D.seq++; wallDetailLoad(); return; }
+      var wb = e.target.closest ? e.target.closest('.sd-ep-w') : null;
+      if (wb) {
+        e.stopPropagation();
+        var f1 = seasonFiles()[+wb.dataset.w];
+        wallSetWatched([f1], !isWatched(f1)).then(function () { wallDetailRender(D.lastItem); wallRender(); }, function (er) { toast('标记失败：' + ((er && er.message) || er)); });
+        return;
+      }
       var ep = e.target.closest ? e.target.closest('.sd-ep') : null;
       if (ep) wallPlay(seasonFiles()[+ep.dataset.fi]);
     });
@@ -6630,11 +6801,7 @@
       if (row && this._res) wallPin(this._res[+row.dataset.i]);
     });
     $('#fxUnpin').addEventListener('click', function () { wallPin(null); });
-    /* 看完（ended）记「已看」：续播点在结尾 3 秒内会被清掉，所以单独记一个浏览器本地的小标记 */
-    vpV().addEventListener('ended', function () {
-      var it = VP.items[VP.i];
-      if (it && (it.path || it.remotePath)) markPlayed(it.path || it.remotePath, !it.path);
-    });
+    W.sub = wallPrefs.sub !== false;
     if (wallPrefs.view === 'wall') { $('#browse').classList.add('wall-on'); W.on = true; $('#viewWall').classList.add('on'); $('#viewList').classList.remove('on'); }
   })();
 

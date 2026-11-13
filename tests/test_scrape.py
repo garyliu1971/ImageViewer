@@ -223,6 +223,20 @@ class TestScraper(Base):
         self.assertNotEqual(it["source"], "pin")
         self.assertIsNone(self.sc._get_row("pins", local_key("m", "Dune.mkv")))   # 绝不自动锁定
 
+    def test_split_season_dirs_resolve_to_same_tv_id(self):
+        a = self.sc.match(local_key("lib", "进击的巨人 S01", "01.mkv"))
+        b = self.sc.match(local_key("lib", "进击的巨人 第二季", "01.mkv"))
+        c = self.sc.match(local_key("lib", "Breaking Bad", "Season 2", "S02E01.mkv"))
+        self.assertEqual((a["media"]["tmdb_id"], b["media"]["tmdb_id"]), (1429, 1429))
+        self.assertNotEqual(a["group_key"], b["group_key"])
+        self.assertEqual((a["season"]["number"], b["season"]["number"]), (1, 2))
+        self.assertEqual(b["episode"]["name_zh"], "野兽巨人")
+        self.assertEqual(c["episode"]["name_zh"], "第二季第一集")
+        # 锁定其中一个目录组，另一个仍走自动匹配（前端会对每个目录组各锁一次）
+        self.sc.pin(local_key("lib", "进击的巨人 S01", "01.mkv"), "tv", 1429)
+        self.assertEqual(self.sc.match(local_key("lib", "进击的巨人 S01", "02.mkv"))["status"], "pinned")
+        self.assertNotEqual(self.sc.match(local_key("lib", "进击的巨人 第二季", "01.mkv"))["status"], "pinned")
+
     def test_year_disambiguates(self):
         it = self.sc.match(local_key("m", "Dune (2021).mkv"))
         self.assertEqual((it["status"], it["media"]["tmdb_id"]), ("matched", 7002))

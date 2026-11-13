@@ -107,6 +107,7 @@ def _markers_from_cjk(s):
         return " @S%d@ " % n if n is not None else m.group(0)
     s = re.sub(r"第\s*([0-9一二三四五六七八九十两零〇]{1,4})\s*[集话話期]", ep, s)
     s = re.sub(r"第\s*([0-9一二三四五六七八九十两]{1,3})\s*[季部]", se, s)
+    s = re.sub(r"(?i)(?<![A-Za-z])ep(?:isode)?[ ._-]+(\d{1,3})(?![0-9])", lambda m: " @E%d@ " % int(m.group(1)), s)
     s = re.sub(r"(?i)(?<![A-Za-z])season[ ._-]*(\d{1,2})(?![0-9])", lambda m: " @S%d@ " % int(m.group(1)), s)
     return s
 

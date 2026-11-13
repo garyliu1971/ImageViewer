@@ -435,12 +435,16 @@ def progress_store():
     return config_store.load_config(CONFIG_PATH)
 
 
+_cfg_lock = threading.RLock()       # 配置是「整份读 -> 改 -> 整份写」，并发请求（比如批量标记已看）不加锁会丢更新
+
+
 def progress_save(book_key, record):
-    cfg = config_store.load_config(CONFIG_PATH)
     if not isinstance(record, dict):
         raise ValueError("进度记录必须是对象")
-    cfg[book_key] = record
-    config_store.save_config(CONFIG_PATH, cfg)
+    with _cfg_lock:
+        cfg = config_store.load_config(CONFIG_PATH)
+        cfg[book_key] = record
+        config_store.save_config(CONFIG_PATH, cfg)
     return True
 
 
@@ -503,10 +507,11 @@ def video_resume_save(path=None, position_ms=0, length_ms=0, key=None):
     规则在 watched_store.apply_resume（与桌面版共用）：看完（结尾 3 秒内）清掉续播点并记入 _video_watched_。"""
     pos = _check_ms(position_ms or 0, "ms")
     length = _check_ms(length_ms or 0, "length")
-    cfg = config_store.load_config(CONFIG_PATH)
     key = key or _resume_key(path)
-    out = watched_store.apply_resume(cfg, key, pos, length, max_keys=RESUME_MAX_KEYS)
-    config_store.save_config(CONFIG_PATH, cfg)
+    with _cfg_lock:
+        cfg = config_store.load_config(CONFIG_PATH)
+        out = watched_store.apply_resume(cfg, key, pos, length, max_keys=RESUME_MAX_KEYS)
+        config_store.save_config(CONFIG_PATH, cfg)
     return out
 
 
@@ -518,9 +523,10 @@ def video_watched_get(path=None, key=None):
 def video_watched_set(flag, path=None, key=None):
     """手动标记已看 / 未看（不动续播点）。"""
     key = key or _resume_key(path)
-    cfg = config_store.load_config(CONFIG_PATH)
-    out = watched_store.mark_watched(cfg, key, bool(flag), max_keys=RESUME_MAX_KEYS)
-    config_store.save_config(CONFIG_PATH, cfg)
+    with _cfg_lock:
+        cfg = config_store.load_config(CONFIG_PATH)
+        out = watched_store.mark_watched(cfg, key, bool(flag), max_keys=RESUME_MAX_KEYS)
+        config_store.save_config(CONFIG_PATH, cfg)
     return out
 
 

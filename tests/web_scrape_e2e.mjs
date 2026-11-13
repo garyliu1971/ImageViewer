@@ -122,6 +122,12 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
     fs.writeFileSync(path.join(media, n), Buffer.from('not really a video ' + n));
   const big = path.join(tmp, '大目录'); fs.mkdirSync(big);
   for (let i = 0; i < 60; i++) fs.writeFileSync(path.join(big, 'Unknown Film Number ' + String.fromCharCode(97 + i % 26) + String.fromCharCode(97 + (i / 26 | 0)) + ' (20' + (10 + i % 10) + ').mp4'), 'x');
+  const lib = path.join(tmp, '剧集库');
+  for (const [d, files] of [['Breaking Bad/Season 1', ['S01E01.mkv', 'S01E02.mkv', 'S01E03.mkv']], ['Breaking Bad/Season 2', ['S02E01.mkv']],
+    ['进击的巨人 S01', ['01.mkv', '02.mkv', '03.mkv']], ['进击的巨人 第二季', ['01.mkv']]]) {
+    fs.mkdirSync(path.join(lib, d), { recursive: true });
+    for (const f of files) fs.writeFileSync(path.join(lib, d, f), 'x');
+  }
   const sub = path.join(media, '子目录'); fs.mkdirSync(sub); fs.writeFileSync(path.join(sub, 'The.Matrix.1999.deep.mkv'), 'x');
 
   const fake = await spawnLine(PY, ['-u', 'tests/fake_tmdb.py', '0', TOKEN], {}, /API base\s*:\s*(\S+)\s+image base:\s*(\S+)/, '假 TMDB');
@@ -137,7 +143,7 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
   try {
     log('\n[1] 海报墙渲染 + 懒加载匹配');
     const n = await openWall(cdp, port, media);
-    check('目录里 8 个视频 -> 5 张卡（4 部电影 + 4 集合并成 1 张剧集卡）', n === 5, n);
+    check('目录 8 个视频 + 子目录 1 个 -> 6 张卡（5 部电影 + 4 集合并成 1 张剧集卡）', n === 6, n);
     await cdp.eval(`await __until(() => document.querySelectorAll('#wallGrid .wc img').length >= 4, 15000); await __wait(800); return 1;`);
     let cs = await cdp.eval("return " + cards);
     const by = (t) => cs.find(c => c.title.includes(t));
@@ -163,7 +169,7 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
       s.value = 'name'; s.dispatchEvent(new Event('change')); await __wait(200);
       return { years, filtered, byFile };`);
     check('按年份排序：新 -> 旧', ord.years.slice(0, 3).every((y, i, a) => i === 0 || a[i - 1] >= y), ord.years);
-    check('筛选「黑客」只剩 1 张；按文件名 matrix 也能筛到', ord.filtered.length === 1 && ord.filtered[0].includes('黑客帝国') && ord.byFile === 1, ord);
+    check('筛选「黑客」只剩 2 张（含子目录那份）；按文件名 matrix 也能筛到', ord.filtered.length === 2 && ord.filtered.every(t => t.includes('黑客帝国')) && ord.byFile === 2, ord);
 
     log('\n[3] 电影详情页（双语 / 播放）');
     const d1 = await cdp.eval(`
@@ -259,14 +265,136 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
     check('显示进度「刮削中 n/60 · 已匹配 …」', /刮削中|已结束/.test(sc.mid) && /\/60/.test(sc.mid), sc);
     check('点取消后任务提前结束（done < 60），按钮恢复可点', dn && +dn[1] < 60 && sc.btn === false, sc);
     // 完整跑一遍（小目录）
+    const sub2 = path.join(media, '子目录2');
     await openWall(cdp, port, media);
+    await cdp.eval(`document.querySelector('#wallSub').click(); await __wait(1200); return 1;`);
+    fs.mkdirSync(sub2); fs.writeFileSync(path.join(sub2, 'Blade.Runner.2049.2017.deep.mkv'), 'x');
     const full = await cdp.eval(`
       document.querySelector('#wallScan').click();
       await __until(() => document.querySelector('#wallProgText').textContent.startsWith('已结束'), 20000);
       return document.querySelector('#wallProgText').textContent;`);
     check('小目录完整刮削：8/8 完成', /已结束 8\/8/.test(full), full);
-    const nrec = await cdp.eval(`const t = window.__IV.backend().token; const q = (await (await fetch('/api/scrape/peek?t=' + t, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items:[{path: ${JSON.stringify(path.join(media, '子目录', 'The.Matrix.1999.deep.mkv'))}}]})})).json()); return q.items[0].item;`);
+    const nrec = await cdp.eval(`const t = window.__IV.backend().token; const q = (await (await fetch('/api/scrape/peek?t=' + t, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({items:[{path: ${JSON.stringify(path.join(sub2, 'Blade.Runner.2049.2017.deep.mkv'))}}]})})).json()); return q.items[0].item;`);
     check('刮削只做当前这一层（不递归：子目录里的文件没被刮）', nrec === null, nrec);
+
+
+    log('\n[7b] 分季目录合并成一张剧集卡（按 TMDB id）');
+    const ensureSub = `const cb = document.querySelector('#wallSub'); if (!cb.checked) { cb.click(); await __wait(800); } return 1;`;
+    await openWall(cdp, port, lib);
+    await cdp.eval(ensureSub);
+    const m1 = await cdp.eval(`
+      await __until(() => { const c = ${cards}; return c.length === 2 && c.every(x => x.img); }, 15000);
+      return ${cards};`);
+    check('剧集库 4 个目录 -> 合并成 2 张卡（Breaking Bad 的 Season 1/2；进击的巨人 S01 + 第二季 按 TMDB id 合并）',
+      m1.length === 2 && m1.map(c => c.title).sort().join() === '绝命毒师,进击的巨人' && m1.every(c => c.cnt === '4 集'), m1);
+    await shot(cdp, 'wall-merged-seasons.png', 1100, 860);
+    const m2 = await cdp.eval(`
+      document.querySelector('#wallGrid .wc[title*="进击的巨人"]').click();
+      await __until(() => document.querySelectorAll('#sdBody .sd-ep .sd-still[style*="url"]').length >= 3, 12000);
+      const tabs = Array.from(document.querySelectorAll('#sdBody .sd-seasons .btn')).map(b => b.textContent);
+      const eps1 = Array.from(document.querySelectorAll('#sdBody .sd-ep-t')).map(e => e.textContent);
+      document.querySelectorAll('#sdBody .sd-seasons .btn')[1].click();
+      await __until(() => document.querySelectorAll('#sdBody .sd-ep').length === 1 && document.querySelector('#sdBody .sd-ep-t').textContent.includes('野兽巨人'), 8000);
+      const eps2 = Array.from(document.querySelectorAll('#sdBody .sd-ep-t')).map(e => e.textContent);
+      document.querySelector('#sdBody .sd-ep').click();
+      await __until(() => !document.querySelector('#vplayer').classList.contains('hidden'));
+      await __wait(300);
+      const src = decodeURIComponent(document.querySelector('#vpVideo').getAttribute('src') || '');
+      return { tabs, eps1, eps2, src };`);
+    check('详情页列出全部季（第 1 季 / 第 2 季），第 1 季 3 集带片名', m2.tabs.join() === '第 1 季,第 2 季' && m2.eps1.length === 3 && m2.eps1[0].includes('致两千年后的你'), m2);
+    check('第 2 季的分集链接到它自己目录里的文件（…/进击的巨人 第二季/01.mkv）', m2.eps2.length === 1 && /进击的巨人 第二季[\\/]01\.mkv/.test(m2.src), m2);
+    await cdp.eval(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); await __wait(800); return 1;`);
+    const one = await openWall(cdp, port, path.join(lib, 'Breaking Bad', 'Season 1'));
+    const m3 = await cdp.eval(`await __wait(600); return ${cards};`);
+    check('直接浏览单个季目录仍正常：1 张剧集卡，3 集', one === 1 && m3[0].cnt === '3 集', m3);
+
+    log('\n[7c] 已看状态（_video_watched_，桌面版共用）');
+    const w1 = await cdp.eval(`
+      await __until(() => document.querySelector('#wallGrid .wc img'));
+      document.querySelector('#wallGrid .wc').click();
+      await __until(() => document.querySelectorAll('#sdBody .sd-ep').length === 3);
+      document.querySelector('#sdBody .sd-ep-w').click();
+      await __until(() => document.querySelector('#sdBody .sd-ep-m.done'));
+      const afterOne = { mark: ${cards}[0].mark, ep: document.querySelector('#sdBody .sd-ep-m').textContent, all: document.querySelector('#sdWatch').textContent };
+      document.querySelector('#sdWatch').click();
+      await __until(() => document.querySelectorAll('#sdBody .sd-ep-m.done').length === 3);
+      const afterAll = { mark: ${cards}[0].mark, all: document.querySelector('#sdWatch').textContent };
+      return { afterOne, afterAll };`);
+    check('单集标记已看 -> 卡片「✓ 1/3」；「全部标为已看」后整部剧「✓ 已看完」（所有可见集都已看才算）',
+      w1.afterOne.mark === '✓ 1/3' && w1.afterOne.ep === '✓ 已看' && w1.afterOne.all === '全部标为已看' && w1.afterAll.mark === '✓ 已看完' && w1.afterAll.all === '全部标为未看', w1);
+    const s1 = path.join(lib, 'Breaking Bad', 'Season 1', 'S01E01.mkv');
+    const w2 = await cdp.eval(`
+      const t = window.__IV.backend().token;
+      const g = async (p) => (await (await fetch('/api/videoresume?path=' + encodeURIComponent(p) + '&t=' + encodeURIComponent(t))).json());
+      const a = await g(${JSON.stringify(s1)});
+      const mv = ${JSON.stringify(path.join(media, 'Dune.mkv'))};
+      const before = (await g(mv)).watched;
+      await fetch('/api/videoresume?t=' + encodeURIComponent(t), { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ path: mv, ms: 599000, length: 600000 }) });
+      const after = await g(mv);
+      return { a, before, after };`);
+    check('后端：标记写入 _video_watched_；播放到结尾（ms≈length）自动记已看且清掉续播点', w2.a.watched === true && w2.before === false && w2.after.watched === true && w2.after.ms === null, w2);
+    const cfgj = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+    check('配置文件：_video_watched_ 是 {key: 秒} 新 key，_video_resume_ 旧格式（毫秒整数）原样', Object.keys(cfgj._video_watched_ || {}).length >= 4 && Object.values(cfgj._video_resume_ || {}).every(v => Number.isInteger(v)), Object.keys(cfgj));
+    await openWall(cdp, port, path.join(lib, 'Breaking Bad', 'Season 1'));
+    const w3 = await cdp.eval(`await __wait(600); const m = ${cards}[0].mark;
+      document.querySelector('#wallGrid .wc').click(); await __until(() => document.querySelector('#sdWatch'));
+      await __wait(400);
+      document.querySelector('#sdWatch').click();
+      await __until(() => document.querySelector('#sdWatch').textContent === '全部标为已看');
+      return { m, after: ${cards}[0].mark };`);
+    check('刷新后仍是已看完；「全部标为未看」可撤销', w3.m === '✓ 已看完' && w3.after === '', w3);
+    await cdp.eval(`document.querySelector('#scrDetail .modal-close').click(); return 1;`);
+
+    log('\n[7d] 播放器关闭后回到原来的目录视图');
+    await openWall(cdp, port, media);
+    await cdp.eval(ensureSub);
+    const r1 = await cdp.eval(`
+      await __until(() => document.querySelectorAll('#wallGrid .wc img').length >= 3, 12000);
+      const s = document.querySelector('#wallSort'); s.value = 'year'; s.dispatchEvent(new Event('change'));
+      const f = document.querySelector('#wallFilter'); f.value = '流浪'; f.dispatchEvent(new Event('input')); await __wait(400);
+      document.querySelector('#wallGrid .wc').click();
+      await __until(() => document.querySelector('#sdPlay')._file);
+      document.querySelector('#sdPlay').click();
+      await __until(() => !document.querySelector('#vplayer').classList.contains('hidden'));
+      const during = { browse: !document.querySelector('#browse').classList.contains('hidden') };
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await __until(() => !document.querySelector('#browse').classList.contains('hidden'), 6000);
+      await __until(() => !document.querySelector('#scrDetail').classList.contains('hidden'), 6000);
+      return { during, player: !document.querySelector('#vplayer').classList.contains('hidden'),
+        browse: !document.querySelector('#browse').classList.contains('hidden'), wall: document.querySelector('#browse').classList.contains('wall-on'),
+        path: document.querySelector('#browsePath').value, sort: document.querySelector('#wallSort').value, filter: document.querySelector('#wallFilter').value,
+        detail: !document.querySelector('#scrDetail').classList.contains('hidden'), title: document.querySelector('#sdTitle').textContent, cards: ${cards}.length };`);
+    check('播放时目录窗口收起；Esc 关播放器后：窗口回来、仍是海报墙、同一路径、同排序、同筛选、详情页也回来',
+      r1.during.browse === false && !r1.player && r1.browse && r1.wall && r1.path.endsWith('片库') && r1.sort === 'year' && r1.filter === '流浪' && r1.detail && r1.title === '流浪地球' && r1.cards === 1, r1);
+    await cdp.eval(`document.querySelector('#scrDetail .modal-close').click(); return 1;`);
+    await openWall(cdp, port, big);
+    const r3 = await cdp.eval(`
+      await __until(() => document.querySelectorAll('#wallGrid .wc').length >= 60, 8000);
+      const g = document.querySelector('#wallGrid'); g.scrollTop = 420; await __wait(300);
+      const st = g.scrollTop;
+      document.querySelectorAll('#wallGrid .wc')[24].click();
+      await __until(() => document.querySelector('#sdPlay')._file);
+      document.querySelector('#sdPlay').click();
+      await __until(() => !document.querySelector('#vplayer').classList.contains('hidden'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await __until(() => !document.querySelector('#scrDetail').classList.contains('hidden'), 6000);
+      await __wait(500);
+      document.querySelector('#scrDetail .modal-close').click();
+      return { st, back: document.querySelector('#wallGrid').scrollTop, n: document.querySelectorAll('#wallGrid .wc').length };`);
+    check('滚动位置也恢复（60 张卡，滚到 ~420 再播放，回来仍在原位）', r3.st > 300 && Math.abs(r3.back - r3.st) < 40, r3);
+    await openWall(cdp, port, media);
+    const r4 = await cdp.eval(`
+      document.querySelector('#viewList').click(); await __wait(500);
+      const row = Array.from(document.querySelectorAll('#browseList .brow-item')).find(e => e.textContent.includes('Dune.mkv'));
+      row.click();
+      document.querySelector('#browseOpen').click();
+      await __until(() => !document.querySelector('#vplayer').classList.contains('hidden'));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await __until(() => !document.querySelector('#browse').classList.contains('hidden'), 6000);
+      await __until(() => document.querySelector('#browseList .brow-item.sel'), 6000);
+      return { wall: document.querySelector('#browse').classList.contains('wall-on'), sel: (document.querySelector('#browseList .brow-item.sel') || {}).textContent || '' };`);
+    check('列表模式：从列表播放视频，Esc 回来仍是列表且选中项不变', r4.wall === false && r4.sel.includes('Dune.mkv'), r4);
+    await cdp.eval(`document.querySelector('#viewWall').click(); await __wait(500); return 1;`);
 
     log('\n[8] 令牌不泄露 + 署名');
     const leak = await cdp.eval(`
@@ -307,7 +435,7 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
     const nt = await cdp.eval(`return { notice: document.querySelector('#wallNotice').textContent, on: document.querySelector('#wallNotice').classList.contains('on'),
       cards: ${cards}, stats: document.querySelector('#wallStats').textContent, inputs: document.querySelectorAll('#wallPane input[type=password], #wallPane input[placeholder*="令牌"], #wallPane input[placeholder*="token" i]').length };`);
     check('提示块出现，含设置用户级环境变量的命令与「重启后端」', nt.on && /TMDB_TOKEN/.test(nt.notice) && /SetEnvironmentVariable/.test(nt.notice) && /重新启动后端/.test(nt.notice), nt.notice);
-    check('仍显示 5 张按文件名解析的卡片（无海报）', n2 === 5 && nt.cards.every(c => !c.img), nt.cards);
+    check('仍显示 7 张按文件名解析的卡片（无海报）', n2 === 7 && nt.cards.every(c => !c.img), nt.cards);
     check('状态行「未配置令牌」；界面没有任何令牌输入框', /未配置令牌/.test(nt.stats) && nt.inputs === 0, nt);
     const sc0 = await cdp.eval(`document.querySelector('#wallScan').click(); await __wait(500); return document.querySelector('#wallNotice').classList.contains('on');`);
     check('点「刮削当前目录」仍给出配置说明（不发请求）', sc0 === true);

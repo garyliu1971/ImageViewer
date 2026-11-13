@@ -34,7 +34,7 @@ CASES = [
     ("EP01.mkv", ["Some Show"], "episode", "Some Show", None, None, 1),
     ("Some.Show.EP12.1080p.mkv", [], "episode", "Some Show", None, None, 12),
     ("Some Show S2 - 04.mkv", [], "episode", "Some Show", None, 2, 4),
-    ("Some Show Season 2 Episode 3.mkv", [], "episode", "Some Show", None, 2, None),
+    ("Some Show Season 2 Episode 3.mkv", [], "episode", "Some Show", None, 2, 3),
     ("2x05.avi", ["Old Show"], "episode", "Old Show", None, 2, 5),
     ("Old.Show.1x03.avi", [], "episode", "Old Show", None, 1, 3),
     ("01.mp4", ["Season 3", "Some Show"], "episode", "Some Show", None, 3, 1),
@@ -52,6 +52,13 @@ CASES = [
     ("Dolby.Test.Film.2018.Atmos.mkv", [], "movie", "Dolby Test Film", 2018, None, None),
     ("Some.Movie.2019.1920x1080.mkv", [], "movie", "Some Movie", 2019, None, None),
     ("你好，李焕英.2021.HD1080P.国语中字.mp4", [], "movie", "你好，李焕英", 2021, None, None),
+    ("01.mkv", ["进击的巨人 第二季"], "episode", "进击的巨人", None, 2, 1),
+    ("01.mkv", ["进击的巨人 S01"], "episode", "进击的巨人", None, 1, 1),
+    ("03.mkv", ["Show Name S02"], "episode", "Show Name", None, 2, 3),
+    ("S02E04.mkv", ["Season 2", "Show Name (2010)"], "episode", "Show Name", 2010, 2, 4),
+    ("04.mkv", ["第二季", "三体 (2023)"], "episode", "三体", 2023, 2, 4),
+    ("04.mkv", ["Show Name Season 2"], "episode", "Show Name", None, 2, 4),
+    ("Episode 05.mkv", ["Season 3", "Some Show"], "episode", "Some Show", None, 3, 5),
     ("Sicario Day of the Soldado 2018 BluRay.mkv", ["Season 1"], "episode", "Sicario Day of the Soldado", 2018, 1, None),
 ]
 
@@ -109,6 +116,18 @@ class TestParseVideo(unittest.TestCase):
         self.assertEqual((fn, ps[0]), ("s01e01.mkv", "show"))
         self.assertEqual(scrape.group_key_for(k, scrape.parse_video(fn, ps)), r"grp:c:\media\tv\show")
         self.assertIsNone(scrape.group_key_for("/a/b/Movie.2019.mkv", scrape.parse_video("Movie.2019.mkv", ["b"])))
+
+    def test_season_dirs_share_series_title_but_not_group(self):
+        a = scrape.parse_video("01.mkv", ["进击的巨人 S01"])
+        b = scrape.parse_video("01.mkv", ["进击的巨人 第二季"])
+        self.assertEqual(a["title_candidates"][0], b["title_candidates"][0])
+        self.assertEqual((a["season"], b["season"]), (1, 2))
+        ka = scrape.group_key_for("/lib/进击的巨人 S01/01.mkv", a)
+        kb = scrape.group_key_for("/lib/进击的巨人 第二季/01.mkv", b)
+        self.assertNotEqual(ka, kb)                                  # 目录不同 -> 前端要按 TMDB id 合并
+        k1 = scrape.group_key_for("/lib/Show/Season 1/S01E01.mkv", scrape.parse_video("S01E01.mkv", ["Season 1", "Show"]))
+        k2 = scrape.group_key_for("/lib/Show/Season 2/S02E01.mkv", scrape.parse_video("S02E01.mkv", ["Season 2", "Show"]))
+        self.assertEqual(k1, k2)                                     # Season N 目录天然同组
 
     def test_garbage_does_not_crash(self):
         for fn in ("", ".mkv", "....mkv", "[][][].mp4", "第集.mp4", "-.mkv", "a" * 500 + ".mkv", "\x00.mkv"):

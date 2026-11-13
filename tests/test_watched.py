@@ -141,6 +141,19 @@ class TestEndpoint(unittest.TestCase):
         self.call("PUT", {"path": self.vid, "watched": True})
         self.assertEqual(self.call("GET", path=self.vid)[1]["ms"], 70000)
 
+    def test_concurrent_marks_do_not_lose_updates(self):
+        import threading
+        vids = []
+        for i in range(12):
+            p = os.path.join(self.tmp, "v%d.mp4" % i)
+            with open(p, "wb") as f:
+                f.write(b"x")
+            vids.append(p)
+        ts = [threading.Thread(target=self.call, args=("PUT", {"path": p, "watched": True})) for p in vids]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+        self.assertEqual(len(config_store.load_config(wb.CONFIG_PATH)["_video_watched_"]), 12)
+
     def test_validation(self):
         self.assertEqual(self.call("PUT", {"path": self.vid, "watched": "yes"})[0], 400)
         self.assertEqual(self.call("PUT", {"path": os.path.join(self.tmp, "x.txt"), "watched": True})[0], 400)
