@@ -673,6 +673,45 @@ class TestEndpoints(Base):
         j = json.loads(self.post("/api/scrape/peek", {"items": [{"path": v}]})[2])
         self.assertIsNone(j["items"][0]["item"])
 
+    def test_token_is_read_per_request_not_cached(self):
+        """TMDB_TOKEN 每次请求时才从环境变量读：不是 import / 启动时缓存。设置后无需重启后端，status 立刻变 true。"""
+        old_env = {k: os.environ.get(k) for k in ("TMDB_TOKEN", "TMDB_API_BASE", "TMDB_IMAGE_BASE", "IV_SCRAPE_DIR")}
+        wb._scrape.pop("s", None)
+        os.environ["IV_SCRAPE_DIR"] = os.path.join(self.tmp, "envscrape")
+        os.environ["TMDB_API_BASE"] = self.fake.api_base
+        os.environ["TMDB_IMAGE_BASE"] = self.fake.image_base
+        try:
+            os.environ.pop("TMDB_TOKEN", None)
+            self.assertIs(json.loads(http("GET", self.u("/api/scrape/status"))[2])["token_configured"], False)
+            os.environ["TMDB_TOKEN"] = TOKEN
+            self.assertIs(json.loads(http("GET", self.u("/api/scrape/status"))[2])["token_configured"], True)
+            st, _, b = self.post("/api/scrape/match", {"path": self.vid})
+            self.assertEqual((st, json.loads(b)["item"]["media"]["title_zh"]), (200, "流浪地球"))
+            os.environ["TMDB_TOKEN"] = ""
+            self.assertIs(json.loads(http("GET", self.u("/api/scrape/status"))[2])["token_configured"], False)
+            self.assertIs(json.loads(self.post("/api/scrape/peek", {"items": [{"path": self.vid}]})[2])["token_configured"], False)
+            os.environ["TMDB_TOKEN"] = TOKEN
+            self.assertIs(json.loads(http("GET", self.u("/api/scrape/status"))[2])["token_configured"], True)
+        finally:
+            wb._scrape.pop("s", None)
+            for k, v in old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_tmdb_5xx_and_401_are_not_reported_as_missing_token(self):
+        self.fake.fail_500 = 99
+        st, _, b = self.post("/api/scrape/match", {"path": self.vid})
+        j = json.loads(b)
+        self.assertEqual((st, j["code"]), (502, "server"))
+        self.assertNotIn("no_token", json.dumps(j))
+        self.fake.fail_500 = 0
+        self.token = "WRONG_TOKEN_zzz"
+        st, _, b = self.post("/api/scrape/match", {"path": self.vid, "force": True})
+        self.assertEqual((st, json.loads(b)["code"]), (502, "bad_token"))
+        self.assertIs(json.loads(http("GET", self.u("/api/scrape/status"))[2])["token_configured"], True)     # 令牌「有」，只是 TMDB 不认
+
     def test_token_never_leaks_anywhere(self):
         """用错令牌 / 429 / 网络失败各走一遍，所有响应体、响应头、stdout/stderr 里都不能出现令牌。"""
         seen = []

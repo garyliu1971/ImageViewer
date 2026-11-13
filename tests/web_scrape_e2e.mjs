@@ -95,10 +95,11 @@ async function shot(cdp, name, w, h) {
 const WAIT = `window.__wait = (ms) => new Promise(r => setTimeout(r, ms));
   window.__until = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < (ms || 8000)) { try { const v = fn(); if (v) return v; } catch (e) {} await __wait(100); } return false; };`;
 
-async function openWall(cdp, port, dir) {
+async function openWall(cdp, port, dir, pre) {
   await cdp.send('Page.navigate', { url: 'http://127.0.0.1:' + port + '/' });
   await sleep(1500);
   await cdp.eval(WAIT + ` await __until(() => window.__IV && window.__IV.backend().on); return 1;`);
+  if (pre) await cdp.eval(pre + ' return 1;');
   return cdp.eval(`
     document.querySelector('#startDisk').click(); await __wait(300);
     document.querySelector('#browsePath').value = ${JSON.stringify(dir)};
@@ -513,6 +514,47 @@ const cards = `Array.from(document.querySelectorAll('#wallGrid .wc')).map(e => (
       return { foot, helpHtml, logoH, helpLogo: !!hlogo && hlogo.src.startsWith('data:image/svg+xml'), helpLogoH: hlogo.style.height };`);
     check('海报墙脚注 + 帮助页底部都有 TMDB 声明与 logo（logo 12px 高，小于应用自身标识）',
       /not endorsed or certified by TMDB/.test(att.foot) && /not endorsed or certified by TMDB/.test(att.helpHtml) && att.helpLogo && att.logoH <= 14, att);
+
+
+    log('\n[9b] 「未配置令牌」横幅不能误报（状态加载中 / 读取失败 / TMDB 5xx / 401）');
+    const bannerState = `const n = document.querySelector('#wallNotice'); return { on: n.classList.contains('on'), text: n.textContent, stats: document.querySelector('#wallStats').textContent };`;
+    const setFetch = (body) => `const of = window.fetch.__orig || window.fetch; const w = (u, o) => { u = String(u); ${body} return of(u, o); }; w.__orig = of; window.fetch = w;`;
+    // (i) 状态响应很慢：先渲染卡片，横幅不出现，状态行是「检查中」，回来后是「已配置令牌」
+    await openWall(cdp, port, media, setFetch(`if (u.includes('/api/scrape/status')) return new Promise((r) => setTimeout(r, 2000)).then(() => of(u, o));`));
+    const tk1 = await cdp.eval(`await __wait(500); const early = (() => { ${bannerState} })(); const nCards = ${cards}.length;
+      await __until(() => /已配置令牌/.test(document.querySelector('#wallStats').textContent), 6000); return { early, nCards, late: (() => { ${bannerState} })() };`);
+    check('状态慢：先出卡片、横幅不出现、状态行「检查中」；状态回来后「已配置令牌」且仍无横幅', tk1.nCards >= 5 && !tk1.early.on && /检查中/.test(tk1.early.stats) && !tk1.late.on && /已配置令牌/.test(tk1.late.stats), tk1);
+    // (ii) 状态请求失败（网络错误）/ (iii) HTTP 500 / (iv) 200 但没有 token_configured 字段
+    for (const [name, body, statRe] of [
+      ['网络错误', `if (u.includes('/api/scrape/status')) return Promise.reject(new TypeError('Failed to fetch'));`, /状态暂时读不到/],
+      ['HTTP 500', `if (u.includes('/api/scrape/status')) return Promise.resolve(new Response(JSON.stringify({ ok: false, error: 'boom' }), { status: 500, headers: { 'Content-Type': 'application/json' } }));`, /状态暂时读不到/],
+      ['缺字段', `if (u.includes('/api/scrape/status')) return Promise.resolve(new Response(JSON.stringify({ ok: true, cached_responses: 0, images: 0, image_bytes: 0, pins: 0, ttl_days: 150 }), { status: 200, headers: { 'Content-Type': 'application/json' } }));`, /令牌状态未知/]]) {
+      await openWall(cdp, port, media, setFetch(body));
+      const dd = await cdp.eval(`await __wait(1200); const o = (() => { ${bannerState} })(); o.imgs = document.querySelectorAll('#wallGrid .wc img').length; return o;`);
+      check('状态' + name + '：不显示「未配置令牌」横幅，状态行是中性提示，浏览与懒加载海报照常', !dd.on && statRe.test(dd.stats) && !/未配置令牌/.test(dd.stats) && dd.imgs >= 3, dd);
+    }
+    // (v) TMDB 暂时 5xx：横幅是「TMDB 暂时不可用」，绝不是「未配置令牌」；状态行仍是已配置
+    fs.mkdirSync(path.join(tmp, '大目录2'), { recursive: true });
+    for (let i = 0; i < 8; i++) fs.writeFileSync(path.join(tmp, '大目录2', 'Never Seen Movie ' + String.fromCharCode(97 + i) + ' (2012).mp4'), 'x');
+    const setFake = (q) => new Promise((res) => http.get(apiBase.replace(/\/3$/, '') + '/__set?' + q, (r) => { r.resume(); r.on('end', () => res(1)); }));
+    await setFake('fail_500=2000');
+    await openWall(cdp, port, path.join(tmp, '大目录2'));
+    const tk5 = await cdp.eval(`await __until(() => /暂时不可用/.test(document.querySelector('#wallNotice').textContent), 40000); return (() => { ${bannerState} })();`);
+    await setFake('fail_500=0');
+    check('TMDB 5xx：横幅是「TMDB 暂时不可用…这不是令牌问题」，没有「还没有配置」，状态行仍「已配置令牌」', tk5.on && /暂时不可用/.test(tk5.text) && /不是令牌问题/.test(tk5.text) && !/还没有配置/.test(tk5.text) && /已配置令牌/.test(tk5.stats), tk5);
+    // (vi) 令牌错误（401）：横幅是「令牌无效」而不是「未配置」
+    const be3 = await startBackend({ IV_CONFIG: path.join(tmp, 'cfg3.json'), IV_SCRAPE_DIR: path.join(tmp, 'scrape3'), TMDB_TOKEN: 'WRONG_TOKEN_e2e', TMDB_API_BASE: apiBase, TMDB_IMAGE_BASE: imgBase });
+    await openWall(cdp, +be3.m[1], path.join(tmp, '大目录2'));
+    const tk6 = await cdp.eval(`await __until(() => /令牌无效/.test(document.querySelector('#wallNotice').textContent), 25000); return (() => { ${bannerState} })();`);
+    be3.proc.kill();
+    check('令牌错误（401）：横幅是「TMDB 令牌无效（401）」，不是「还没有配置」；状态行「已配置令牌」', tk6.on && /令牌无效（401）/.test(tk6.text) && !/还没有配置/.test(tk6.text) && /已配置令牌/.test(tk6.stats), tk6);
+    // (vii) 后端这次没读到令牌，但本机缓存里有以前刮过的海报（车主的真实情形）：横幅是真的，但要说明「看到的是缓存」
+    fs.cpSync(scrDir, path.join(tmp, 'scrape4'), { recursive: true });
+    const be4 = await startBackend({ IV_CONFIG: path.join(tmp, 'cfg4.json'), IV_SCRAPE_DIR: path.join(tmp, 'scrape4'), TMDB_TOKEN: '', TMDB_API_BASE: apiBase, TMDB_IMAGE_BASE: imgBase });
+    await openWall(cdp, +be4.m[1], media);
+    const tk7 = await cdp.eval(`await __wait(1500); const o = (() => { ${bannerState} })(); o.imgs = document.querySelectorAll('#wallGrid .wc img').length; return o;`);
+    be4.proc.kill();
+    check('后端没读到令牌但缓存里有海报：海报照常显示，横幅说明「来自本机缓存、后端这次没读到令牌」', tk7.on && tk7.imgs >= 3 && /本机缓存/.test(tk7.text) && /还没有配置/.test(tk7.text) && /未配置令牌/.test(tk7.stats), tk7);
 
     log('\n[9] 未配置令牌：中文说明、不联网、仍可浏览');
     const fakeBefore = await new Promise((res) => http.get(apiBase.replace(/\/3$/, '') + '/__none', (r) => { r.resume(); res(1); }).on('error', () => res(0)));

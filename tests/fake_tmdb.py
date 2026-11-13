@@ -136,6 +136,11 @@ class FakeTmdb:
                 auth = self.headers.get("Authorization")
                 with fake._lock:
                     fake.requests.append((u.path, q, auth, self.headers.get("User-Agent")))
+                if u.path == "/__set":                      # 测试控制：?fail_500=N 让接下来 N 个 API 请求回 503
+                    with fake._lock:
+                        if "fail_500" in q:
+                            fake.fail_500 = int(q["fail_500"])
+                    return self._send(200, {"ok": True})
                 if u.path == "/__stats":
                     with fake._lock:
                         n = len(fake.requests) - 1

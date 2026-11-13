@@ -6246,7 +6246,7 @@
      列表页只调 /api/scrape/peek（解析文件名 + 读缓存，不联网）；可见的卡片再逐个 /api/scrape/match（后端节流）。 */
   var LS_WALL = 'iv.wall.v1', LS_PLAYED = 'iv.scrape.played.v1';   /* LS_PLAYED 只用于一次性迁移 */
   var W = { on: false, rows: [], all: [], dirRows: {}, sub: true, ret: null, remote: false, cards: [], byId: {}, seq: 0, q: [], running: 0, fails: 0,
-            tokenOk: null, stop: '', jobId: '', jobTimer: 0, io: null, purgeArm: 0 };
+            tokenState: 'unknown', noticeKind: '', stop: '', jobId: '', jobTimer: 0, io: null, purgeArm: 0 };
   var wallPrefs = lsGet(LS_WALL, null) || {};
   function wallReq(r) { return W.remote ? { remote: r.path } : { path: r.path }; }
   function isWatched(f) { return !!f.peek.watched; }
@@ -6317,10 +6317,20 @@
   }
   function wallStopAll() { W.seq++; W.q = []; if (W.io) { W.io.disconnect(); W.io = null; } }
 
-  function wallNotice(html) {
+  function wallNotice(html, kind) {
     var n = $('#wallNotice');
     n.innerHTML = html || '';
     n.classList.toggle('on', !!html);
+    W.noticeKind = html ? (kind || '') : '';
+  }
+  /* 令牌状态只有三个来源：成功的 /api/scrape/status（token_configured 严格 === true / false）、
+     后端对某次 match 明确回的 no_token / bad_token。加载中、状态读取失败、TMDB 暂时 5xx / 超时 一律是 unknown / 不改状态，
+     绝不显示「未配置令牌」。 */
+  function wallSetToken(state, extra) {
+    W.tokenState = state;
+    if (state === 'missing') wallNotice(NOTICE_NO_TOKEN + (extra || ''), 'token');
+    else if (state === 'invalid') wallNotice(NOTICE_BAD_TOKEN, 'token');
+    else if (W.noticeKind === 'token') wallNotice('');
   }
   var NOTICE_NO_TOKEN =
     '<b>还没有配置 TMDB 令牌</b>，现在只能按文件名显示标题，没有海报和简介。<br>' +
@@ -6329,6 +6339,9 @@
     '<code>[Environment]::SetEnvironmentVariable(\'TMDB_TOKEN\',\'你的令牌\',\'User\')</code><br>' +
     '② 关闭并重新启动后端（启动网页版.bat / python web_backend.py），再回到这里点「海报墙」。<br>' +
     '只想临时试用：<code>$env:TMDB_TOKEN=\'你的令牌\'; python web_backend.py</code>';
+
+  var NOTICE_CACHE_HINT = '<br><b>注意</b>：下面能看到的海报 / 标题来自<b>本机缓存</b>（以前刮削过的），后端这次没读到令牌，所以新文件不会再刮削。';
+  var NOTICE_BAD_TOKEN = '<b>TMDB 令牌无效（401）</b>：后端读到了 TMDB_TOKEN，但 TMDB 不认。请确认它是 “API Read Access Token”（不是 API Key），改好后重启后端。';
 
   var WALL_MAX_DIRS = 60, WALL_MAX_VIDEOS = 500;
   /* 当前目录的视频 +（可选）往下最多两层子目录里的视频：Show/Season 1、Show S02、第二季 这类分季目录合到同一张剧集卡 */
@@ -6374,6 +6387,9 @@
     var rows = entries.filter(function (r) { return r.kind === 'video'; });
     var seq = ++W.seq;
     W.rows = rows; W.remote = browseRemote; W.q = []; W.running = 0; W.fails = 0; W.stop = ''; W.truncated = false;
+    W.tokenState = 'unknown'; wallNotice('');                 /* 状态读回来之前什么都不报 */
+    $('#wallStats').textContent = '刮削：检查中…';
+    wallStats();
     if (W.io) { W.io.disconnect(); W.io = null; }
     var grid = $('#wallGrid');
     $('#wallSub').checked = W.sub;
@@ -6381,15 +6397,12 @@
     wallCollect(rows, entries, seq).then(function (all) {
       if (seq !== W.seq) return null;
       W.all = all;
-      if (!all.length) { grid.innerHTML = '<div class="wall-empty">这个目录里没有视频' + (W.sub ? '（含两层子目录）' : '') + '。换到有视频的目录，或切回「列表」。</div>'; wallStats(); return null; }
+      if (!all.length) { grid.innerHTML = '<div class="wall-empty">这个目录里没有视频' + (W.sub ? '（含两层子目录）' : '') + '。换到有视频的目录，或切回「列表」。</div>'; return null; }
       return apiJson('/api/scrape/peek', null, 'POST', { items: all.slice(0, WALL_MAX_VIDEOS).map(wallReq) });
     }).then(function (j) {
       if (!j || seq !== W.seq) return;
-      W.tokenOk = !!j.token_configured;
-      wallNotice(W.tokenOk ? '' : NOTICE_NO_TOKEN);
       wallBuild(j.items || []);
       wallRender();
-      wallStats();
       if (W.truncated) $('#wallStats').textContent += ' · 子目录太多，只扫描了前 ' + WALL_MAX_DIRS + ' 个';
       wallAfterRender();
       wallMigratePlayed();
@@ -6530,7 +6543,7 @@
     els.forEach(function (el) { W.io.observe(el); });
   }
   function wallQueue(c) {
-    if (c.queued || c.item || !W.tokenOk || W.stop) return;
+    if (c.queued || c.item || W.tokenState === 'missing' || W.tokenState === 'invalid' || W.stop) return;
     c.queued = true; W.q.push(c); wallPump();
   }
   function wallPump() {
@@ -6547,9 +6560,9 @@
           if (seq !== W.seq) return;
           c.queued = false;
           var msg = (e && e.message) || String(e);
-          if (e && e.code === 'bad_token') { W.stop = 'bad_token'; wallNotice('<b>TMDB 令牌无效（401）</b>：请检查环境变量 TMDB_TOKEN 是不是 “API Read Access Token”（不是 API Key），改好后重启后端。'); }
-          else if (e && e.code === 'no_token') { W.stop = 'no_token'; W.tokenOk = false; wallNotice(NOTICE_NO_TOKEN); }
-          else if (++W.fails >= 3) { W.stop = 'net'; wallNotice('<b>连不上 TMDB</b>（' + esc(msg) + '）。网络不通时只显示文件名；可检查网络 / 代理后点「刮削当前目录」重试。'); }
+          if (e && e.code === 'bad_token') { W.stop = 'bad_token'; wallSetToken('invalid'); }
+          else if (e && e.code === 'no_token') { W.stop = 'no_token'; wallSetToken('missing'); }
+          else if (++W.fails >= 3) { W.stop = 'net'; wallNotice('<b>TMDB 暂时不可用</b>（' + esc(msg) + '）。这不是令牌问题；网络 / 代理恢复后点「刮削当前目录」重试，已有的资料不受影响。', 'net'); }
         }).then(function () { if (seq === W.seq) { W.running--; wallPump(); } });
       })(W.q.shift());
     }
@@ -6569,9 +6582,12 @@
   function wallStats() {
     apiJson('/api/scrape/status').then(function (s) {
       var mb = (s.image_bytes / 1048576).toFixed(1);
-      $('#wallStats').textContent = '刮削：' + (s.token_configured ? '已配置令牌' : '未配置令牌') + ' · 缓存 ' + s.cached_responses +
+      var tk = s.token_configured === true ? '已配置令牌' : s.token_configured === false ? '未配置令牌' : '令牌状态未知';
+      if (s.token_configured === true) { if (W.tokenState !== 'invalid') wallSetToken('ok'); }
+      else if (s.token_configured === false) wallSetToken('missing', (s.cached_responses || s.matches || s.images) ? NOTICE_CACHE_HINT : '');
+      $('#wallStats').textContent = '刮削：' + tk + ' · 缓存 ' + s.cached_responses +
         ' 条响应 / ' + s.images + ' 张图（' + mb + ' MB）· 手动锁定 ' + s.pins + ' · 缓存保留 ' + s.ttl_days + ' 天';
-    }, function (e) { $('#wallStats').textContent = '刮削：状态读取失败（' + ((e && e.message) || e) + '）'; });
+    }, function (e) { $('#wallStats').textContent = '刮削：状态暂时读不到（' + ((e && e.message) || e) + '），不影响浏览'; });
   }
   function wallPurge() {
     var b = $('#wallPurge');
@@ -6589,7 +6605,8 @@
 
   /* ---- 刮削当前目录（只这一层，不递归）---- */
   function wallScan() {
-    if (!W.tokenOk) { wallNotice(NOTICE_NO_TOKEN); return; }
+    if (W.tokenState === 'missing') { wallSetToken('missing'); return; }
+    if (W.tokenState === 'invalid') { wallSetToken('invalid'); return; }
     if (W.jobId) return;
     var items = W.rows.slice(0, 2000).map(wallReq);      /* 只刮当前这一层（W.rows = 当前目录自己的视频，不含子目录） */
     if (!items.length) { toast('当前目录没有视频'); return; }
@@ -6597,7 +6614,7 @@
       W.jobId = j.job.id; $('#wallProg').classList.add('on'); $('#wallScan').disabled = true;
       wallPoll();
     }, function (e) {
-      if (e && e.code === 'no_token') wallNotice(NOTICE_NO_TOKEN); else toast('无法开始刮削：' + ((e && e.message) || e));
+      if (e && e.code === 'no_token') wallSetToken('missing'); else toast('无法开始刮削：' + ((e && e.message) || e));
     });
   }
   function wallPoll() {
