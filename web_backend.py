@@ -451,22 +451,66 @@ def _resume_key(path):
     return os.path.normcase(os.path.abspath(path))
 
 
-def video_resume_get(path):
-    pos = (progress_store().get(VIDEO_RESUME_KEY) or {}).get(_resume_key(path))
-    return int(pos) if isinstance(pos, (int, float)) and pos > 0 else None
+RESUME_MAX_MS = 10 * 24 * 3600 * 1000       # 10 天，超过当作非法输入
+RESUME_MAX_KEYS = 5000                       # _video_resume_ 最多留这么多条（超了丢最旧的）
+REMOTE_PATH_MAX = 2048
 
 
-def video_resume_save(path, position_ms, length_ms=0):
-    """记下 / 清除续播点。返回写入后的值（None = 已清除）。只改 _video_resume_ 下这一项。"""
+def remote_resume_key(remote_path):
+    """云端视频的续播 key：dav:<host:port>/<解码后的远端路径>。
+
+    host 取后端已保存的 WebDAV 地址（不是浏览器传来的），不含用户名 / 密码 / query。
+    以 "dav:" 开头：本机 key 是 normcase(abspath)（盘符或 / 开头），两者不可能相撞。"""
+    import urllib.parse as up
+    rp = str(remote_path or "")
+    if not rp or len(rp) > REMOTE_PATH_MAX or any(ord(c) < 32 for c in rp):
+        raise ValueError("云端路径不合法")
+    cfg = remote_config()
+    base = cfg.get("base_url") or ""
+    if not base:
+        raise RuntimeError("还没配置 WebDAV")
+    host = up.urlsplit(base if "://" in base else "http://" + base).netloc.rpartition("@")[2].lower()
+    dec = up.unquote(up.urlsplit(rp).path if "://" in rp else rp.split("?", 1)[0].split("#", 1)[0])
+    import posixpath
+    dec = posixpath.normpath("/" + dec.replace(chr(92), "/")).lstrip("/")     # 解析 . / ..，到根为止，不会跳出
+    if ext_of(dec) not in VIDEO_EXTS:
+        raise PermissionError("不允许读取该文件")
+    return "dav:%s/%s" % (host, dec)
+
+
+def _check_ms(v, name):
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        raise ValueError("%s 不合法" % name)
+    try:
+        n = int(float(v)) if v != "" else 0
+    except (TypeError, ValueError):
+        raise ValueError("%s 不合法" % name)
+    if n < 0 or n > RESUME_MAX_MS:
+        raise ValueError("%s 超出范围" % name)
+    return n
+
+
+def video_resume_get(path=None, key=None):
+    key = key or _resume_key(path)
+    pos = (progress_store().get(VIDEO_RESUME_KEY) or {}).get(key)
+    return int(pos) if isinstance(pos, (int, float)) and not isinstance(pos, bool) and pos > 0 else None
+
+
+def video_resume_save(path=None, position_ms=0, length_ms=0, key=None):
+    """记下 / 清除续播点。返回写入后的值（None = 已清除）。只改 _video_resume_ 下这一项。
+    key 缺省时按本机路径算；云端视频传 remote_resume_key() 的结果。"""
+    pos = _check_ms(position_ms or 0, "ms")
+    length = _check_ms(length_ms or 0, "length")
     cfg = config_store.load_config(CONFIG_PATH)
     resumes = cfg.get(VIDEO_RESUME_KEY)
     if not isinstance(resumes, dict):
         resumes = cfg[VIDEO_RESUME_KEY] = {}
-    key = _resume_key(path)
-    pos = int(position_ms or 0)
-    length = int(length_ms or 0)
+    key = key or _resume_key(path)
     if pos > RESUME_MIN_MS and (length <= 0 or pos < length - RESUME_MIN_MS):
+        resumes.pop(key, None)                 # 先删再写：最近看的排最后，超限时丢最旧的
         resumes[key] = pos
+        while len(resumes) > RESUME_MAX_KEYS:
+            resumes.pop(next(iter(resumes)))
         out = pos
     else:
         resumes.pop(key, None)
@@ -862,6 +906,9 @@ class Handler(BaseHTTPRequestHandler):
             data = pdf_render(path, page, scale)
             return self._bytes(data, "image/png", extra={"Cache-Control": "private, max-age=300"})
         if route == "/api/videoresume":
+            remote = (q.get("remote") or [""])[0]
+            if remote:                                       # 云端视频：key 由后端按已配置的 WebDAV 地址算
+                return self._json({"ok": True, "ms": video_resume_get(key=remote_resume_key(remote))})
             if ext_of(path) not in VIDEO_EXTS:
                 raise PermissionError("不允许读取该文件")
             return self._json({"ok": True, "ms": video_resume_get(path)})
@@ -928,6 +975,20 @@ class Handler(BaseHTTPRequestHandler):
             clen = up.get("Content-Length") if up else None
             clen = int(clen) if clen is not None and str(clen).isdigit() else None
             cr = up.get("Content-Range") if up else None
+            if ext_of(path) in SUBTITLE_EXTS and (clen is None or clen > SUBTITLE_MAX_BYTES):
+                # 字幕文件很小：太大（或不知道多大且读过上限）直接拒绝，别把奇怪的东西灌给浏览器
+                if clen is not None:
+                    return self._err("字幕文件太大（%d KB，上限 %d MB）" % (clen // 1024, SUBTITLE_MAX_BYTES >> 20), 413)
+                head = resp.read(SUBTITLE_MAX_BYTES + 1)
+                if len(head) > SUBTITLE_MAX_BYTES:
+                    return self._err("字幕文件太大（上限 %d MB）" % (SUBTITLE_MAX_BYTES >> 20), 413)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(head)))
+                self.end_headers()
+                if self.command != "HEAD":
+                    self.wfile.write(head)
+                return
             code, skip, out_len = (206 if status == 206 else 200), 0, clen
             if rng and status == 200:
                 # 上游不支持 Range（AList 某些网盘 / CDN 会忽略它，回 200 整文件）：
@@ -1015,6 +1076,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if route == "/api/videoresume":
                 body = self._read_json_body()
+                if body.get("remote"):
+                    ms = video_resume_save(key=remote_resume_key(body.get("remote")),
+                                           position_ms=body.get("ms"), length_ms=body.get("length"))
+                    return self._json({"ok": True, "ms": ms})
                 vpath = str(body.get("path") or "")
                 if ext_of(vpath) not in VIDEO_EXTS or not is_servable(vpath):
                     raise PermissionError("不允许读取该文件")

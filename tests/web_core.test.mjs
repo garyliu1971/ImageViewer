@@ -1958,3 +1958,50 @@ test('字幕解码：UTF-8 BOM / GBK / UTF-16LE', () => {
   const u16 = new Uint8Array([0xFF, 0xFE, 0x60, 0x4F, 0x7D, 0x59]);
   assert.equal(C.decodeSubtitle(u16), '你好');
 });
+
+test('字幕标签 / 默认选择（语言后缀）', () => {
+  const v = 'S01E01 第一集.mkv';
+  assert.equal(C.subSuffix(v, 'S01E01 第一集.zh.srt'), 'zh');
+  assert.equal(C.subSuffix(v, 'S01E01 第一集.srt'), '');
+  assert.equal(C.subSuffix(v, '别的.srt'), null);
+  assert.equal(C.subLabel(v, 'S01E01 第一集.zh.srt'), '简体中文 (srt)');
+  assert.equal(C.subLabel(v, 'S01E01 第一集.CHS.ass'), '简体中文 (ass)');
+  assert.equal(C.subLabel(v, 'S01E01 第一集.zh-tw.srt'), '繁體中文 (srt)');
+  assert.equal(C.subLabel(v, 'S01E01 第一集.cht.srt'), '繁體中文 (srt)');
+  assert.equal(C.subLabel(v, 'S01E01 第一集.en.srt'), 'English (srt)');
+  assert.match(C.subLabel(v, 'S01E01 第一集.chs&eng.srt'), /^中英双语/);
+  assert.match(C.subLabel(v, 'S01E01 第一集.zh-en.srt'), /^中英双语/);
+  assert.equal(C.subLabel(v, 'S01E01 第一集.srt'), '字幕 (srt)');
+  assert.equal(C.subLabel(v, 'S01E01 第一集.xx.srt'), 'xx (srt)');
+  assert.equal(C.subLabel(v, '别的.srt'), '别的.srt');
+  const names = ['S01E01 第一集.en.srt', 'S01E01 第一集.srt', 'S01E01 第一集.cht.srt', 'S01E01 第一集.zh.srt'];
+  assert.equal(C.subPick(v, names), 3);                              // 简体 > 繁体 > 同名 > 其它
+  assert.equal(C.subPick(v, names.slice(0, 3)), 2);                  // 没有简体 -> 繁体
+  assert.equal(C.subPick(v, names.slice(0, 2)), 1);                  // 没有中文 -> 无后缀同名
+  assert.equal(C.subPick(v, ['a.en.srt', 'a.ja.srt'].map(n => n.replace('a', 'S01E01 第一集'))), 0);   // 都不是中文 -> 第一条
+  assert.equal(C.subPick(v, []), -1);
+  // 括号 / 空格 / 大小写
+  assert.equal(C.subSuffix('[组] 电影 (2020).MP4', '[组] 电影 (2020).ZH.SRT'), 'ZH');
+});
+
+test('明文 HTTP 公网地址风险判断', () => {
+  const w = (u) => C.plainHttpRisk(u).warn;
+  for (const u of ['http://192.168.1.75:5244/dav', '192.168.1.75:5244/dav', 'http://10.0.0.5/dav', 'http://172.16.0.1/dav',
+    'http://172.31.255.1/dav', 'http://169.254.1.1/dav', 'http://127.0.0.1:5244', 'http://localhost:5244/dav',
+    'http://nas.local/dav', 'http://nas/dav', 'http://[::1]:5244/dav', 'http://[fd12:3456::1]/dav', 'http://[fe80::1]/dav',
+    'https://example.com/dav', 'https://8.8.8.8/dav', 'http://user:p%40ss@192.168.1.5/dav'])
+    assert.equal(w(u), false, u);
+  for (const u of ['http://192.158.1.75:5244/dav', '192.158.1.75:5244/dav', 'http://8.8.8.8/dav', 'http://172.15.0.1/dav',
+    'http://172.32.0.1/dav', 'http://example.com/dav', 'http://nas.example.com:5244/dav', 'http://user:pw@example.com/dav',
+    'http://192.169.1.1/dav', 'http://[2001:db8::1]/dav'])
+    assert.equal(w(u), true, u);
+  assert.equal(C.plainHttpRisk('http://192.158.1.75:5244/dav').host, '192.158.1.75');
+  assert.equal(C.plainHttpRisk('').warn, false);
+});
+
+test('GBK 字幕走完整链路：字节 -> 解码 -> VTT', () => {
+  const gbk = new Uint8Array(Buffer.from([0x31, 0x0D, 0x0A, 0x30, 0x30, 0x3A, 0x30, 0x30, 0x3A, 0x30, 0x31, 0x2C, 0x30, 0x30, 0x30, 0x20, 0x2D, 0x2D, 0x3E, 0x20,
+    0x30, 0x30, 0x3A, 0x30, 0x30, 0x3A, 0x30, 0x32, 0x2C, 0x30, 0x30, 0x30, 0x0D, 0x0A, 0xC4, 0xE3, 0xBA, 0xC3, 0x0D, 0x0A]));
+  const vtt = C.subtitleToVtt(C.decodeSubtitle(gbk), 'x.zh.srt');
+  assert.ok(vtt.includes('00:00:01.000 --> 00:00:02.000\n你好\n'));
+});
