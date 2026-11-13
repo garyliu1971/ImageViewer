@@ -38,6 +38,7 @@ from media_source import (IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS, ARCHIVE_EXTS, PDF_
                           RAR_EXTS, media_files_in, build_zip_chapters, natural_key, is_junk)
 import config_store
 import netutil
+import watched_store
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 # 打包成 exe 后：HTML 在 PyInstaller 的 _MEIPASS 里，进度文件跟着 exe 走，
@@ -498,24 +499,27 @@ def video_resume_get(path=None, key=None):
 
 
 def video_resume_save(path=None, position_ms=0, length_ms=0, key=None):
-    """记下 / 清除续播点。返回写入后的值（None = 已清除）。只改 _video_resume_ 下这一项。
-    key 缺省时按本机路径算；云端视频传 remote_resume_key() 的结果。"""
+    """记下 / 清除续播点。返回写入后的值（None = 已清除）。key 缺省时按本机路径算；云端视频传 remote_resume_key() 的结果。
+    规则在 watched_store.apply_resume（与桌面版共用）：看完（结尾 3 秒内）清掉续播点并记入 _video_watched_。"""
     pos = _check_ms(position_ms or 0, "ms")
     length = _check_ms(length_ms or 0, "length")
     cfg = config_store.load_config(CONFIG_PATH)
-    resumes = cfg.get(VIDEO_RESUME_KEY)
-    if not isinstance(resumes, dict):
-        resumes = cfg[VIDEO_RESUME_KEY] = {}
     key = key or _resume_key(path)
-    if pos > RESUME_MIN_MS and (length <= 0 or pos < length - RESUME_MIN_MS):
-        resumes.pop(key, None)                 # 先删再写：最近看的排最后，超限时丢最旧的
-        resumes[key] = pos
-        while len(resumes) > RESUME_MAX_KEYS:
-            resumes.pop(next(iter(resumes)))
-        out = pos
-    else:
-        resumes.pop(key, None)
-        out = None
+    out = watched_store.apply_resume(cfg, key, pos, length, max_keys=RESUME_MAX_KEYS)
+    config_store.save_config(CONFIG_PATH, cfg)
+    return out
+
+
+def video_watched_get(path=None, key=None):
+    key = key or _resume_key(path)
+    return watched_store.is_watched(progress_store(), key)
+
+
+def video_watched_set(flag, path=None, key=None):
+    """手动标记已看 / 未看（不动续播点）。"""
+    key = key or _resume_key(path)
+    cfg = config_store.load_config(CONFIG_PATH)
+    out = watched_store.mark_watched(cfg, key, bool(flag), max_keys=RESUME_MAX_KEYS)
     config_store.save_config(CONFIG_PATH, cfg)
     return out
 
@@ -946,10 +950,11 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/videoresume":
             remote = (q.get("remote") or [""])[0]
             if remote:                                       # 云端视频：key 由后端按已配置的 WebDAV 地址算
-                return self._json({"ok": True, "ms": video_resume_get(key=remote_resume_key(remote))})
+                rk = remote_resume_key(remote)
+                return self._json({"ok": True, "ms": video_resume_get(key=rk), "watched": video_watched_get(key=rk)})
             if ext_of(path) not in VIDEO_EXTS:
                 raise PermissionError("不允许读取该文件")
-            return self._json({"ok": True, "ms": video_resume_get(path)})
+            return self._json({"ok": True, "ms": video_resume_get(path), "watched": video_watched_get(path)})
         if route == "/api/progress":
             return self._json({"ok": True, "path": CONFIG_PATH.replace("\\", "/"),
                                "books": progress_store()})
@@ -1140,6 +1145,7 @@ class Handler(BaseHTTPRequestHandler):
                     orig = urllib.parse.unquote(str(i.get("remote") or "")) if i.get("remote") else str(i.get("path") or "")
                     r = sc.peek(k, orig)
                     r["resume_ms"] = video_resume_get(key=k)
+                    r["watched"] = video_watched_get(key=k)
                     out.append(r)
                 return self._json({"ok": True, "items": out, "token_configured": sc.client.has_token()})
             if route == "/api/scrape/cancel":
@@ -1192,14 +1198,19 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/api/videoresume":
                 body = self._read_json_body()
                 if body.get("remote"):
-                    ms = video_resume_save(key=remote_resume_key(body.get("remote")),
-                                           position_ms=body.get("ms"), length_ms=body.get("length"))
-                    return self._json({"ok": True, "ms": ms})
-                vpath = str(body.get("path") or "")
-                if ext_of(vpath) not in VIDEO_EXTS or not is_servable(vpath):
-                    raise PermissionError("不允许读取该文件")
-                ms = video_resume_save(vpath, body.get("ms"), body.get("length"))
-                return self._json({"ok": True, "ms": ms})
+                    rk = remote_resume_key(body.get("remote"))
+                else:
+                    vpath = str(body.get("path") or "")
+                    if ext_of(vpath) not in VIDEO_EXTS or not is_servable(vpath):
+                        raise PermissionError("不允许读取该文件")
+                    rk = _resume_key(vpath)
+                if "watched" in body:                        # 手动标记已看 / 未看（只动 _video_watched_）
+                    if not isinstance(body["watched"], bool):
+                        raise ValueError("watched 必须是布尔值")
+                    w = video_watched_set(body["watched"], key=rk)
+                    return self._json({"ok": True, "watched": w, "ms": video_resume_get(key=rk)})
+                ms = video_resume_save(key=rk, position_ms=body.get("ms"), length_ms=body.get("length"))
+                return self._json({"ok": True, "ms": ms, "watched": video_watched_get(key=rk)})
             if route == "/api/upload":
                 name = (q.get("name") or ["file"])[0]
                 mtime = (q.get("mtime") or ["0"])[0]

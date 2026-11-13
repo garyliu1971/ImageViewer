@@ -68,6 +68,7 @@ from browser_view import fmt_size, fmt_mtime, kind_label, grid_layout, hit_test,
 from video_player import (fmt_time, build_vlc_args, build_video_media_options,
                           video_tmp_name, video_resume_key, RegionZoom)
 from remote_types import RemoteSource
+import watched_store
 import alist_manager
 
 # ---- 高 DPI 适配（必须在创建任何窗口之前调用） ----
@@ -2571,11 +2572,8 @@ class ComicViewer(tk.Tk):
         try:
             position = self.player.get_time()
             length = self.player.get_length()
-            resumes = self._config.setdefault("_video_resume_", {})
-            if position > 3000 and (length <= 0 or position < length - 3000):
-                resumes[key] = position
-            else:
-                resumes.pop(key, None)
+            # 与网页后端共用 watched_store：续播规则不变；看完（结尾 3 秒内）额外记入 _video_watched_
+            watched_store.apply_resume(self._config, key, position, length)
             self._save_config()
         except Exception:
             pass
@@ -4110,6 +4108,13 @@ class ComicViewer(tk.Tk):
                 self._set_btn_text(self.play_btn, "▶")
                 if not self._video_ended:
                     self._video_ended = True
+                    try:
+                        wkey = self._video_resume_key(self.sources[self.index])
+                        if wkey:
+                            watched_store.mark_watched(self._config, wkey, True)
+                            self._save_config()
+                    except Exception:
+                        pass
                     self._play_next_at_end()
                 return
         except Exception:
