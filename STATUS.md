@@ -347,3 +347,4 @@ Basic 凭据只在后端 -> 网盘一段使用，不下发、不转发 WWW-Authe
 - **已看状态**：新配置 key `_video_watched_`（`watched_store.py`，桌面 + 网页共用；`_video_resume_` 格式不变）。网页端有标记 / 手动开关 / 剧集「全部已看才算已看完」；桌面端写入（`image_viewer.py` 两处）但界面暂不显示，GUI 跑不了、只测了纯逻辑。
 - **播放后回到原视图**、**分季目录按 TMDB id 合并成一张剧集卡**（含「含子目录」开关）、解析器支持 `Episode 05`。
 - 测试：`tests/test_watched.py`（13）、`tests/test_netutil.py`（11）、`tests/web_scrape_e2e.mjs` 扩到 44 项。
+- **后续修正（同分支）**：「忽略（不是影视）」忽略记录（不联网、purge 不清、普通文件卡）；≤ 2 汉字标题只靠外语别名命中时不自动接受；TMDB 缺某一季时降级而不是 404 失败（1 小时负缓存）；剧集年份只做软提示；解析器：`S06E01` 跟在 `第六季` 后、站点水印、`HD1080P`、`Episode 05`；分集按钮改成明确动作（标为已看 / 取消已看）。详见 `docs/scrape-design.md` §15。
