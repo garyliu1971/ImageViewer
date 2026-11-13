@@ -497,6 +497,80 @@ class TestAListLikeRelay(FixtureCase):
         st, hdr, body = http_get(self._u(), self.token, {"Range": "bytes=10-19"})
         self.assertEqual((st, body), (200, self.BLOB))          # 不知道总长：老实回整个，不假装 206
 
+    # ---------- 云端视频续播点 ----------
+    def _ru(self, remote):
+        return self.base + "/api/videoresume?remote=" + urllib.parse.quote(remote)
+
+    def test_remote_resume_roundtrip_key_shape_and_no_secrets(self):
+        dav, root = self._dav()
+        vp = "/dav/百度网盘/电影/大片.mp4"
+        st, _, body = http_get(self._ru(vp), self.token)
+        self.assertEqual((st, json.loads(body)["ms"]), (200, None))
+        st, _ = http_put(self.base + "/api/videoresume", {"remote": vp, "ms": 125000, "length": 600000}, self.token)
+        self.assertEqual(st, 200)
+        self.assertEqual(json.loads(http_get(self._ru(vp), self.token)[2])["ms"], 125000)
+        host = urllib.parse.urlsplit(root).netloc
+        store = wb.progress_store()["_video_resume_"]
+        self.assertEqual(store, {"dav:%s/dav/百度网盘/电影/大片.mp4" % host: 125000})
+        raw = json.dumps(wb.progress_store(), ensure_ascii=False)
+        self.assertNotIn("u:p@", raw)
+        # 百分号编码 / 带 query / 带 .. 都归一到同一个 key
+        enc = urllib.parse.quote(vp)
+        self.assertEqual(json.loads(http_get(self._ru(enc + "?sign=abc"), self.token)[2])["ms"], 125000)
+        self.assertEqual(json.loads(http_get(self._ru("/dav/x/../百度网盘/电影/大片.mp4"), self.token)[2])["ms"], 125000)
+        # 看到最后 3 秒内 -> 清除
+        http_put(self.base + "/api/videoresume", {"remote": vp, "ms": 599000, "length": 600000}, self.token)
+        self.assertEqual(wb.progress_store()["_video_resume_"], {})
+
+    def test_remote_resume_key_cannot_collide_with_local(self):
+        self._dav()
+        local = os.path.join(self.tmp, "a.mp4")
+        _write(local, b"x")
+        wb.video_resume_save(local, 70000, 600000)
+        http_put(self.base + "/api/videoresume", {"remote": "/dav/百度网盘/电影/大片.mp4", "ms": 80000, "length": 600000}, self.token)
+        keys = list(wb.progress_store()["_video_resume_"])
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(len([k for k in keys if k.startswith("dav:")]), 1)
+        self.assertEqual(wb.video_resume_get(local), 70000)
+
+    def test_remote_resume_validation(self):
+        self._dav()
+        put = lambda body: http_put(self.base + "/api/videoresume", body, self.token)[0]
+        vp = "/dav/百度网盘/电影/大片.mp4"
+        self.assertEqual(put({"remote": vp, "ms": -5, "length": 100}), 400)
+        self.assertEqual(put({"remote": vp, "ms": 10 ** 12, "length": 0}), 400)
+        self.assertEqual(put({"remote": vp, "ms": "abc", "length": 0}), 400)
+        self.assertEqual(put({"remote": vp, "ms": True, "length": 0}), 400)
+        self.assertEqual(put({"remote": vp, "ms": 5000, "length": [1]}), 400)
+        self.assertEqual(put({"remote": "/dav/说明.txt", "ms": 50000, "length": 0}), 400)       # 不是视频
+        self.assertEqual(put({"remote": "/dav/" + "a" * 3000 + ".mp4", "ms": 50000, "length": 0}), 400)
+        self.assertEqual(put({"remote": "/dav/a\x00.mp4", "ms": 50000, "length": 0}), 400)
+        self.assertEqual(http_get(self._ru("/dav/说明.txt"), self.token)[0], 400)
+        self.assertEqual(wb.progress_store().get("_video_resume_", {}), {})
+        # 本机路径的输入也一样校验
+        local = os.path.join(self.tmp, "b.mp4")
+        _write(local, b"x")
+        self.assertEqual(put({"path": local, "ms": -1, "length": 0}), 400)
+        # 要 token
+        self.assertEqual(http_get(self._ru(vp))[0], 403)
+
+    def test_remote_resume_needs_configured_webdav(self):
+        wb.remote_clear_config()
+        st, _, _ = http_get(self._ru("/dav/a.mp4"), self.token)
+        self.assertEqual(st, 400)
+        st, _ = http_put(self.base + "/api/videoresume", {"remote": "/dav/a.mp4", "ms": 50000}, self.token)
+        self.assertEqual(st, 400)
+
+    def test_resume_store_is_capped(self):
+        old = wb.RESUME_MAX_KEYS
+        wb.RESUME_MAX_KEYS = 3
+        try:
+            for i in range(5):
+                wb.video_resume_save(key="dav:h/%d.mp4" % i, position_ms=10000 + i, length_ms=0)
+            self.assertEqual(list(wb.progress_store()["_video_resume_"]), ["dav:h/2.mp4", "dav:h/3.mp4", "dav:h/4.mp4"])
+        finally:
+            wb.RESUME_MAX_KEYS = old
+
     def test_propfind_alist_style_hrefs(self):
         """目录 href 带尾斜杠 + 中文 + /dav 前缀；绝对 URL 的 href 也认。"""
         for kw in ({"trailing_slash_dirs": True}, {"trailing_slash_dirs": True, "absolute_href": True}):
